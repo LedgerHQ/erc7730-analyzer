@@ -6,6 +6,7 @@ downloads/
 wheels/
 *.egg
 .venv
+/venv
 .vscode/
 .idea/
 .env

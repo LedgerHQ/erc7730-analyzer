@@ -22,7 +22,7 @@ from openai import OpenAI
 from dotenv import load_dotenv
 
 # Load environment variables from .env file
-load_dotenv()
+load_dotenv(override=True)
 
 # Import the ABI class from utils
 sys.path.append(str(Path(__file__).parent))
@@ -1071,7 +1071,7 @@ Priority: Command-line arguments > Environment variables > Defaults
     parser.add_argument(
         '--lookback-days',
         type=int,
-        default=int(os.getenv('LOOKBACK_DAYS', '20')),
+        default=int(os.getenv('LOOKBACK_DAYS') or '20'),
         help='Number of days to look back for transaction history (env: LOOKBACK_DAYS, default: 20)'
     )
 

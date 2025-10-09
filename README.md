@@ -1,13 +1,14 @@
 # ERC-7730 Clear Signing Analyzer
 
-A comprehensive tool for analyzing ERC-7730 clear signing metadata files by fetching and decoding real transaction data from blockchain explorers.
+A comprehensive tool for analyzing ERC-7730 clear signing metadata files by fetching and decoding real transaction data, including transaction receipts with event logs, from blockchain explorers.
 
 ## Features
 
 - 📊 **Batch Transaction Fetching**: Fetches transactions for multiple function selectors in a single pass
 - 🔍 **ABI Decoding**: Decodes transaction calldata using contract ABIs
-- 📝 **Coverage Analysis**: Compares what users see vs. what the contract receives
-- 🤖 **AI-Powered Auditing**: Generates detailed security audit reports using OpenAI
+- 📋 **Receipt Log Analysis**: Fetches and decodes transaction receipts to analyze actual on-chain events (Transfers, Approvals, etc.)
+- 📝 **Coverage Analysis**: Compares what users see vs. what the contract receives and what actually happens on-chain
+- 🤖 **AI-Powered Auditing**: Generates detailed security audit reports using OpenAI, including analysis of receipt logs
 
 ## Installation
 
@@ -98,6 +99,19 @@ LOOKBACK_DAYS=90
 
 **Note:** Longer lookback periods will make more API calls and may take longer to complete.
 
+#### Debug Mode
+
+Enable debug logging to file:
+
+```bash
+python analyze_7730.py \
+  --erc7730_file path/to/erc7730.json \
+  --api-key YOUR_ETHERSCAN_API_KEY \
+  --debug
+```
+
+This creates detailed logs in `output/analyze_7730.log` for troubleshooting.
+
 ### All Available Options
 
 | Option | Environment Variable | Description | Required | Default |
@@ -106,6 +120,7 @@ LOOKBACK_DAYS=90
 | `--api-key` | `ETHERSCAN_API_KEY` | Etherscan API key | Yes | - |
 | `--abi` | `ABI_FILE` | Path to custom ABI JSON file | No | Fetched from ERC-7730 or Etherscan |
 | `--lookback-days` | `LOOKBACK_DAYS` | Days to look back for transactions | No | 20 |
+| `--debug` | N/A | Enable debug logging to file | No | False |
 | N/A | `OPENAI_API_KEY` | OpenAI API key for AI audits | Yes | - |
 
 **Priority:** Command-line arguments > Environment variables > Defaults
@@ -116,8 +131,10 @@ LOOKBACK_DAYS=90
 2. **Fetch ABI**: Gets contract ABI from the ERC-7730 file, provided file, or Etherscan
 3. **Batch Fetch Transactions**: Efficiently fetches recent transactions for all selectors at once
 4. **Decode Transactions**: Decodes calldata using the contract ABI
-5. **Compare Coverage**: Analyzes what parameters are shown to users vs. hidden
-6. **Generate AI Audit**: Creates comprehensive security audit reports
+5. **Fetch Transaction Receipts**: Gets transaction receipts and decodes event logs (Transfer, Approval, Swap, etc.)
+6. **Fetch Token Metadata**: Automatically queries token contracts for symbols and decimals for readable formatting
+7. **Compare Coverage**: Analyzes what parameters are shown to users vs. hidden vs. what actually happened on-chain
+8. **Generate AI Audit**: Creates comprehensive security audit reports including receipt log analysis
 
 ## Output
 
@@ -127,11 +144,13 @@ The tool generates files in the `output/` directory:
   - Summary table of all functions analyzed
   - Statistics on security issues
   - Detailed per-function analysis with transaction samples
+  - Transaction receipt event logs (decoded Transfers, Approvals, etc.)
+  - Side-by-side comparison of user-facing data vs. actual on-chain events
   - AI-generated audit reports with recommendations
 
-- **JSON Results** (`results_<contract_id>.json`): Machine-readable analysis data
+- **JSON Results** (`results_<contract_id>.json`): Machine-readable analysis data including decoded receipt logs
 
-- **Log File** (`analyze_7730.log`): Detailed execution logs for debugging
+- **Log File** (`analyze_7730.log`): Detailed execution logs for debugging (only created when `--debug` flag is used)
 
 All output files are automatically placed in the `output/` directory which is created if it doesn't exist.
 
@@ -170,7 +189,9 @@ The tool uses the following defaults:
 
 ## Limitations
 
-- **Etherscan Rate Limits**: Free tier has rate limits (5 calls/second). The default 20-day lookback period was chosen to balance finding sufficient transaction samples while avoiding excessive API calls. Increasing the lookback period may result in rate limiting or require a paid Etherscan plan.
+- **Etherscan Rate Limits**: Free tier has rate limits (5 calls/second). The tool makes additional API calls for transaction receipts and token metadata (symbols/decimals), which are cached to minimize requests. The default 20-day lookback period was chosen to balance finding sufficient transaction samples while avoiding excessive API calls. Increasing the lookback period may result in rate limiting or require a paid Etherscan plan.
+- **Event Decoding**: Currently supports decoding common events like Transfer, Approval. Other event types are shown as "Unknown" with raw data. Support for additional event types can be added as needed.
+- **Token Decimals/Symbols**: Automatically fetched via Etherscan API for most ERC-20 tokens. If the call fails, raw values are shown. Non-standard tokens may not display correctly.
 - **Page Limit**: Etherscan enforces `page × offset ≤ 10,000` limit per request window
 - **Chain Support**: Requires Etherscan v2 API support for the target chain
 - **AI-Generated Reports**: The AI audit reports may contain false positives and should be manually reviewed. The tool intentionally does not limit the AI's analysis scope to avoid missing critical security issues - this means some flagged items may be overly cautious. Always verify findings before taking action.

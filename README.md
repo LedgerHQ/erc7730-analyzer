@@ -170,9 +170,11 @@ The tool uses the following defaults:
 
 ## Limitations
 
-- **Etherscan Rate Limits**: Free tier has rate limits (5 calls/second)
-- **Page Limit**: Etherscan enforces `page × offset ≤ 10,000` limit
+- **Etherscan Rate Limits**: Free tier has rate limits (5 calls/second). The default 20-day lookback period was chosen to balance finding sufficient transaction samples while avoiding excessive API calls. Increasing the lookback period may result in rate limiting or require a paid Etherscan plan.
+- **Page Limit**: Etherscan enforces `page × offset ≤ 10,000` limit per request window
 - **Chain Support**: Requires Etherscan v2 API support for the target chain
+- **AI-Generated Reports**: The AI audit reports may contain false positives and should be manually reviewed. The tool intentionally does not limit the AI's analysis scope to avoid missing critical security issues - this means some flagged items may be overly cautious. Always verify findings before taking action.
+- **AI Model Selection**: The tool uses GPT-5-mini by default, which balances good results with faster response times and lower costs. You can modify the code to use GPT-5-nano (faster/cheaper) or GPT-5 (best quality but slower/more expensive) based on your needs.
 
 ## License
 

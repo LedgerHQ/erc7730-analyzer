@@ -106,7 +106,7 @@ LOOKBACK_DAYS=90
 | `--api-key` | `ETHERSCAN_API_KEY` | Etherscan API key | Yes | - |
 | `--abi` | `ABI_FILE` | Path to custom ABI JSON file | No | Fetched from ERC-7730 or Etherscan |
 | `--lookback-days` | `LOOKBACK_DAYS` | Days to look back for transactions | No | 20 |
-| N/A | `OPENAI_API_KEY` | OpenAI API key for AI audits | No | - |
+| N/A | `OPENAI_API_KEY` | OpenAI API key for AI audits | Yes | - |
 
 **Priority:** Command-line arguments > Environment variables > Defaults
 

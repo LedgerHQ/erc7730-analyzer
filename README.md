@@ -173,6 +173,7 @@ The tool uses the following defaults:
 - **Etherscan Rate Limits**: Free tier has rate limits (5 calls/second)
 - **Page Limit**: Etherscan enforces `page × offset ≤ 10,000` limit
 - **Chain Support**: Requires Etherscan v2 API support for the target chain
+- **AI-Generated Reports**: The AI audit reports may contain false positives and should be manually reviewed. The tool intentionally does not limit the AI's analysis scope to avoid missing critical security issues - this means some flagged items may be overly cautious. Always verify findings before taking action.
 
 ## License
 

@@ -5,7 +5,7 @@ Analyze ERC-7730 clear signing files and fetch transaction data from Etherscan.
 This script:
 1. Parses ERC-7730 JSON files to extract function selectors
 2. Fetches the last 5 valid transactions for each selector from Etherscan
-3. Decodes transaction calldata and maps it to ABI function inputs
+3. Decodes transaction calldata and logs receipts and maps it to ABI function inputs
 4. Generates audit reports using AI
 """
 
@@ -28,19 +28,7 @@ load_dotenv(override=True)
 sys.path.append(str(Path(__file__).parent))
 from utils.abi_utils import ABI
 
-# Configure logging (log file will be created in output directory)
-# Create output directory first if it doesn't exist
-output_dir = Path("output")
-output_dir.mkdir(exist_ok=True)
-
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler(output_dir / 'analyze_7730.log'),
-        logging.StreamHandler(sys.stdout)
-    ]
-)
+# Logger will be configured in main() based on --debug flag
 logger = logging.getLogger(__name__)
 
 
@@ -59,6 +47,8 @@ class ERC7730Analyzer:
         self.lookback_days = lookback_days
         self.w3 = Web3()
         self.abi_helper = None  # Will be initialized when ABI is loaded
+        self.token_decimals_cache = {}  # Cache for token decimals
+        self.token_symbol_cache = {}  # Cache for token symbols
 
     def parse_erc7730_file(self, file_path: Path) -> Dict[str, Any]:
         """
@@ -529,6 +519,265 @@ class ERC7730Analyzer:
             logger.warning(f"No function found for selector {hex_selector}")
             return None
 
+    def fetch_transaction_receipt(
+        self,
+        tx_hash: str,
+        chain_id: int = 1
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Fetch transaction receipt from Etherscan.
+
+        Args:
+            tx_hash: Transaction hash
+            chain_id: Chain ID for the transaction (default: 1 for mainnet)
+
+        Returns:
+            Transaction receipt or None if error
+        """
+        if not self.etherscan_api_key:
+            logger.warning("No Etherscan API key provided, cannot fetch receipt")
+            return None
+
+        params = {
+            'module': 'proxy',
+            'action': 'eth_getTransactionReceipt',
+            'txhash': tx_hash,
+            'apikey': self.etherscan_api_key
+        }
+
+        try:
+            base_url = f"https://api.etherscan.io/v2/api?chainid={chain_id}"
+            response = requests.get(base_url, params=params)
+            response.raise_for_status()
+            data = response.json()
+
+            if data.get('result'):
+                logger.debug(f"Successfully fetched receipt for {tx_hash}")
+                return data['result']
+            else:
+                logger.warning(f"No receipt found for {tx_hash}")
+                return None
+        except Exception as e:
+            logger.error(f"Failed to fetch receipt for {tx_hash}: {e}")
+            return None
+
+    def decode_log_event(self, log: Dict[str, Any], chain_id: int = 1) -> Optional[Dict[str, Any]]:
+        """
+        Decode a log event, with special handling for common token events.
+
+        Args:
+            log: Log entry from transaction receipt
+            chain_id: Chain ID for RPC calls
+
+        Returns:
+            Decoded event data or None
+        """
+        try:
+            topics = log.get('topics', [])
+            if not topics:
+                return None
+
+            event_signature = topics[0]
+
+            # ERC-20 Transfer event: Transfer(address indexed from, address indexed to, uint256 value)
+            # Signature: 0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef
+            if event_signature == '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef':
+                if len(topics) >= 3:
+                    from_address = '0x' + topics[1][-40:]
+                    to_address = '0x' + topics[2][-40:]
+                    # Decode value from data field
+                    value_hex = log.get('data', '0x0')
+                    value = int(value_hex, 16) if value_hex != '0x' else 0
+
+                    return {
+                        'event': 'Transfer',
+                        'token': log.get('address', 'unknown'),
+                        'from': from_address,
+                        'to': to_address,
+                        'value': str(value),
+                        'value_formatted': self.format_token_amount(value, log.get('address'), chain_id)
+                    }
+
+            # ERC-20 Approval event: Approval(address indexed owner, address indexed spender, uint256 value)
+            # Signature: 0x8c5be1e5ebec7d5bd14f71427d1e84f3dd0314c0f7b2291e5b200ac8c7c3b925
+            elif event_signature == '0x8c5be1e5ebec7d5bd14f71427d1e84f3dd0314c0f7b2291e5b200ac8c7c3b925':
+                if len(topics) >= 3:
+                    owner = '0x' + topics[1][-40:]
+                    spender = '0x' + topics[2][-40:]
+                    value_hex = log.get('data', '0x0')
+                    value = int(value_hex, 16) if value_hex != '0x' else 0
+
+                    return {
+                        'event': 'Approval',
+                        'token': log.get('address', 'unknown'),
+                        'owner': owner,
+                        'spender': spender,
+                        'value': str(value),
+                        'value_formatted': self.format_token_amount(value, log.get('address'), chain_id)
+                    }
+
+            # For other events, return basic info
+            return {
+                'event': 'Unknown',
+                'signature': event_signature,
+                'address': log.get('address', 'unknown'),
+                'topics': topics,
+                'data': log.get('data', '0x')
+            }
+
+        except Exception as e:
+            logger.warning(f"Failed to decode log event: {e}")
+            return None
+
+    def get_token_symbol(self, token_address: str, chain_id: int = 1) -> Optional[str]:
+        """
+        Fetch token symbol from the contract using Etherscan API.
+
+        Args:
+            token_address: Token contract address
+            chain_id: Chain ID for the token
+
+        Returns:
+            Token symbol or None if unable to fetch
+        """
+        # Check cache first
+        cache_key = f"{chain_id}:{token_address.lower()}"
+        if cache_key in self.token_symbol_cache:
+            return self.token_symbol_cache[cache_key]
+
+        if not self.etherscan_api_key:
+            return None
+
+        try:
+            # Call symbol() function via Etherscan API - signature: 0x95d89b41
+            params = {
+                'module': 'proxy',
+                'action': 'eth_call',
+                'to': token_address,
+                'data': '0x95d89b41',  # symbol() function signature
+                'tag': 'latest',
+                'apikey': self.etherscan_api_key
+            }
+
+            base_url = f"https://api.etherscan.io/v2/api?chainid={chain_id}"
+            response = requests.get(base_url, params=params)
+            response.raise_for_status()
+            data = response.json()
+
+            if data.get('result') and data['result'] != '0x':
+                result_hex = data['result']
+                result_hex = result_hex[2:] if result_hex.startswith('0x') else result_hex
+                if result_hex:
+                    # Symbol is returned as bytes32 or dynamic string
+                    # Try to decode as string (skip first 64 chars which are offset and length)
+                    try:
+                        if len(result_hex) > 128:
+                            # Dynamic string format
+                            length = int(result_hex[64:128], 16)
+                            symbol_hex = result_hex[128:128 + length * 2]
+                        else:
+                            # bytes32 format or short string
+                            symbol_hex = result_hex
+
+                        symbol = bytes.fromhex(symbol_hex).decode('utf-8').rstrip('\x00')
+                        if symbol:
+                            # Cache the result
+                            self.token_symbol_cache[cache_key] = symbol
+                            logger.debug(f"Fetched symbol for {token_address}: {symbol}")
+                            time.sleep(0.1)  # Small delay to avoid rate limiting
+                            return symbol
+                    except Exception as e:
+                        logger.debug(f"Failed to decode symbol for {token_address}: {e}")
+
+        except Exception as e:
+            logger.debug(f"Failed to fetch symbol for {token_address}: {e}")
+
+        return None
+
+    def get_token_decimals(self, token_address: str, chain_id: int = 1) -> Optional[int]:
+        """
+        Fetch token decimals from the contract using Etherscan API.
+
+        Args:
+            token_address: Token contract address
+            chain_id: Chain ID for the token
+
+        Returns:
+            Number of decimals or None if unable to fetch
+        """
+        # Check cache first
+        cache_key = f"{chain_id}:{token_address.lower()}"
+        if cache_key in self.token_decimals_cache:
+            return self.token_decimals_cache[cache_key]
+
+        if not self.etherscan_api_key:
+            return None
+
+        try:
+            # Call decimals() function via Etherscan API - signature: 0x313ce567
+            params = {
+                'module': 'proxy',
+                'action': 'eth_call',
+                'to': token_address,
+                'data': '0x313ce567',  # decimals() function signature
+                'tag': 'latest',
+                'apikey': self.etherscan_api_key
+            }
+
+            base_url = f"https://api.etherscan.io/v2/api?chainid={chain_id}"
+            response = requests.get(base_url, params=params)
+            response.raise_for_status()
+            data = response.json()
+
+            if data.get('result') and data['result'] != '0x':
+                # Decode the result (should be a uint8)
+                decimals = int(data['result'], 16)
+                # Cache the result
+                self.token_decimals_cache[cache_key] = decimals
+                logger.debug(f"Fetched decimals for {token_address}: {decimals}")
+                time.sleep(0.1)  # Small delay to avoid rate limiting
+                return decimals
+
+        except Exception as e:
+            logger.debug(f"Failed to fetch decimals for {token_address}: {e}")
+
+        return None
+
+    def format_token_amount(self, value: int, token_address: str, chain_id: int = 1) -> str:
+        """
+        Format token amount using actual decimals and symbol from contract, or raw value if unavailable.
+
+        Args:
+            value: Raw token amount
+            token_address: Token contract address
+            chain_id: Chain ID for the token
+
+        Returns:
+            Formatted token amount string
+        """
+        token_short = token_address[:10] + '...' if len(token_address) > 10 else token_address
+
+        # Try to get symbol and decimals from the contract
+        symbol = self.get_token_symbol(token_address, chain_id)
+        decimals = self.get_token_decimals(token_address, chain_id)
+
+        if decimals is not None:
+            # Format with actual decimals
+            formatted = value / (10 ** decimals)
+            amount_str = f"{formatted:.6f}".rstrip('0').rstrip('.')
+
+            # Use symbol if available, otherwise use token address
+            if symbol:
+                return f"{amount_str} {symbol}"
+            else:
+                return f"{amount_str} ({token_short})"
+        else:
+            # Fall back to raw value
+            if symbol:
+                return f"{value} (raw) {symbol}"
+            else:
+                return f"{value} (raw, {token_short})"
+
     def decode_transaction_input(
         self,
         tx_input: str,
@@ -743,10 +992,21 @@ class ERC7730Analyzer:
 {json.dumps(erc7730_format, indent=2)}
 ```
 
-**Decoded Transaction Samples (from ABI):**
+**Decoded Transaction Samples:**
+
+Each transaction includes:
+- **decoded_input**: Parameters extracted from transaction calldata (what user intended to send)
+- **receipt_logs**: Events emitted during transaction execution (what actually happened on-chain)
+  - Transfer events show actual token movements
+  - Approval events show permission grants
+  - Other events show state changes
+
 ```json
 {json.dumps(decoded_transactions, indent=2)}
 ```
+
+**Important:** Pay special attention to receipt_logs! They reveal the ACTUAL token transfers and approvals that occurred.
+Compare these with what the user sees in ERC-7730 to ensure nothing is hidden or misleading.
 
 **Your Task:**
 Write a concise audit report with the following sections. Use markdown formatting extensively for readability:
@@ -772,12 +1032,15 @@ Write one sentence assessing if this intent is accurate and clear.
 
 > 🔴 **CRITICAL** - Issues that could lead to users being deceived or losing funds
 
-List critical issues as bullet points. Examples:
-- Token addresses shown are inverted/incorrect
+**Check for:**
+- Token addresses shown are inverted/incorrect vs receipt_logs
 - Amount values mapped to wrong tokens
 - Critical parameters shown with misleading labels
+- Hidden information in receipt_logs that should be shown
+- Approvals not disclosed to users
+- Mismatch between displayed intent and actual token movements in logs
 
-If none: **✅ No critical issues found**
+List critical issues as bullet points. If none: **✅ No critical issues found**
 
 ---
 
@@ -806,17 +1069,23 @@ If none: **✅ No display issues found**
 
 ---
 
-### 5️⃣ Transaction Samples - What Users See
+### 5️⃣ Transaction Samples - What Users See vs What Actually Happens
 
 Analyze up to 3 transactions (not all 5).
 
 #### 📝 Transaction 1: `[hash]`
 
+**User Intent (from ERC-7730):**
 | Field | ✅ User Sees | ❌ Hidden/Missing |
 |-------|-------------|-------------------|
 | **Label from ERC-7730** | *Formatted value* | *What's not shown* |
 
-Add 2-3 rows per transaction showing the most important fields.
+**Actual Effects (from receipt_logs):**
+| Event | Details | Disclosed? |
+|-------|---------|:----------:|
+| Transfer/Approval | Token, From, To, Amount | ✅ Yes / ❌ No |
+
+Add 2-3 rows per table showing the most important fields.
 
 Repeat for 2-3 more transactions.
 
@@ -985,14 +1254,40 @@ Repeat for 2-3 more transactions.
 
                 decoded = self.decode_transaction_input(tx['input'], function_data)
                 if decoded:
-                    decoded_txs.append({
+                    tx_data = {
                         'hash': tx['hash'],
                         'block': tx['blockNumber'],
                         'timestamp': tx['timeStamp'],
                         'from': tx['from'],
+                        'to': tx.get('to', ''),
                         'value': tx['value'],
                         'decoded_input': decoded
-                    })
+                    }
+
+                    # Fetch transaction receipt and decode logs
+                    logger.info(f"Fetching receipt for transaction {tx['hash']}")
+                    receipt = self.fetch_transaction_receipt(tx['hash'], used_deployment['chainId'])
+
+                    if receipt and receipt.get('logs'):
+                        decoded_logs = []
+                        for log in receipt['logs']:
+                            decoded_log = self.decode_log_event(log, used_deployment['chainId'])
+                            if decoded_log:
+                                decoded_logs.append(decoded_log)
+
+                        if decoded_logs:
+                            tx_data['receipt_logs'] = decoded_logs
+                            logger.info(f"Decoded {len(decoded_logs)} log events:")
+                            for log in decoded_logs:
+                                if log.get('event') == 'Transfer':
+                                    logger.info(f"  Transfer: {log['value_formatted']} from {log['from'][:10]}... to {log['to'][:10]}...")
+                                elif log.get('event') == 'Approval':
+                                    logger.info(f"  Approval: {log['value_formatted']} from {log['owner'][:10]}... to {log['spender'][:10]}...")
+                                else:
+                                    logger.info(f"  {log.get('event', 'Unknown')}: {log.get('address', 'unknown')[:10]}...")
+
+                    decoded_txs.append(tx_data)
+                    time.sleep(0.2)  # Rate limiting for receipt fetches
 
                     logger.info(f"Decoded parameters:")
                     for param_name, param_value in decoded.items():
@@ -1074,8 +1369,38 @@ Priority: Command-line arguments > Environment variables > Defaults
         default=int(os.getenv('LOOKBACK_DAYS') or '20'),
         help='Number of days to look back for transaction history (env: LOOKBACK_DAYS, default: 20)'
     )
+    parser.add_argument(
+        '--debug',
+        action='store_true',
+        default=False,
+        help='Enable debug mode to log to file (default: False, no logging to file or console)'
+    )
 
     args = parser.parse_args()
+
+    # Configure logging based on --debug flag
+    if args.debug:
+        # Create output directory for log file
+        output_dir = Path("output")
+        output_dir.mkdir(exist_ok=True)
+
+        # Enable file logging when debug is True
+        logging.basicConfig(
+            level=logging.INFO,
+            format='%(asctime)s - %(levelname)s - %(message)s',
+            handlers=[
+                logging.FileHandler(output_dir / 'analyze_7730.log')
+            ]
+        )
+    else:
+        # Disable logging output when debug is False
+        logging.basicConfig(
+            level=logging.CRITICAL,  # Only show critical errors
+            format='%(asctime)s - %(levelname)s - %(message)s',
+            handlers=[
+                logging.NullHandler()  # No output
+            ]
+        )
 
     # Validate required arguments
     if not args.erc7730_file:
@@ -1443,6 +1768,34 @@ def generate_summary_file(results: Dict, analyzer: 'ERC7730Analyzer', summary_fi
                     report += f"| `{param_name}` | {abi_display} | {erc7730_display} |\n"
 
                 report += "\n"
+
+                # Add receipt logs if available
+                receipt_logs = tx.get('receipt_logs', [])
+                if receipt_logs:
+                    report += "#### 📋 Transaction Events (from receipt)\n\n"
+                    report += "| Event | Token | Details | Amount |\n"
+                    report += "|-------|-------|---------|--------|\n"
+
+                    for log in receipt_logs:
+                        event_type = log.get('event', 'Unknown')
+                        if event_type == 'Transfer':
+                            token = log.get('token', 'unknown')[:10] + '...'
+                            from_addr = log.get('from', 'unknown')[:10] + '...'
+                            to_addr = log.get('to', 'unknown')[:10] + '...'
+                            amount = log.get('value_formatted', 'N/A')
+                            report += f"| 🔄 Transfer | `{token}` | From: `{from_addr}`<br/>To: `{to_addr}` | {amount} |\n"
+                        elif event_type == 'Approval':
+                            token = log.get('token', 'unknown')[:10] + '...'
+                            owner = log.get('owner', 'unknown')[:10] + '...'
+                            spender = log.get('spender', 'unknown')[:10] + '...'
+                            amount = log.get('value_formatted', 'N/A')
+                            report += f"| ✅ Approval | `{token}` | Owner: `{owner}`<br/>Spender: `{spender}` | {amount} |\n"
+                        else:
+                            address = log.get('address', 'unknown')[:10] + '...'
+                            signature = log.get('signature', 'N/A')[:18] + '...'
+                            report += f"| ❓ {event_type} | `{address}` | Signature: `{signature}` | - |\n"
+
+                    report += "\n"
 
             report += "</details>\n\n"
 

@@ -72,27 +72,40 @@ class ERC7730Analyzer:
             logger.error(f"Failed to parse {file_path}: {e}")
             raise
 
-    def extract_selectors(self, erc7730_data: Dict[str, Any]) -> List[str]:
+    def extract_selectors(self, erc7730_data: Dict[str, Any]) -> tuple[List[str], Dict[str, str]]:
         """
         Extract all function selectors from ERC-7730 data.
+        Converts function signatures to selectors if needed.
 
         Args:
             erc7730_data: Parsed ERC-7730 JSON data
 
         Returns:
-            List of function selectors (4-byte hex strings)
+            Tuple of (selectors list, mapping from selector to original format key)
         """
         logger.info("Extracting function selectors from ERC-7730 data")
 
         selectors = []
+        selector_to_format_key = {}
 
         # Selectors are in the display.formats section as keys
         if 'display' in erc7730_data and 'formats' in erc7730_data['display']:
             formats = erc7730_data['display']['formats']
-            selectors = list(formats.keys())
+            for key in formats.keys():
+                # Check if key is already a selector (starts with 0x and is 10 chars: 0x + 8 hex)
+                if key.startswith('0x') and len(key) == 10:
+                    selector = key.lower()
+                    selectors.append(selector)
+                    selector_to_format_key[selector] = key
+                else:
+                    # It's a function signature, calculate the selector
+                    selector = '0x' + self.w3.keccak(text=key).hex()[:8]
+                    logger.info(f"Calculated selector for '{key}': {selector}")
+                    selectors.append(selector.lower())
+                    selector_to_format_key[selector.lower()] = key
 
         logger.info(f"Found {len(selectors)} selectors: {selectors}")
-        return selectors
+        return selectors, selector_to_format_key
 
     def get_contract_deployments(self, erc7730_data: Dict[str, Any]) -> List[Dict[str, Any]]:
         """
@@ -1155,7 +1168,19 @@ Repeat for 2-3 more transactions.
             try:
                 response = requests.get(abi)
                 response.raise_for_status()
-                abi = response.json()
+                data = response.json()
+
+                # Handle Etherscan API response format vs. direct JSON
+                if isinstance(data, dict) and 'result' in data:
+                    # Etherscan API format: {"status":"1","message":"OK","result":"[...]"}
+                    if isinstance(data['result'], str):
+                        abi = json.loads(data['result'])
+                    else:
+                        abi = data['result']
+                else:
+                    # Direct JSON array
+                    abi = data
+
                 logger.info(f"Successfully fetched ABI from URL ({len(abi)} entries)")
             except Exception as e:
                 logger.error(f"Failed to fetch ABI from URL: {e}")
@@ -1180,8 +1205,8 @@ Repeat for 2-3 more transactions.
         self.abi_helper = ABI(abi)
         logger.info("ABI helper initialized")
 
-        # Extract selectors
-        selectors = self.extract_selectors(erc7730_data)
+        # Extract selectors and their mapping to format keys
+        selectors, self.selector_to_format_key = self.extract_selectors(erc7730_data)
 
         # Analyze each selector
         results = {
@@ -1253,7 +1278,7 @@ Repeat for 2-3 more transactions.
                 logger.info(f"\nTransaction {i}/{len(transactions)}: {tx['hash']}")
 
                 decoded = self.decode_transaction_input(tx['input'], function_data)
-                if decoded:
+                if decoded is not None:
                     tx_data = {
                         'hash': tx['hash'],
                         'block': tx['blockNumber'],
@@ -1294,7 +1319,9 @@ Repeat for 2-3 more transactions.
                         logger.info(f"  {param_name}: {param_value}")
 
             # Generate clear signing audit report
-            erc7730_format = erc7730_data.get('display', {}).get('formats', {}).get(selector, {})
+            # Use the mapping to get the original format key (might be function signature or selector)
+            format_key = self.selector_to_format_key.get(selector, selector)
+            erc7730_format = erc7730_data.get('display', {}).get('formats', {}).get(format_key, {})
             audit_report = None
 
             if erc7730_format and decoded_txs:

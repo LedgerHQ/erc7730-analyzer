@@ -7,8 +7,11 @@ A comprehensive tool for analyzing ERC-7730 clear signing metadata files by fetc
 - 📊 **Batch Transaction Fetching**: Fetches transactions for multiple function selectors in a single pass
 - 🔍 **ABI Decoding**: Decodes transaction calldata using contract ABIs
 - 📋 **Receipt Log Analysis**: Fetches and decodes transaction receipts to analyze actual on-chain events (Transfers, Approvals, etc.)
-- 📝 **Coverage Analysis**: Compares what users see vs. what the contract receives and what actually happens on-chain
-- 🤖 **AI-Powered Auditing**: Generates detailed security audit reports using OpenAI, including analysis of receipt logs
+- 📝 **Source Code Analysis**: Fetches and analyzes contract source code patterns for deeper security insights
+- 📊 **Coverage Analysis**: Compares what users see vs. what the contract receives and what actually happens on-chain
+- 🤖 **AI-Powered Auditing**: Generates two types of security reports:
+  - Critical Issues Report for quick security assessment
+  - Comprehensive Summary Report with detailed analysis and recommendations
 
 ## Installation
 
@@ -130,15 +133,18 @@ This creates detailed logs in `output/analyze_7730.log` for troubleshooting.
 1. **Parse ERC-7730 File**: Extracts function selectors and clear signing metadata
 2. **Fetch ABI**: Gets contract ABI from the ERC-7730 file, provided file, or Etherscan
 3. **Batch Fetch Transactions**: Efficiently fetches recent transactions for all selectors at once
-4. **Decode Transactions**: Decodes calldata using the contract ABI
-5. **Fetch Transaction Receipts**: Gets transaction receipts and decodes event logs (Transfer, Approval, Swap, etc.)
-6. **Fetch Token Metadata**: Automatically queries token contracts for symbols and decimals for readable formatting
-7. **Compare Coverage**: Analyzes what parameters are shown to users vs. hidden vs. what actually happened on-chain
-8. **Generate AI Audit**: Creates comprehensive security audit reports including receipt log analysis
+4. **Extract Source Code**: Fetches contract source code from Etherscan for pattern analysis
+5. **Decode Transactions**: Decodes calldata using the contract ABI
+6. **Fetch Transaction Receipts**: Gets transaction receipts and decodes event logs (Transfer, Approval, Swap, etc.)
+7. **Fetch Token Metadata**: Automatically queries token contracts for symbols and decimals for readable formatting
+8. **Compare Coverage**: Analyzes what parameters are shown to users vs. hidden vs. what actually happened on-chain
+9. **Generate AI Audit**: Creates two security reports - a critical issues report and a comprehensive summary report
 
 ## Output
 
 The tool generates files in the `output/` directory:
+
+- **Critical Issues Report** (`CRITICALS_<contract_id>.md`): Quick security overview with critical findings and recommendations
 
 - **Summary Report** (`SUMMARY_<contract_id>.md`): Comprehensive analysis with:
   - Summary table of all functions analyzed
@@ -194,8 +200,8 @@ The tool uses the following defaults:
 - **Token Decimals/Symbols**: Automatically fetched via Etherscan API for most ERC-20 tokens. If the call fails, raw values are shown. Non-standard tokens may not display correctly.
 - **Page Limit**: Etherscan enforces `page × offset ≤ 10,000` limit per request window
 - **Chain Support**: Requires Etherscan v2 API support for the target chain
-- **AI-Generated Reports**: The AI audit reports may contain false positives and should be manually reviewed. The tool intentionally does not limit the AI's analysis scope to avoid missing critical security issues - this means some flagged items may be overly cautious. Always verify findings before taking action.
-- **AI Model Selection**: The tool uses GPT-5-mini by default, which balances good results with faster response times and lower costs. You can modify the code to use GPT-5-nano (faster/cheaper) or GPT-5 (best quality but slower/more expensive) based on your needs.
+- **AI-Generated Reports**: The AI audit reports may contain false positives and should be manually reviewed. Always verify findings before taking action.
+- **AI Model Selection**: The tool uses GPT-5-mini by default, which balances good results with faster response times and lower costs. You can modify the code to use other models based on your needs.
 
 ## License
 

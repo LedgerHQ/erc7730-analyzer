@@ -1,1 +1,3 @@
-"""Utility modules for ERC-7730 analyzer"""
+"""
+Utilities for ERC-7730 analyzer.
+"""

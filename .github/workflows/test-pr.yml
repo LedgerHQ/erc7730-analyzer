@@ -1,4 +1,4 @@
-name: Analyze ERC-7730 Files on PR
+name: Analyze
 
 on:
   pull_request:
@@ -171,8 +171,10 @@ jobs:
         if: always()
         run: |
           if [ "${{ steps.run-analyzer.outputs.has_criticals }}" = "true" ]; then
-            echo "❌ BLOCKING MERGE - Critical issues found"
+            echo "::error::❌ BLOCKING MERGE - Critical issues found in analysis reports"
+            echo "Critical issues detected - failing workflow"
             exit 1
           else
             echo "✅ No critical issues - merge allowed"
+            exit 0
           fi

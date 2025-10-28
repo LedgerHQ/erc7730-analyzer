@@ -146,23 +146,37 @@ Priority: Command-line arguments > Environment variables > Defaults
     logger.info(f"JSON results: {json_output}")
     logger.info(f"{'='*60}\n")
 
-    # Check if there are any critical issues by parsing audit reports
+    # Check if there are any critical issues by reading the CRITICALS_*.md file
     has_critical_issues = False
-    critical_count = 0
 
-    for selector, selector_data in results.get('selectors', {}).items():
-        audit_report = selector_data.get('audit_report', '')
-        if audit_report:
-            # Parse the FIRST REPORT section (same logic as reporter.py)
-            critical_issues, _ = parse_first_report(audit_report)
-            if critical_issues:
-                has_critical_issues = True
-                critical_count += 1
-                logger.warning(f"⚠️  Selector {selector}: {len(critical_issues)} critical issue(s) found")
+    if criticals_file.exists():
+        logger.info(f"Checking CRITICALS report: {criticals_file}")
+        criticals_content = criticals_file.read_text()
+
+        # Check if the summary table contains any 🔴 symbols (indicating critical issues)
+        # The table format is: | function | selector | 🔴 Issue... | [View]... |
+        if '| 🔴' in criticals_content:
+            has_critical_issues = True
+            # Count how many functions have critical issues
+            critical_count = criticals_content.count('| 🔴')
+            logger.warning(f"⚠️  Found {critical_count} function(s) with critical issues in summary table")
+
+        # Also check for sections that are NOT "No critical issues found"
+        # Look for critical issue sections that contain actual issues
+        if not has_critical_issues:
+            # Check if there are any sections with critical issues listed
+            import re
+            critical_sections = re.findall(r'### 🔴 Critical Issues\n\n(.*?)(?=\n###|\n---|\Z)', criticals_content, re.DOTALL)
+            for section in critical_sections:
+                # If section has bullet points (actual issues), not just "No critical issues found"
+                if section.strip() and '- ' in section and 'No critical issues found' not in section:
+                    has_critical_issues = True
+                    logger.warning("⚠️  Found critical issues in detailed sections")
+                    break
 
     # Return exit code based on critical issues
     if has_critical_issues:
-        logger.error(f"\n❌ CRITICAL ISSUES FOUND: {critical_count} function(s) have critical issues")
+        logger.error(f"\n❌ CRITICAL ISSUES FOUND")
         logger.error("Analysis failed - PR merge should be blocked")
         return 1
     else:

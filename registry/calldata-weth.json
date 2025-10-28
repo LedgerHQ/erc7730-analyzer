@@ -1,7 +1,7 @@
 {
   "$schema": "../../specs/erc7730-v1.schema.json",
   "context": {
-    "$id": "WETH", 
+    "$id": "WETH",
     "contract": {
       "abi": "https://api.etherscan.io/api?module=contract&action=getabi&address=0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
       "deployments": [

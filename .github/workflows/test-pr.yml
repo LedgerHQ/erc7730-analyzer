@@ -52,8 +52,11 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          # Move reports to Analysis directory
+          # Create Analysis directory and clean old reports
           mkdir -p Analysis
+          rm -f Analysis/CRITICALS_*.md Analysis/SUMMARY_*.md
+
+          # Copy new reports
           cp output/*.md Analysis/ 2>/dev/null || echo "No .md files to copy"
 
           # Commit if there are changes
@@ -61,7 +64,7 @@ jobs:
           if git diff --staged --quiet; then
             echo "No reports to commit"
           else
-            git commit -m "chore: add analysis reports [skip ci]"
+            git commit -m "chore: update analysis reports [skip ci]"
 
             # Try to push, but don't fail if it's a forked PR
             if git push origin HEAD:${{ github.head_ref }} 2>&1; then
@@ -121,7 +124,8 @@ jobs:
               body += '\n⚠️ This PR is from a fork, so reports cannot be committed automatically.\n';
             }
 
-            body += '\n📥 Download full reports from the workflow artifacts below.';
+            body += '\n---\n\n';
+            body += `📥 **[Download full reports (artifacts)](${context.payload.repository.html_url}/actions/runs/${context.runId})**`;
 
             await github.rest.issues.createComment({
               owner: context.repo.owner,

@@ -15,8 +15,7 @@
     "formats": {
       "deposit()": {
         "intent": "Wrap", 
-        "fields": [
-        ]
+        "fields": []
       }
     }
   }

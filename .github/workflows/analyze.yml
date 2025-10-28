@@ -115,28 +115,6 @@ jobs:
 
             let body = '## 🔍 ERC-7730 Analysis Complete\n\n';
             body += `📊 **Reports generated:** ${files.length}\n\n`;
-
-            const isFork = context.payload.pull_request.head.repo.fork;
-
-            if (!isFork) {
-              body += '### 📄 View Full Reports:\n';
-              const branch = context.payload.pull_request.head.ref;
-              const repo = context.repo;
-
-              for (const file of files) {
-                const fileUrl = `https://github.com/${repo.owner}/${repo.repo}/blob/${branch}/Analysis/${file}`;
-                body += `- [${file}](${fileUrl})\n`;
-              }
-              body += '\n💾 Reports committed to the `Analysis/` directory in this PR.\n';
-            } else {
-              body += '### 📄 Reports:\n';
-              for (const file of files) {
-                body += `- ${file}\n`;
-              }
-              body += '\n⚠️ This PR is from a fork, so reports cannot be committed automatically.\n';
-            }
-
-            body += '\n---\n\n';
             body += `📥 **[Download full reports (artifacts)](${context.payload.repository.html_url}/actions/runs/${context.runId})**\n\n`;
 
             // Add status based on critical issues

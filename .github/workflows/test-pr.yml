@@ -38,7 +38,7 @@ jobs:
         run: |
           for file in ${{ steps.changed-files.outputs.all_changed_files }}; do
             echo "Analyzing: $file"
-            python analyze_7730.py "$file"
+            python analyze_7730.py --erc7730_file "$file" --api-key "$ETHERSCAN_API_KEY" --lookback-days 20
           done
 
       - name: Upload analysis reports

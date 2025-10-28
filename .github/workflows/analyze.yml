@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - '**/calldata-*.json'
+      - 'Analysis/**'
 
 jobs:
   analyze:
@@ -42,6 +43,28 @@ jobs:
         with:
           files: |
             **/calldata-*.json
+
+      - name: Check if this is a report commit (Analysis files only)
+        id: check-report-commit
+        run: |
+          if [ "${{ steps.changed-files.outputs.any_changed }}" != "true" ]; then
+            echo "is_report_commit=true" >> $GITHUB_OUTPUT
+            # This is a report commit - check the CRITICALS file for issues
+            CRITICALS_FILE=$(ls Analysis/CRITICALS_*.md 2>/dev/null | head -1)
+            if [ -f "$CRITICALS_FILE" ]; then
+              if grep -q '| 🔴' "$CRITICALS_FILE"; then
+                echo "has_criticals=true" >> $GITHUB_OUTPUT
+                echo "Report commit contains critical issues"
+              else
+                echo "has_criticals=false" >> $GITHUB_OUTPUT
+                echo "Report commit has no critical issues"
+              fi
+            else
+              echo "has_criticals=false" >> $GITHUB_OUTPUT
+            fi
+          else
+            echo "is_report_commit=false" >> $GITHUB_OUTPUT
+          fi
 
       - name: Run analyzer on each file
         if: steps.changed-files.outputs.any_changed == 'true'
@@ -168,11 +191,23 @@ jobs:
       - name: Block merge if critical issues found
         if: always()
         run: |
-          if [ "${{ steps.run-analyzer.outputs.has_criticals }}" = "true" ]; then
-            echo "::error::❌ BLOCKING MERGE - Critical issues found in analysis reports"
-            echo "Critical issues detected - failing workflow"
-            exit 1
+          # Check if this is a report commit or a regular analysis
+          if [ "${{ steps.check-report-commit.outputs.is_report_commit }}" = "true" ]; then
+            # Report commit - use the check-report-commit result
+            if [ "${{ steps.check-report-commit.outputs.has_criticals }}" = "true" ]; then
+              echo "::error::❌ BLOCKING MERGE - Critical issues found in committed reports"
+              exit 1
+            else
+              echo "✅ No critical issues in reports - merge allowed"
+              exit 0
+            fi
           else
-            echo "✅ No critical issues - merge allowed"
-            exit 0
+            # Regular analysis - use the run-analyzer result
+            if [ "${{ steps.run-analyzer.outputs.has_criticals }}" = "true" ]; then
+              echo "::error::❌ BLOCKING MERGE - Critical issues found in analysis"
+              exit 1
+            else
+              echo "✅ No critical issues - merge allowed"
+              exit 0
+            fi
           fi

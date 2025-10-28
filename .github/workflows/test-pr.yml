@@ -41,7 +41,27 @@ jobs:
             python analyze_7730.py --erc7730_file "$file" --api-key "$ETHERSCAN_API_KEY" --lookback-days 20
           done
 
-      - name: Upload analysis reports
+      - name: Commit reports to PR branch
+        if: steps.changed-files.outputs.any_changed == 'true'
+        run: |
+          # Configure git
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          # Move reports to Analysis directory
+          mkdir -p Analysis
+          cp output/*.md Analysis/ 2>/dev/null || echo "No .md files to copy"
+
+          # Commit if there are changes
+          git add Analysis/
+          if git diff --staged --quiet; then
+            echo "No reports to commit"
+          else
+            git commit -m "chore: add analysis reports [skip ci]"
+            git push
+          fi
+
+      - name: Upload analysis reports as artifacts
         if: steps.changed-files.outputs.any_changed == 'true'
         uses: actions/upload-artifact@v4
         with:
@@ -49,7 +69,7 @@ jobs:
           path: output/
           retention-days: 30
 
-      - name: Post reports to PR
+      - name: Post summary to PR
         if: steps.changed-files.outputs.any_changed == 'true'
         uses: actions/github-script@v7
         with:
@@ -58,20 +78,28 @@ jobs:
             const fs = require('fs');
             const path = require('path');
 
-            const outputDir = 'output';
-            if (!fs.existsSync(outputDir)) {
-              console.log('No output directory found');
+            const reportsDir = 'Analysis';
+            if (!fs.existsSync(reportsDir)) {
+              console.log('No reports directory found');
               return;
             }
 
-            const files = fs.readdirSync(outputDir).filter(f => f.endsWith('.md'));
+            const files = fs.readdirSync(reportsDir).filter(f => f.endsWith('.md'));
 
-            let body = '## Analysis Results\n\n';
+            let body = '## 🔍 ERC-7730 Analysis Complete\n\n';
+            body += `📊 **Reports generated:** ${files.length}\n\n`;
+            body += '### 📄 View Full Reports:\n';
+
+            const branch = context.payload.pull_request.head.ref;
+            const repo = context.repo;
 
             for (const file of files) {
-              const content = fs.readFileSync(path.join(outputDir, file), 'utf8');
-              body += content + '\n\n---\n\n';
+              const fileUrl = `https://github.com/${repo.owner}/${repo.repo}/blob/${branch}/Analysis/${file}`;
+              body += `- [${file}](${fileUrl})\n`;
             }
+
+            body += '\n💾 Reports have been committed to the `Analysis/` directory in this PR.\n';
+            body += '\n📥 You can also download them from the workflow artifacts below.';
 
             await github.rest.issues.createComment({
               owner: context.repo.owner,

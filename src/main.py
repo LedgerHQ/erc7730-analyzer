@@ -12,12 +12,13 @@ This script orchestrates the analysis workflow:
 import argparse
 import logging
 import os
+import sys
 from pathlib import Path
 from datetime import datetime
 from dotenv import load_dotenv
 
 from utils.analyzer import ERC7730Analyzer
-from utils.reporter import generate_summary_file, generate_criticals_report, save_json_results
+from utils.reporter import generate_summary_file, generate_criticals_report, save_json_results, parse_first_report
 
 # Load environment variables
 load_dotenv(override=True)
@@ -145,8 +146,44 @@ Priority: Command-line arguments > Environment variables > Defaults
     logger.info(f"JSON results: {json_output}")
     logger.info(f"{'='*60}\n")
 
-    return results
+    # Check if there are any critical issues by reading the CRITICALS report file
+    has_critical_issues = False
+
+    if criticals_file.exists():
+        logger.info(f"Checking CRITICALS report: {criticals_file}")
+        criticals_content = criticals_file.read_text()
+
+        # Check if the summary table contains any 🔴 symbols (indicating critical issues)
+        # The table format is: | function | selector | 🔴 Issue... | [View]... |
+        if '| 🔴' in criticals_content:
+            has_critical_issues = True
+            # Count how many functions have critical issues
+            critical_count = criticals_content.count('| 🔴')
+            logger.warning(f"⚠️  Found {critical_count} function(s) with critical issues in summary table")
+
+        # Also check for sections that are NOT "No critical issues found"
+        # Look for critical issue sections that contain actual issues
+        if not has_critical_issues:
+            # Check if there are any sections with critical issues listed
+            import re
+            critical_sections = re.findall(r'### 🔴 Critical Issues\n\n(.*?)(?=\n###|\n---|\Z)', criticals_content, re.DOTALL)
+            for section in critical_sections:
+                # If section has bullet points (actual issues), not just "No critical issues found"
+                if section.strip() and '- ' in section and 'No critical issues found' not in section:
+                    has_critical_issues = True
+                    logger.warning("⚠️  Found critical issues in detailed sections")
+                    break
+
+    # Return exit code based on critical issues
+    if has_critical_issues:
+        logger.error(f"\n❌ CRITICAL ISSUES FOUND")
+        logger.error("Analysis failed - PR merge should be blocked")
+        return 1
+    else:
+        logger.info("\n✅ NO CRITICAL ISSUES - All functions passed analysis")
+        logger.info("Analysis passed - PR merge is allowed")
+        return 0
 
 
 if __name__ == '__main__':
-    main()
+    sys.exit(main())

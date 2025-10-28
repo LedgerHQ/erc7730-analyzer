@@ -1,9 +1,0 @@
-{
-    "$schema": "../../specs/erc7730-v1.schema.json",
-    "includes": "../../ercs/calldata-erc4626-vaults.json",
-    
-    "metadata": {
-      "owner": "Kiln",
-      "info": { "legalName": "Kiln", "url": "https://kiln.fi/" }
-    }
-}

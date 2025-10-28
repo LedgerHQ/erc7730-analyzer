@@ -88,36 +88,6 @@ jobs:
             echo "has_criticals=false" >> $GITHUB_OUTPUT
           fi
 
-      - name: Commit reports to PR branch
-        if: always() && steps.changed-files.outputs.any_changed == 'true'
-        continue-on-error: true
-        run: |
-          # Configure git
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-
-          # Create Analysis directory and clean old reports
-          mkdir -p Analysis
-          rm -f Analysis/CRITICALS_*.md Analysis/SUMMARY_*.md
-
-          # Copy new reports
-          cp output/*.md Analysis/ 2>/dev/null || echo "No .md files to copy"
-
-          # Commit if there are changes
-          git add Analysis/
-          if git diff --staged --quiet; then
-            echo "No reports to commit"
-          else
-            git commit -m "chore: update analysis reports"
-
-            # Try to push, but don't fail if it's a forked PR
-            if git push origin HEAD:${{ github.head_ref }} 2>&1; then
-              echo "✅ Reports committed to PR branch"
-            else
-              echo "⚠️ Cannot push to forked PR - reports available as artifacts only"
-            fi
-          fi
-
       - name: Upload analysis reports as artifacts
         if: always() && steps.changed-files.outputs.any_changed == 'true'
         uses: actions/upload-artifact@v4

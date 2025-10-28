@@ -160,7 +160,7 @@ You MUST be EXTREMELY conservative. Only flag if a normal user would be shocked 
       → Example: `{{"path": "@.value", "label": "Amount", "format": "amount"}}`
     * **Case 3 - Token address is WETH but function is payable**:
       → Function does internal deposit to convert ETH→WETH
-      → Do NOT require native ETH display (would be incorrect/duplicate)
+      → Do NOT require native ETH display in case the amounts (that can also represent ETH) are already diplayed using other inputs (would be incorrect/duplicate). However, if no amount is displayed REQUIRE native ETH display.
   - Check source code and receipt_logs (if available) to determine which case applies. Sometimes even if sentinels exist, the code does not allow native transfer even if the function is payable.
   - **KEY**: When checking for nativeCurrencyAddress, follow $ref references to definitions - it can be in either place
   - Only flag as critical if native ETH is actually being transferred AND display cannot show it
@@ -281,7 +281,7 @@ IMPORTANT: Keep the `>` blockquote format above.
       → Example: `{{"path": "@.value", "label": "Amount", "format": "amount"}}`
     * **Case 3 - Token address is WETH but function is payable**:
       → Function does internal deposit to convert ETH→WETH
-      → Do NOT require native ETH display (would be incorrect/duplicate)
+      → Do NOT require native ETH display in case the amounts (that can also represent ETH) are already diplayed using other inputs (would be incorrect/duplicate). However, if no amount is displayed REQUIRE native ETH display.
   - Check source code and receipt_logs (if available) to determine which case applies. Sometimes even if sentinels exist, the code does not allow native transfer even if the function is payable.
   - **KEY**: When checking for nativeCurrencyAddress, follow $ref references to definitions - it can be in either place
   - Only flag as critical if native ETH is actually being transferred AND display cannot show it

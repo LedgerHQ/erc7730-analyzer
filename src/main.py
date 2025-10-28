@@ -18,7 +18,7 @@ from datetime import datetime
 from dotenv import load_dotenv
 
 from utils.analyzer import ERC7730Analyzer
-from utils.reporter import generate_summary_file, generate_criticals_report, save_json_results, parse_first_report
+from utils.reporter import generate_summary_file, generate_criticals_report, save_json_results
 
 # Load environment variables
 load_dotenv(override=True)
@@ -150,15 +150,18 @@ Priority: Command-line arguments > Environment variables > Defaults
     has_critical_issues = False
 
     if criticals_file.exists():
+        print(f"DEBUG: Checking CRITICALS report: {criticals_file}")
         logger.info(f"Checking CRITICALS report: {criticals_file}")
         criticals_content = criticals_file.read_text()
 
         # Check if the summary table contains any 🔴 symbols (indicating critical issues)
         # The table format is: | function | selector | 🔴 Issue... | [View]... |
+        print(f"DEBUG: Searching for '| 🔴' in content (length: {len(criticals_content)} chars)")
         if '| 🔴' in criticals_content:
             has_critical_issues = True
             # Count how many functions have critical issues
             critical_count = criticals_content.count('| 🔴')
+            print(f"DEBUG: Found {critical_count} critical issues!")
             logger.warning(f"⚠️  Found {critical_count} function(s) with critical issues in summary table")
 
         # Also check for sections that are NOT "No critical issues found"
@@ -168,18 +171,21 @@ Priority: Command-line arguments > Environment variables > Defaults
             import re
             critical_sections = re.findall(r'### 🔴 Critical Issues\n\n(.*?)(?=\n###|\n---|\Z)', criticals_content, re.DOTALL)
             for section in critical_sections:
-                # If section has bullet points (actual issues), not just "No critical issues found"
-                if section.strip() and '- ' in section and 'No critical issues found' not in section:
+                # If section has numbered lists or bullet points (actual issues), not just "No critical issues found"
+                if section.strip() and ('- ' in section or re.search(r'\d+\. ', section)) and 'No critical issues found' not in section.lower():
                     has_critical_issues = True
                     logger.warning("⚠️  Found critical issues in detailed sections")
                     break
 
     # Return exit code based on critical issues
+    print(f"DEBUG: has_critical_issues = {has_critical_issues}")
     if has_critical_issues:
+        print("DEBUG: Returning exit code 1")
         logger.error(f"\n❌ CRITICAL ISSUES FOUND")
         logger.error("Analysis failed - PR merge should be blocked")
         return 1
     else:
+        print("DEBUG: Returning exit code 0")
         logger.info("\n✅ NO CRITICAL ISSUES - All functions passed analysis")
         logger.info("Analysis passed - PR merge is allowed")
         return 0

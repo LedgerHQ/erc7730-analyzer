@@ -166,3 +166,13 @@ jobs:
               issue_number: context.issue.number,
               body: body
             });
+
+      - name: Block merge if critical issues found
+        if: always()
+        run: |
+          if [ "${{ steps.run-analyzer.outputs.has_criticals }}" = "true" ]; then
+            echo "❌ BLOCKING MERGE - Critical issues found"
+            exit 1
+          else
+            echo "✅ No critical issues - merge allowed"
+          fi

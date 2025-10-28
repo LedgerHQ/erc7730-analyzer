@@ -1,0 +1,81 @@
+name: Analyze ERC-7730 Files on PR
+
+on:
+  pull_request:
+    paths:
+      - '**/calldata-*.json'
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+
+      - name: Get changed calldata files
+        id: changed-files
+        uses: tj-actions/changed-files@v40
+        with:
+          files: |
+            **/calldata-*.json
+
+      - name: Run analyzer on each file
+        if: steps.changed-files.outputs.any_changed == 'true'
+        env:
+          ETHERSCAN_API_KEY: ${{ secrets.ETHERSCAN_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          for file in ${{ steps.changed-files.outputs.all_changed_files }}; do
+            echo "Analyzing: $file"
+            python analyze_7730.py "$file"
+          done
+
+      - name: Upload analysis reports
+        if: steps.changed-files.outputs.any_changed == 'true'
+        uses: actions/upload-artifact@v3
+        with:
+          name: analysis-reports
+          path: output/
+          retention-days: 30
+
+      - name: Post reports to PR
+        if: steps.changed-files.outputs.any_changed == 'true'
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const fs = require('fs');
+            const path = require('path');
+
+            const outputDir = 'output';
+            if (!fs.existsSync(outputDir)) {
+              console.log('No output directory found');
+              return;
+            }
+
+            const files = fs.readdirSync(outputDir).filter(f => f.endsWith('.md'));
+
+            let body = '## Analysis Results\n\n';
+
+            for (const file of files) {
+              const content = fs.readFileSync(path.join(outputDir, file), 'utf8');
+              body += content + '\n\n---\n\n';
+            }
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: body
+            });

@@ -10,7 +10,7 @@
       ]
     }
   },
-  "metadata": { "owner": "WETH" }, 
+  "metadata": { "owner": "WETH" },
   "display": { 
     "formats": {
       "deposit()": {

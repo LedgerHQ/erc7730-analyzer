@@ -1,7 +1,7 @@
 {
   "$schema": "https://eips.ethereum.org/assets/eip-7730/erc7730-v1.schema.json",
   "context": {
-    "$id": "LI.FI Service GmbH",
+    "$id": "LI.FI Service GmbH", 
     "contract": {
       "deployments": [
         { "chainId": 1, "address": "0x1231DEB6f5749EF6cE6943a275A1D3E7486F4EaE" },

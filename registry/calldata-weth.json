@@ -14,7 +14,7 @@
   "display": {
     "formats": {
       "deposit()": {
-        "intent": "Wrap",
+        "intent": "Wrap", 
         "fields": [
           {
             "path": "@.value",

@@ -11,7 +11,7 @@
     }
   },
   "metadata": { "owner": "WETH" },  
-  "display": {
+  "display": { 
     "formats": {
       "deposit()": {
         "intent": "Wrap", 

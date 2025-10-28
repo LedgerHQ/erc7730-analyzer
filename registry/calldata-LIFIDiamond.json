@@ -5189,7 +5189,7 @@
           {
             "path": "_swapData.[0].fromAmount",
             "label": "Amount to Send",
-            "format": "tokenAmount",
+            "format": "tokenAmount", 
             "params": { "tokenPath": "_swapData.[0].sendingAssetId" }
           },
           { "path": "_minAmountOut", "$ref": "$.display.definitions._minAmountOut" },

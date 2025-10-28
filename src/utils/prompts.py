@@ -131,7 +131,13 @@ You MUST be EXTREMELY conservative. Only flag if a normal user would be shocked 
      * The display is showing what the user specified in their input, not a fundamentally different token
      * Flag this in the detailed "Display Issues" section instead
    - **ONLY flag as CRITICAL if**: The displayed token is completely unrelated to any user input (e.g., hardcoded wrong address or pointing to wrong parameter)
-5. **Missing RECIPIENT parameter** - If recipient is an INPUT parameter that receives funds and is NOT shown to user, this is CRITICAL
+5. **Missing RECIPIENT parameter** - Two cases:
+   - **Case A**: If recipient IS an INPUT parameter that receives funds and is NOT shown → CRITICAL
+   - **Case B**: If recipient is NOT in inputs (because it's always msg.sender) BUT is important to show:
+     * Check if function always sends tokens/ETH to the sender (e.g., withdraw(), claimRewards(), unwrap())
+     * If YES and NO recipient field exists → Recommend using `{{"path": "@.from", "label": "Beneficiary", "format": "addressName"}}`
+     * This shows the user they're receiving funds to their own address
+     * **Special transaction fields**: `@.from` = sender address, `@.value` = native currency value sent with tx
 6. **Broken `$ref` references** - Format references non-existent definitions/constants (display will fail)
 7. **Input parameter path mismatch** - ERC-7730 references a parameter path that doesn't exist in the ABI OR uses wrong path/name (e.g., format shows "_receiver" but ABI has "receiver", or shows "_tokens[0]" but should be "_swapData[0].token")
 8. **Native ETH handling in payable functions (for what the user sends and all functions even non payable for what he receives)** (this is critical and nuanced):
@@ -169,7 +175,10 @@ You MUST be EXTREMELY conservative. Only flag if a normal user would be shocked 
   - Only flag as critical if native ETH is actually being transferred AND display cannot show it
 8. **Amounts are displayed twice**
 9. **Spelling/grammar errors** in labels or intent
-10. msg.value can be represented by @.value or by an amount input parameter depending ont he context.
+10. **msg.value representation** - WHEN to use each approach:
+   - **Use `@.value`**: When function ONLY accepts native ETH 
+   - **Use input parameter**: When function has an amount parameter that EQUALS msg.value and can be also used for other tokens
+   - **CRITICAL**: If payable function has no parameters AND no `@.value` field → user can't see amount being sent
 
 
 **CRITICAL REQUIREMENT - Can it be fixed with available input parameters?**
@@ -294,7 +303,10 @@ IMPORTANT: Keep the `>` blockquote format above.
   - Only flag as critical if native ETH is actually being transferred AND display cannot show it
 - Amounts are displayed twice
 - Spelling/grammar errors in labels or intent
-- 10. msg.value can be represented by @.value or by an amount input parameter depending ont he context.
+- **msg.value representation** - WHEN to use each approach:
+   - **Use `@.value`**: When function ONLY accepts native ETH 
+   - **Use input parameter**: When function has an amount parameter that EQUALS msg.value and can be also used for other tokens
+   - **CRITICAL**: If payable function has no parameters AND no `@.value` field → user can't see amount being sent
 
 List critical issues as bullet points. If none: **✅ No critical issues found**
 

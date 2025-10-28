@@ -1,0 +1,180 @@
+name: Analyze
+
+on:
+  pull_request:
+    paths:
+      - '**/calldata-*.json'
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout PR branch (for files to analyze)
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }}
+
+      - name: Copy analyzer code from base branch
+        run: |
+          # Save the PR files location
+          PR_DIR=$(pwd)
+
+          # Fetch base branch
+          git fetch origin ${{ github.base_ref }}
+
+          # Copy Python code from base branch
+          git checkout origin/${{ github.base_ref }} -- src/ analyze_7730.py requirements.txt
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+
+      - name: Get changed calldata files
+        id: changed-files
+        uses: tj-actions/changed-files@v40
+        with:
+          files: |
+            **/calldata-*.json
+
+      - name: Run analyzer on each file
+        if: steps.changed-files.outputs.any_changed == 'true'
+        id: run-analyzer
+        env:
+          ETHERSCAN_API_KEY: ${{ secrets.ETHERSCAN_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          EXIT_CODE=0
+          for file in ${{ steps.changed-files.outputs.all_changed_files }}; do
+            echo "Analyzing: $file"
+            if ! python analyze_7730.py --erc7730_file "$file" --api-key "$ETHERSCAN_API_KEY" --lookback-days 20; then
+              echo "❌ Critical issues found in $file"
+              EXIT_CODE=1
+            fi
+          done
+
+          if [ $EXIT_CODE -eq 1 ]; then
+            echo "has_criticals=true" >> $GITHUB_OUTPUT
+            exit 1
+          else
+            echo "has_criticals=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Commit reports to PR branch
+        if: always() && steps.changed-files.outputs.any_changed == 'true'
+        continue-on-error: true
+        run: |
+          # Configure git
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          # Create Analysis directory and clean old reports
+          mkdir -p Analysis
+          rm -f Analysis/CRITICALS_*.md Analysis/SUMMARY_*.md
+
+          # Copy new reports
+          cp output/*.md Analysis/ 2>/dev/null || echo "No .md files to copy"
+
+          # Commit if there are changes
+          git add Analysis/
+          if git diff --staged --quiet; then
+            echo "No reports to commit"
+          else
+            git commit -m "chore: update analysis reports [skip ci]"
+
+            # Try to push, but don't fail if it's a forked PR
+            if git push origin HEAD:${{ github.head_ref }} 2>&1; then
+              echo "✅ Reports committed to PR branch"
+              echo "push_success=true" >> $GITHUB_ENV
+            else
+              echo "⚠️ Cannot push to forked PR - reports available as artifacts only"
+              echo "push_success=false" >> $GITHUB_ENV
+            fi
+          fi
+
+      - name: Upload analysis reports as artifacts
+        if: always() && steps.changed-files.outputs.any_changed == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: analysis-reports
+          path: output/
+          retention-days: 30
+
+      - name: Post summary to PR
+        if: always() && steps.changed-files.outputs.any_changed == 'true'
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const fs = require('fs');
+            const path = require('path');
+
+            const reportsDir = 'Analysis';
+            if (!fs.existsSync(reportsDir)) {
+              console.log('No reports directory found');
+              return;
+            }
+
+            const files = fs.readdirSync(reportsDir).filter(f => f.endsWith('.md'));
+
+            let body = '## 🔍 ERC-7730 Analysis Complete\n\n';
+            body += `📊 **Reports generated:** ${files.length}\n\n`;
+
+            const isFork = context.payload.pull_request.head.repo.fork;
+
+            if (!isFork) {
+              body += '### 📄 View Full Reports:\n';
+              const branch = context.payload.pull_request.head.ref;
+              const repo = context.repo;
+
+              for (const file of files) {
+                const fileUrl = `https://github.com/${repo.owner}/${repo.repo}/blob/${branch}/Analysis/${file}`;
+                body += `- [${file}](${fileUrl})\n`;
+              }
+              body += '\n💾 Reports have been committed to the `Analysis/` directory in this PR.\n';
+            } else {
+              body += '### 📄 Reports:\n';
+              for (const file of files) {
+                body += `- ${file}\n`;
+              }
+              body += '\n⚠️ This PR is from a fork, so reports cannot be committed automatically.\n';
+            }
+
+            body += '\n---\n\n';
+            body += `📥 **[Download full reports (artifacts)](${context.payload.repository.html_url}/actions/runs/${context.runId})**\n\n`;
+
+            // Add status based on critical issues
+            const hasCriticals = '${{ steps.run-analyzer.outputs.has_criticals }}' === 'true';
+            if (hasCriticals) {
+              body += '\n## ❌ Status: CRITICAL ISSUES FOUND\n\n';
+              body += '**This PR cannot be merged until critical issues are resolved.**\n';
+              body += 'Please review the reports above and fix the identified issues.\n';
+            } else {
+              body += '\n## ✅ Status: NO CRITICAL ISSUES\n\n';
+              body += '**This PR is safe to merge** (based on automated analysis).\n';
+            }
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: body
+            });
+
+      - name: Block merge if critical issues found
+        if: always()
+        run: |
+          if [ "${{ steps.run-analyzer.outputs.has_criticals }}" = "true" ]; then
+            echo "::error::❌ BLOCKING MERGE - Critical issues found in analysis reports"
+            echo "Critical issues detected - failing workflow"
+            exit 1
+          else
+            echo "✅ No critical issues - merge allowed"
+            exit 0
+          fi

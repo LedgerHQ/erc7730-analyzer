@@ -4,7 +4,6 @@ on:
   pull_request:
     paths:
       - '**/calldata-*.json'
-      - 'Analysis/**'
 
 jobs:
   analyze:

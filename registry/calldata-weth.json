@@ -13,7 +13,7 @@
   "metadata": { "owner": "WETH" },
   "display": { 
     "formats": {
-      "deposit()": {
+      "deposit()": { 
         "intent": "Wrap", 
         "fields": []
       }

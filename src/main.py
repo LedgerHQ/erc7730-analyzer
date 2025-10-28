@@ -12,12 +12,13 @@ This script orchestrates the analysis workflow:
 import argparse
 import logging
 import os
+import sys
 from pathlib import Path
 from datetime import datetime
 from dotenv import load_dotenv
 
 from utils.analyzer import ERC7730Analyzer
-from utils.reporter import generate_summary_file, generate_criticals_report, save_json_results
+from utils.reporter import generate_summary_file, generate_criticals_report, save_json_results, parse_first_report
 
 # Load environment variables
 load_dotenv(override=True)
@@ -145,8 +146,30 @@ Priority: Command-line arguments > Environment variables > Defaults
     logger.info(f"JSON results: {json_output}")
     logger.info(f"{'='*60}\n")
 
-    return results
+    # Check if there are any critical issues by parsing audit reports
+    has_critical_issues = False
+    critical_count = 0
+
+    for selector, selector_data in results.get('selectors', {}).items():
+        audit_report = selector_data.get('audit_report', '')
+        if audit_report:
+            # Parse the FIRST REPORT section (same logic as reporter.py)
+            critical_issues, _ = parse_first_report(audit_report)
+            if critical_issues:
+                has_critical_issues = True
+                critical_count += 1
+                logger.warning(f"⚠️  Selector {selector}: {len(critical_issues)} critical issue(s) found")
+
+    # Return exit code based on critical issues
+    if has_critical_issues:
+        logger.error(f"\n❌ CRITICAL ISSUES FOUND: {critical_count} function(s) have critical issues")
+        logger.error("Analysis failed - PR merge should be blocked")
+        return 1
+    else:
+        logger.info("\n✅ NO CRITICAL ISSUES - All functions passed analysis")
+        logger.info("Analysis passed - PR merge is allowed")
+        return 0
 
 
 if __name__ == '__main__':
-    main()
+    sys.exit(main())

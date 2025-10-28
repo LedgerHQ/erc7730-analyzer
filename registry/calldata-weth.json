@@ -16,11 +16,6 @@
       "deposit()": {
         "intent": "Wrap", 
         "fields": [
-          {
-            "path": "@.value",
-            "label": "Amount",
-            "format": "amount"
-          }
         ]
       }
     }

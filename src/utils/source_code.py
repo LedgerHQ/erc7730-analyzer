@@ -863,7 +863,7 @@ class SourceCodeExtractor:
             'function': target_function['body'],
             'function_docstring': target_function.get('docstring'),
             'structs': [],
-            'internal_functions': [],
+            'internal_functions': [],  # Will store dicts with 'body' and 'docstring'
             'enums': [],
             'constants': [],
             'total_lines': target_function['line_count'],
@@ -889,7 +889,10 @@ class SourceCodeExtractor:
         for internal_call in internal_calls:
             for func_data in extracted_code['internal_functions'].values():
                 if func_data['name'] == internal_call:
-                    result['internal_functions'].append(func_data['body'])
+                    result['internal_functions'].append({
+                        'body': func_data['body'],
+                        'docstring': func_data.get('docstring')
+                    })
                     all_code_to_scan.append(func_data['body'])  # Scan internal functions for constants too
                     result['total_lines'] += func_data['line_count']
 
@@ -922,7 +925,10 @@ class SourceCodeExtractor:
                 for func_data in extracted_code['internal_functions'].values():
                     if func_data['name'] == func_name:
                         # Found the library function
-                        result['internal_functions'].append(func_data['body'])
+                        result['internal_functions'].append({
+                            'body': func_data['body'],
+                            'docstring': func_data.get('docstring')
+                        })
                         all_code_to_scan.append(func_data['body'])
                         result['total_lines'] += func_data['line_count']
                         logger.info(f"    ✓ Found library function {lib_call}")
@@ -947,7 +953,10 @@ class SourceCodeExtractor:
                     for func_sig, func_data in all_funcs.items():
                         if func_data['name'] == func_name:
                             lib_func_body = func_data['body']
-                            result['internal_functions'].append(lib_func_body)
+                            result['internal_functions'].append({
+                                'body': lib_func_body,
+                                'docstring': func_data.get('docstring')
+                            })
                             all_code_to_scan.append(lib_func_body)
                             result['total_lines'] += func_data['line_count']
                             logger.info(f"    ✓ Found library function {lib_call} via full source search")
@@ -1021,10 +1030,10 @@ class SourceCodeExtractor:
             else:
                 # Truncate internal functions
                 truncated_internals = []
-                for internal_func in result['internal_functions']:
-                    func_lines = internal_func.count('\n') + 1
+                for internal_func_data in result['internal_functions']:
+                    func_lines = internal_func_data['body'].count('\n') + 1
                     if available_lines >= func_lines:
-                        truncated_internals.append(internal_func)
+                        truncated_internals.append(internal_func_data)
                         available_lines -= func_lines
                     else:
                         break

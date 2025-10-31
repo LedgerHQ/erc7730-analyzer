@@ -245,36 +245,79 @@ class ERC7730Analyzer:
             'selectors': {}
         }
 
+        # First, identify which selectors are payable by checking their ABI
+        logger.info(f"\n{'='*60}")
+        logger.info(f"Identifying payable functions...")
+        logger.info(f"{'='*60}")
+
+        payable_selectors = set()
+        for selector in selectors:
+            function_data = self.get_function_abi_by_selector(selector)
+            if function_data and function_data.get('stateMutability') == 'payable':
+                payable_selectors.add(selector.lower())
+                logger.info(f"Function {function_data['name']} ({selector}) is payable")
+
+        if payable_selectors:
+            logger.info(f"Found {len(payable_selectors)} payable function(s)")
+
         # Fetch transactions for ALL selectors at once
         logger.info(f"\n{'='*60}")
         logger.info(f"Fetching transactions for all {len(selectors)} selectors at once...")
         logger.info(f"{'='*60}")
 
-        all_selector_txs = {}
-        used_deployment = None
+        # Initialize transaction storage and track which selectors still need txs
+        all_selector_txs = {s.lower(): [] for s in selectors}
+        selectors_needing_txs = set(s.lower() for s in selectors)
+        deployment_per_selector = {}  # Track which deployment was used for each selector
 
-        # Try each deployment until we find transactions
+        # Try each deployment, continuing to search for selectors that don't have transactions yet
         for deployment in deployments:
+            if not selectors_needing_txs:
+                # All selectors have transactions, no need to continue
+                break
+
             contract_address = deployment['address']
             chain_id = deployment['chainId']
             logger.info(f"Trying deployment: {contract_address} on chain {chain_id}")
+            logger.info(f"  Looking for transactions for {len(selectors_needing_txs)} remaining selector(s)")
 
-            all_selector_txs = self.tx_fetcher.fetch_all_transactions_for_selectors(
+            # Fetch transactions only for selectors that don't have any yet
+            deployment_txs = self.tx_fetcher.fetch_all_transactions_for_selectors(
                 contract_address,
-                selectors,
+                list(selectors_needing_txs),
                 chain_id,
-                per_selector=5
+                per_selector=5,
+                payable_selectors=payable_selectors
             )
 
-            # Check if we found any transactions
-            if any(len(txs) > 0 for txs in all_selector_txs.values()):
-                used_deployment = deployment
-                logger.info(f"Using deployment {contract_address} on chain {chain_id}")
-                break
+            # Update results for selectors that found transactions
+            for selector, txs in deployment_txs.items():
+                if txs and selector in selectors_needing_txs:
+                    all_selector_txs[selector] = txs
+                    selectors_needing_txs.remove(selector)
+                    deployment_per_selector[selector] = deployment
+                    logger.info(f"  ✓ Found {len(txs)} transaction(s) for {selector} on chain {chain_id}")
+
+        # Log final results
+        found_count = len([s for s, txs in all_selector_txs.items() if txs])
+        not_found_count = len(selectors_needing_txs)
+
+        logger.info(f"\n{'='*60}")
+        logger.info(f"Transaction search complete:")
+        logger.info(f"  ✓ {found_count} selector(s) with transactions")
+        if not_found_count > 0:
+            logger.warning(f"  ⚠ {not_found_count} selector(s) without transactions: {list(selectors_needing_txs)}")
+        logger.info(f"{'='*60}\n")
+
+        # Use the first deployment that had transactions for source code extraction
+        used_deployment = deployment_per_selector.get(next(iter(deployment_per_selector), None)) if deployment_per_selector else deployments[0] if deployments else None
 
         if not used_deployment:
             logger.warning("No transactions found across all deployments")
-            return results
+            # Continue anyway for static analysis
+            used_deployment = deployments[0] if deployments else None
+            if not used_deployment:
+                return results
 
         # Extract source code once at the beginning
         if self.enable_source_code and self.source_extractor:
@@ -319,10 +362,13 @@ class ERC7730Analyzer:
             # Get the pre-fetched transactions for this selector
             transactions = all_selector_txs.get(selector.lower(), [])
 
+            # Get the deployment used for this selector (for chain_id and contract_address)
+            selector_deployment = deployment_per_selector.get(selector.lower(), used_deployment)
+
             if not transactions:
                 logger.warning(f"No transactions found for selector {selector} - will perform static analysis only")
             else:
-                logger.info(f"Found {len(transactions)} transactions for selector {selector}")
+                logger.info(f"Found {len(transactions)} transactions for selector {selector} on chain {selector_deployment['chainId']}")
 
             # Decode each transaction
             decoded_txs = []
@@ -349,7 +395,7 @@ class ERC7730Analyzer:
                     logger.info(f"Fetching receipt for transaction {tx['hash']}")
                     receipt = self.tx_fetcher.fetch_transaction_receipt(
                         tx['hash'],
-                        used_deployment['chainId']
+                        selector_deployment['chainId']
                     )
 
                     if receipt and receipt.get('logs'):
@@ -357,7 +403,7 @@ class ERC7730Analyzer:
                         for log in receipt['logs']:
                             decoded_log = self.tx_fetcher.decode_log_event(
                                 log,
-                                used_deployment['chainId']
+                                selector_deployment['chainId']
                             )
                             if decoded_log:
                                 decoded_logs.append(decoded_log)
@@ -442,7 +488,10 @@ class ERC7730Analyzer:
                         if function_source['internal_functions']:
                             code_block += "\n\n// Internal functions called:\n"
                             for internal_func in function_source['internal_functions']:
-                                code_block += f"{internal_func}\n"
+                                # Format internal function with docstring and body
+                                if internal_func.get('docstring'):
+                                    code_block += f"{internal_func['docstring']}\n"
+                                code_block += f"{internal_func['body']}\n\n"
 
                         code_block += f"\n{'='*60}\n"
 
@@ -499,8 +548,8 @@ class ERC7730Analyzer:
             results['selectors'][selector] = {
                 'function_name': function_name,
                 'function_signature': function_data['signature'],
-                'contract_address': used_deployment['address'],
-                'chain_id': used_deployment['chainId'],
+                'contract_address': selector_deployment['address'],
+                'chain_id': selector_deployment['chainId'],
                 'transactions': decoded_txs,
                 'erc7730_format': erc7730_format,
                 'audit_report': audit_report

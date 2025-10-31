@@ -18,6 +18,16 @@ from web3 import Web3
 logger = logging.getLogger(__name__)
 
 
+# Blockscout API endpoints for chains that don't use Etherscan
+# Note: These use Blockscout v2 API with different structure than Etherscan
+BLOCKSCOUT_URLS = {
+    44787: 'https://celo-alfajores.blockscout.com',  # Celo Alfajores Testnet
+    42220: 'https://celo.blockscout.com',             # Celo Mainnet
+    100: 'https://gnosis.blockscout.com',             # Gnosis Chain
+    # Add more as needed
+}
+
+
 class TransactionFetcher:
     """Handles fetching and decoding of transactions and receipts."""
 
@@ -34,20 +44,200 @@ class TransactionFetcher:
         self.w3 = Web3()
         self.token_decimals_cache = {}
         self.token_symbol_cache = {}
+        self.api_type_per_chain = {}  # Track which API worked for each chain
 
-    def get_block_by_timestamp(self, timestamp: int, closest: str, chain_id: int = 1) -> Optional[int]:
+    def _get_api_base_url(self, chain_id: int, use_blockscout: bool = False) -> str:
         """
-        Get block number by timestamp using Etherscan API.
+        Get the appropriate API base URL for a chain.
+
+        Args:
+            chain_id: Chain ID
+            use_blockscout: Force use of Blockscout API
+
+        Returns:
+            Base URL for API requests
+        """
+        chain_id = int(chain_id)  # Ensure it's an int
+        if use_blockscout and chain_id in BLOCKSCOUT_URLS:
+            return BLOCKSCOUT_URLS[chain_id]
+        return f"https://api.etherscan.io/v2/api?chainid={chain_id}"
+
+    def _get_current_block_number(self, chain_id: int, use_blockscout: bool = False) -> Optional[int]:
+        """
+        Get the current block number using eth_blockNumber.
+
+        Args:
+            chain_id: Chain ID
+            use_blockscout: Use Blockscout API instead of Etherscan
+
+        Returns:
+            Current block number or None if error
+        """
+        chain_id = int(chain_id)
+
+        # Use Blockscout v2 API if available
+        if use_blockscout and chain_id in BLOCKSCOUT_URLS:
+            stats = self._fetch_blockscout_v2_stats(chain_id)
+            if stats and 'total_blocks' in stats:
+                try:
+                    # total_blocks is a string like "60681962"
+                    block_number = int(stats['total_blocks'])
+                    return block_number
+                except (ValueError, TypeError):
+                    logger.debug("Failed to parse block number from Blockscout v2 stats")
+            return None
+
+        params = {
+            'module': 'proxy',
+            'action': 'eth_blockNumber',
+        }
+
+        # Etherscan requires API key
+        if not use_blockscout:
+            if not self.etherscan_api_key:
+                return None
+            params['apikey'] = self.etherscan_api_key
+
+        try:
+            base_url = self._get_api_base_url(chain_id, use_blockscout)
+            response = requests.get(base_url, params=params)
+            response.raise_for_status()
+            data = response.json()
+
+            if data.get('result'):
+                # Result is in hex format (0x...)
+                block_number = int(data['result'], 16)
+                return block_number
+            return None
+        except Exception as e:
+            logger.debug(f"Failed to get current block number: {e}")
+            return None
+
+    def _fetch_blockscout_v2_stats(self, chain_id: int) -> Optional[Dict[str, Any]]:
+        """
+        Fetch stats from Blockscout v2 API to get current block number.
+
+        Args:
+            chain_id: Chain ID
+
+        Returns:
+            Stats dictionary or None if error
+        """
+        chain_id = int(chain_id)
+        if chain_id not in BLOCKSCOUT_URLS:
+            return None
+
+        try:
+            base_url = BLOCKSCOUT_URLS[chain_id]
+            response = requests.get(f"{base_url}/api/v2/stats")
+            response.raise_for_status()
+            data = response.json()
+            return data
+        except Exception as e:
+            logger.debug(f"Failed to fetch Blockscout v2 stats: {e}")
+            return None
+
+    def _fetch_blockscout_v2_transactions(
+        self,
+        contract_address: str,
+        chain_id: int,
+        filter_type: str = "to"
+    ) -> Optional[List[Dict[str, Any]]]:
+        """
+        Fetch transactions from Blockscout v2 API.
+
+        Args:
+            contract_address: Contract address
+            chain_id: Chain ID
+            filter_type: "to", "from", or None for all transactions
+
+        Returns:
+            List of transactions or None if error
+        """
+        chain_id = int(chain_id)
+        if chain_id not in BLOCKSCOUT_URLS:
+            return None
+
+        try:
+            base_url = BLOCKSCOUT_URLS[chain_id]
+            url = f"{base_url}/api/v2/addresses/{contract_address}/transactions"
+            params = {}
+            if filter_type:
+                params['filter'] = filter_type
+
+            all_transactions = []
+            next_page_params = None
+            max_pages = 10  # Limit to prevent infinite loops
+
+            for _ in range(max_pages):
+                if next_page_params:
+                    response = requests.get(url, params=next_page_params)
+                else:
+                    response = requests.get(url, params=params)
+
+                response.raise_for_status()
+                data = response.json()
+
+                items = data.get('items', [])
+                all_transactions.extend(items)
+
+                # Check if there's a next page
+                next_page_params_raw = data.get('next_page_params')
+                if not next_page_params_raw:
+                    break
+
+                # Update params for next page
+                next_page_params = params.copy()
+                next_page_params.update(next_page_params_raw)
+
+                time.sleep(0.3)  # Rate limiting
+
+            logger.debug(f"Fetched {len(all_transactions)} transactions from Blockscout v2")
+            return all_transactions
+
+        except Exception as e:
+            logger.debug(f"Failed to fetch Blockscout v2 transactions: {e}")
+            return None
+
+    def _convert_blockscout_v2_to_etherscan_format(self, tx: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Convert Blockscout v2 transaction format to Etherscan format.
+
+        Args:
+            tx: Blockscout v2 transaction
+
+        Returns:
+            Transaction in Etherscan format
+        """
+        return {
+            'hash': tx.get('hash', ''),
+            'blockNumber': str(tx.get('block', 0)),
+            'timeStamp': str(tx.get('timestamp', '')),
+            'from': tx.get('from', {}).get('hash', ''),
+            'to': tx.get('to', {}).get('hash', '') if tx.get('to') else '',
+            'value': str(tx.get('value', '0')),
+            'input': tx.get('raw_input', ''),
+            'isError': '0' if tx.get('status') == 'ok' else '1',
+            'gasUsed': str(tx.get('gas_used', '0')),
+            'gasPrice': str(tx.get('gas_price', '0')),
+        }
+
+    def get_block_by_timestamp(self, timestamp: int, closest: str, chain_id: int = 1, use_blockscout: bool = False) -> Optional[int]:
+        """
+        Get block number by timestamp using Etherscan or Blockscout API.
 
         Args:
             timestamp: Unix timestamp
             closest: "before" or "after"
             chain_id: Chain ID
+            use_blockscout: Use Blockscout API instead of Etherscan
 
         Returns:
             Block number or None if error
         """
-        if not self.etherscan_api_key:
+        chain_id = int(chain_id)  # Ensure it's an int
+
+        if not self.etherscan_api_key and not use_blockscout:
             return None
 
         params = {
@@ -55,11 +245,14 @@ class TransactionFetcher:
             'action': 'getblocknobytime',
             'timestamp': timestamp,
             'closest': closest,
-            'apikey': self.etherscan_api_key
         }
 
+        # Blockscout doesn't require API key
+        if not use_blockscout:
+            params['apikey'] = self.etherscan_api_key
+
         try:
-            base_url = f"https://api.etherscan.io/v2/api?chainid={chain_id}"
+            base_url = self._get_api_base_url(chain_id, use_blockscout)
             response = requests.get(base_url, params=params)
             response.raise_for_status()
             data = response.json()
@@ -67,10 +260,10 @@ class TransactionFetcher:
             if data['status'] == '1':
                 return int(data['result'])
             else:
-                logger.warning(f"Could not get block by timestamp: {data.get('message', 'Unknown error')}")
+                logger.debug(f"Could not get block by timestamp: {data.get('message', 'Unknown error')}")
                 return None
         except Exception as e:
-            logger.warning(f"Failed to get block by timestamp: {e}")
+            logger.debug(f"Failed to get block by timestamp: {e}")
             return None
 
     def fetch_all_transactions_for_selectors(
@@ -81,11 +274,17 @@ class TransactionFetcher:
         per_selector: int = 5,
         window_size: int = 10000,
         page_size: int = 1000,
-        max_retries: int = 3
+        max_retries: int = 3,
+        payable_selectors: set = None
     ) -> Dict[str, List[Dict[str, Any]]]:
         """
         Efficiently fetch transactions for MULTIPLE selectors at once.
         Fetches each Etherscan page ONCE and distributes matches to all selectors.
+
+        For payable functions, tries to fetch diverse transaction samples:
+        - At least 1 transaction with msg.value > 0 (native ETH transfer)
+        - At least 1 transaction with msg.value = 0 (ERC20 transfer)
+        If both types aren't available, uses whatever transactions are found.
 
         Args:
             contract_address: Contract address
@@ -95,6 +294,7 @@ class TransactionFetcher:
             window_size: Number of blocks per window
             page_size: Number of transactions per page
             max_retries: Maximum retry attempts per request
+            payable_selectors: Set of selectors that are payable functions
 
         Returns:
             Dictionary mapping selector -> list of transaction dictionaries
@@ -103,34 +303,295 @@ class TransactionFetcher:
             logger.warning("No block explorer API key provided, cannot fetch transactions")
             return {s: [] for s in selectors}
 
-        logger.info(f"Fetching transactions for {len(selectors)} selectors on chain {chain_id}")
+        if payable_selectors is None:
+            payable_selectors = set()
+
+        # Ensure chain_id is an int for dictionary lookups
+        chain_id = int(chain_id)
+
+        # Try Etherscan first, then Blockscout as fallback
+        for api_attempt, use_blockscout in enumerate([False, True]):
+            # Skip Blockscout attempt if chain doesn't have Blockscout support
+            if use_blockscout and chain_id not in BLOCKSCOUT_URLS:
+                continue
+
+            api_name = "Blockscout" if use_blockscout else "Etherscan"
+            if api_attempt > 0:
+                logger.info(f"Switching to {api_name} API for chain {chain_id}")
+
+            logger.info(f"Fetching transactions for {len(selectors)} selectors on chain {chain_id} using {api_name}")
+            if payable_selectors:
+                logger.info(f"  - {len(payable_selectors)} payable function(s) - will fetch diverse samples")
+
+            result = self._fetch_transactions_with_api(
+                contract_address,
+                selectors,
+                chain_id,
+                per_selector,
+                window_size,
+                page_size,
+                max_retries,
+                payable_selectors,
+                use_blockscout
+            )
+
+            # Check if we got any transactions
+            if any(len(txs) > 0 for txs in result.values()):
+                logger.info(f"✓ Successfully found transactions using {api_name}")
+                self.api_type_per_chain[chain_id] = api_name
+                return result
+
+            # No transactions found with this API
+            logger.warning(f"No transactions found using {api_name} for chain {chain_id}")
+
+            # If this was Etherscan and Blockscout is available, try Blockscout next
+            if not use_blockscout:
+                if chain_id in BLOCKSCOUT_URLS:
+                    logger.info(f"Chain {chain_id} has Blockscout support - will try Blockscout next")
+                    continue  # Try next iteration (Blockscout)
+                else:
+                    logger.info(f"Chain {chain_id} has no Blockscout support - giving up")
+                    break
+            else:
+                # This was Blockscout and it also failed
+                logger.info(f"Both Etherscan and Blockscout failed for chain {chain_id}")
+                break
+
+        logger.warning(f"No transactions found for any selector on chain {chain_id}")
+        return {s.lower(): [] for s in selectors}
+
+    def _fetch_transactions_blockscout_v2(
+        self,
+        contract_address: str,
+        selectors: List[str],
+        chain_id: int,
+        per_selector: int,
+        payable_selectors: set
+    ) -> Dict[str, List[Dict[str, Any]]]:
+        """
+        Fetch transactions using Blockscout v2 API.
+
+        Args:
+            contract_address: Contract address
+            selectors: List of function selectors
+            chain_id: Chain ID
+            per_selector: Number of transactions per selector
+            payable_selectors: Set of payable selectors
+
+        Returns:
+            Dictionary mapping selector -> list of transactions
+        """
+        chain_id = int(chain_id)
 
         # Initialize result dict with lowercase selectors
         selector_txs = {s.lower(): [] for s in selectors}
         selector_wanted = {s.lower(): per_selector for s in selectors}
+
+        # For payable selectors, track native ETH and ERC20 transactions separately
+        selector_native_txs = {s.lower(): [] for s in payable_selectors}
+        selector_erc20_txs = {s.lower(): [] for s in payable_selectors}
+
+        # Fetch transactions from Blockscout v2
+        blockscout_txs = self._fetch_blockscout_v2_transactions(
+            contract_address,
+            chain_id,
+            filter_type="to"
+        )
+
+        if not blockscout_txs:
+            logger.warning("No transactions found from Blockscout v2 API")
+            return selector_txs
+
+        total_txs_scanned = 0
+
+        # Process each transaction and distribute to selectors
+        for tx in blockscout_txs:
+            # Convert to Etherscan format
+            etherscan_tx = self._convert_blockscout_v2_to_etherscan_format(tx)
+
+            # Skip failed transactions
+            if etherscan_tx.get('isError') != '0':
+                continue
+
+            inp = etherscan_tx.get('input', '')
+            if len(inp) < 10:
+                continue
+
+            total_txs_scanned += 1
+
+            # Check if this transaction matches any selector we're looking for
+            tx_selector = inp[:10].lower()
+            if tx_selector in selector_txs:
+                # For payable selectors, categorize by value
+                if tx_selector in payable_selectors:
+                    native_count = len(selector_native_txs[tx_selector])
+                    erc20_count = len(selector_erc20_txs[tx_selector])
+                    total_count = native_count + erc20_count
+
+                    # Skip if we already have enough
+                    if total_count >= selector_wanted[tx_selector]:
+                        continue
+
+                    # Determine if this is a native ETH or ERC20 transaction
+                    tx_value = int(etherscan_tx.get('value', '0'))
+                    is_native = tx_value > 0
+
+                    if is_native:
+                        selector_native_txs[tx_selector].append(etherscan_tx)
+                        logger.debug(f"Found native ETH tx for {tx_selector}: {etherscan_tx.get('hash')} (value: {tx_value})")
+                    else:
+                        selector_erc20_txs[tx_selector].append(etherscan_tx)
+                        logger.debug(f"Found ERC20 tx for {tx_selector}: {etherscan_tx.get('hash')}")
+                else:
+                    # For non-payable selectors, just add normally
+                    if len(selector_txs[tx_selector]) < selector_wanted[tx_selector]:
+                        selector_txs[tx_selector].append(etherscan_tx)
+                        logger.debug(f"Found match for {tx_selector}: {etherscan_tx.get('hash')}")
+
+        # Combine native and ERC20 transactions for payable selectors
+        for sel in payable_selectors:
+            native_txs = selector_native_txs[sel]
+            erc20_txs = selector_erc20_txs[sel]
+
+            # Strategy: Try to get at least 1 of each type if possible
+            combined = []
+
+            # First, add at least 1 native if available
+            if native_txs:
+                combined.append(native_txs[0])
+
+            # Then, add at least 1 ERC20 if available
+            if erc20_txs:
+                combined.append(erc20_txs[0])
+
+            # Fill remaining slots, alternating between native and ERC20
+            remaining_slots = selector_wanted[sel] - len(combined)
+            native_idx = 1
+            erc20_idx = 1
+
+            while remaining_slots > 0:
+                added = False
+
+                # Try to add a native tx
+                if native_idx < len(native_txs):
+                    combined.append(native_txs[native_idx])
+                    native_idx += 1
+                    remaining_slots -= 1
+                    added = True
+
+                # Try to add an ERC20 tx
+                if remaining_slots > 0 and erc20_idx < len(erc20_txs):
+                    combined.append(erc20_txs[erc20_idx])
+                    erc20_idx += 1
+                    remaining_slots -= 1
+                    added = True
+
+                # If we couldn't add anything, break
+                if not added:
+                    break
+
+            selector_txs[sel] = combined
+
+        logger.info(f"Scanned {total_txs_scanned} total transactions from Blockscout v2")
+        for sel, tx_list in selector_txs.items():
+            if sel in payable_selectors:
+                native_count = sum(1 for tx in tx_list if int(tx.get('value', '0')) > 0)
+                erc20_count = len(tx_list) - native_count
+                logger.info(f"Selector {sel} (payable): found {len(tx_list)}/{selector_wanted[sel]} transactions ({native_count} native ETH, {erc20_count} ERC20)")
+            else:
+                logger.info(f"Selector {sel}: found {len(tx_list)}/{selector_wanted[sel]} transactions")
+
+        return selector_txs
+
+    def _fetch_transactions_with_api(
+        self,
+        contract_address: str,
+        selectors: List[str],
+        chain_id: int,
+        per_selector: int,
+        window_size: int,
+        page_size: int,
+        max_retries: int,
+        payable_selectors: set,
+        use_blockscout: bool = False
+    ) -> Dict[str, List[Dict[str, Any]]]:
+        """
+        Internal method to fetch transactions using either Etherscan or Blockscout API.
+
+        Returns:
+            Dictionary mapping selector -> list of transactions
+        """
+        chain_id = int(chain_id)  # Ensure it's an int
+
+        # If using Blockscout v2, use the new API
+        if use_blockscout and chain_id in BLOCKSCOUT_URLS:
+            return self._fetch_transactions_blockscout_v2(
+                contract_address,
+                selectors,
+                chain_id,
+                per_selector,
+                payable_selectors
+            )
+
+        # Initialize result dict with lowercase selectors
+        selector_txs = {s.lower(): [] for s in selectors}
+        selector_wanted = {s.lower(): per_selector for s in selectors}
+
+        # For payable selectors, track native ETH and ERC20 transactions separately
+        selector_native_txs = {s.lower(): [] for s in payable_selectors}
+        selector_erc20_txs = {s.lower(): [] for s in payable_selectors}
 
         # Get block range for the lookback period
         now = int(time.time())
         lookback_ago = now - self.lookback_days * 24 * 60 * 60
         logger.info(f"Looking back {self.lookback_days} days for transaction history")
 
-        start_block = self.get_block_by_timestamp(lookback_ago, "after", chain_id)
-        end_block = self.get_block_by_timestamp(now, "before", chain_id)
+        start_block = self.get_block_by_timestamp(lookback_ago, "after", chain_id, use_blockscout)
+        end_block = self.get_block_by_timestamp(now, "before", chain_id, use_blockscout)
 
         if not start_block or not end_block:
-            logger.warning("Could not determine block range, using fallback")
-            end_block = 99999999
-            start_block = max(0, end_block - 2500000)
+            logger.warning("Could not determine block range, fetching current block number")
+            # Try to get current block number from the API
+            current_block = self._get_current_block_number(chain_id, use_blockscout)
+            if current_block:
+                end_block = current_block
+                # Look back by reasonable number of blocks (assuming ~5 sec blocks, 20 days = ~345k blocks)
+                blocks_to_lookback = self.lookback_days * 24 * 60 * 12  # 12 blocks per minute
+                start_block = max(0, end_block - blocks_to_lookback)
+                logger.info(f"Using current block {current_block}, looking back {blocks_to_lookback} blocks")
+            else:
+                logger.warning("Could not get current block, using conservative fallback")
+                # Very conservative fallback - assume chain has at most 30M blocks
+                end_block = 30000000
+                start_block = max(0, end_block - 2500000)
 
         logger.info(f"Searching for transactions between blocks {start_block} and {end_block}")
 
-        base_url = f"https://api.etherscan.io/v2/api?chainid={chain_id}"
+        base_url = self._get_api_base_url(chain_id, use_blockscout)
         max_pages = 10000 // page_size
         total_txs_scanned = 0
+        consecutive_failures = 0  # Track consecutive API failures for early abort
+        MAX_CONSECUTIVE_FAILURES = 5  # Abort after 5 consecutive failures
 
         def all_done() -> bool:
             """Check if we have enough samples for all selectors"""
-            return all(len(txs) >= selector_wanted[sel] for sel, txs in selector_txs.items())
+            for sel, txs in selector_txs.items():
+                if sel in payable_selectors:
+                    # For payable selectors, check if we have diverse samples
+                    # We want at least 1 native and 1 ERC20, if possible
+                    native_count = len(selector_native_txs[sel])
+                    erc20_count = len(selector_erc20_txs[sel])
+                    total_needed = selector_wanted[sel]
+
+                    # Ideal: at least 1 of each type, and total meets requirement
+                    has_enough = (native_count + erc20_count) >= total_needed
+                    if not has_enough:
+                        return False
+                else:
+                    # For non-payable selectors, just check total count
+                    if len(txs) < selector_wanted[sel]:
+                        return False
+            return True
 
         # Walk windows from newest to oldest
         block_high = end_block
@@ -155,8 +616,11 @@ class TransactionFetcher:
                     'sort': 'desc',
                     'page': page,
                     'offset': page_size,
-                    'apikey': self.etherscan_api_key
                 }
+
+                # Blockscout doesn't require API key
+                if not use_blockscout:
+                    params['apikey'] = self.etherscan_api_key
 
                 # Retry logic
                 txs = None
@@ -169,20 +633,38 @@ class TransactionFetcher:
                         if data['status'] != '1':
                             if 'No transactions found' in data.get('message', ''):
                                 txs = []
+                                consecutive_failures = 0  # Reset on successful response (even if no txs)
                                 break
                             if 'Result window is too large' in data.get('message', ''):
                                 logger.info(f"Hit page limit at page {page}, moving to next window")
                                 txs = []
+                                consecutive_failures = 0
                                 break
-                            logger.warning(f"Etherscan API warning: {data.get('message', 'Unknown error')}")
+                            # NOTOK or other errors
+                            consecutive_failures += 1
+                            logger.warning(f"API warning: {data.get('message', 'Unknown error')} (failure {consecutive_failures}/{MAX_CONSECUTIVE_FAILURES})")
+
+                            # Early abort if too many consecutive failures
+                            if consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
+                                logger.warning(f"Aborting after {consecutive_failures} consecutive API failures - API likely not supported for chain {chain_id}")
+                                return selector_txs
+
                             txs = []
                             break
 
                         txs = data['result']
+                        consecutive_failures = 0  # Reset on success
                         break
                     except Exception as e:
+                        consecutive_failures += 1
                         if attempt + 1 == max_retries:
                             logger.error(f"Failed to fetch transactions after {max_retries} attempts: {e}")
+
+                            # Check if we should abort entirely
+                            if consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
+                                logger.warning(f"Aborting due to repeated failures")
+                                return selector_txs
+
                             logger.info(f"Scanned {total_txs_scanned} total transactions before error")
                             for sel, tx_list in selector_txs.items():
                                 logger.info(f"Selector {sel}: found {len(tx_list)}/{selector_wanted[sel]} transactions")
@@ -205,9 +687,32 @@ class TransactionFetcher:
 
                     # Check if this transaction matches any selector we're looking for
                     tx_selector = inp[:10].lower()
-                    if tx_selector in selector_txs and len(selector_txs[tx_selector]) < selector_wanted[tx_selector]:
-                        selector_txs[tx_selector].append(tx)
-                        logger.debug(f"Found match for {tx_selector}: {tx.get('hash')}")
+                    if tx_selector in selector_txs:
+                        # For payable selectors, categorize by value
+                        if tx_selector in payable_selectors:
+                            native_count = len(selector_native_txs[tx_selector])
+                            erc20_count = len(selector_erc20_txs[tx_selector])
+                            total_count = native_count + erc20_count
+
+                            # Skip if we already have enough
+                            if total_count >= selector_wanted[tx_selector]:
+                                continue
+
+                            # Determine if this is a native ETH or ERC20 transaction
+                            tx_value = int(tx.get('value', '0'))
+                            is_native = tx_value > 0
+
+                            if is_native:
+                                selector_native_txs[tx_selector].append(tx)
+                                logger.debug(f"Found native ETH tx for {tx_selector}: {tx.get('hash')} (value: {tx_value})")
+                            else:
+                                selector_erc20_txs[tx_selector].append(tx)
+                                logger.debug(f"Found ERC20 tx for {tx_selector}: {tx.get('hash')}")
+                        else:
+                            # For non-payable selectors, just add normally
+                            if len(selector_txs[tx_selector]) < selector_wanted[tx_selector]:
+                                selector_txs[tx_selector].append(tx)
+                                logger.debug(f"Found match for {tx_selector}: {tx.get('hash')}")
 
                 # If we got fewer transactions than page_size, no more pages in this window
                 if len(txs) < page_size:
@@ -220,9 +725,59 @@ class TransactionFetcher:
             block_high = block_low - 1
             time.sleep(0.2)
 
+        # Combine native and ERC20 transactions for payable selectors
+        for sel in payable_selectors:
+            native_txs = selector_native_txs[sel]
+            erc20_txs = selector_erc20_txs[sel]
+
+            # Strategy: Try to get at least 1 of each type if possible
+            # Then fill remaining slots with whatever is available
+            combined = []
+
+            # First, add at least 1 native if available
+            if native_txs:
+                combined.append(native_txs[0])
+
+            # Then, add at least 1 ERC20 if available
+            if erc20_txs:
+                combined.append(erc20_txs[0])
+
+            # Fill remaining slots, alternating between native and ERC20
+            remaining_slots = selector_wanted[sel] - len(combined)
+            native_idx = 1  # Start from index 1 since we already took index 0
+            erc20_idx = 1
+
+            while remaining_slots > 0:
+                added = False
+
+                # Try to add a native tx
+                if native_idx < len(native_txs):
+                    combined.append(native_txs[native_idx])
+                    native_idx += 1
+                    remaining_slots -= 1
+                    added = True
+
+                # Try to add an ERC20 tx
+                if remaining_slots > 0 and erc20_idx < len(erc20_txs):
+                    combined.append(erc20_txs[erc20_idx])
+                    erc20_idx += 1
+                    remaining_slots -= 1
+                    added = True
+
+                # If we couldn't add anything, break
+                if not added:
+                    break
+
+            selector_txs[sel] = combined
+
         logger.info(f"Scanned {total_txs_scanned} total transactions")
         for sel, tx_list in selector_txs.items():
-            logger.info(f"Selector {sel}: found {len(tx_list)}/{selector_wanted[sel]} transactions")
+            if sel in payable_selectors:
+                native_count = sum(1 for tx in tx_list if int(tx.get('value', '0')) > 0)
+                erc20_count = len(tx_list) - native_count
+                logger.info(f"Selector {sel} (payable): found {len(tx_list)}/{selector_wanted[sel]} transactions ({native_count} native ETH, {erc20_count} ERC20)")
+            else:
+                logger.info(f"Selector {sel}: found {len(tx_list)}/{selector_wanted[sel]} transactions")
 
         return selector_txs
 
@@ -232,7 +787,7 @@ class TransactionFetcher:
         chain_id: int = 1
     ) -> Optional[Dict[str, Any]]:
         """
-        Fetch transaction receipt from Etherscan.
+        Fetch transaction receipt from Etherscan or Blockscout.
 
         Args:
             tx_hash: Transaction hash
@@ -241,19 +796,67 @@ class TransactionFetcher:
         Returns:
             Transaction receipt or None if error
         """
+        chain_id = int(chain_id)  # Ensure it's an int
+
         if not self.etherscan_api_key:
-            logger.warning("No Etherscan API key provided, cannot fetch receipt")
+            logger.warning("No API key provided, cannot fetch receipt")
             return None
 
+        # Use the API that worked for this chain
+        use_blockscout = self.api_type_per_chain.get(chain_id) == "Blockscout"
+
+        # For Blockscout v2, get the transaction details which include logs
+        if use_blockscout and chain_id in BLOCKSCOUT_URLS:
+            try:
+                base_url = BLOCKSCOUT_URLS[chain_id]
+                url = f"{base_url}/api/v2/transactions/{tx_hash}"
+                response = requests.get(url)
+                response.raise_for_status()
+                data = response.json()
+
+                # Convert Blockscout v2 format to Etherscan receipt format
+                if data:
+                    receipt = {
+                        'transactionHash': data.get('hash', ''),
+                        'blockNumber': hex(data.get('block', 0)),
+                        'from': data.get('from', {}).get('hash', ''),
+                        'to': data.get('to', {}).get('hash', '') if data.get('to') else '',
+                        'gasUsed': hex(int(data.get('gas_used', '0'))),
+                        'status': '0x1' if data.get('status') == 'ok' else '0x0',
+                        'logs': []
+                    }
+
+                    # Convert logs format if available
+                    if 'logs' in data:
+                        for log in data['logs']:
+                            receipt['logs'].append({
+                                'address': log.get('address', {}).get('hash', '') if isinstance(log.get('address'), dict) else log.get('address', ''),
+                                'topics': log.get('topics', []),
+                                'data': log.get('data', '0x')
+                            })
+
+                    logger.debug(f"Successfully fetched receipt for {tx_hash} from Blockscout v2")
+                    return receipt
+                else:
+                    logger.warning(f"No receipt found for {tx_hash}")
+                    return None
+            except Exception as e:
+                logger.error(f"Failed to fetch receipt from Blockscout v2 for {tx_hash}: {e}")
+                return None
+
+        # Use Etherscan API
         params = {
             'module': 'proxy',
             'action': 'eth_getTransactionReceipt',
             'txhash': tx_hash,
-            'apikey': self.etherscan_api_key
         }
 
+        # Etherscan requires API key
+        if not use_blockscout:
+            params['apikey'] = self.etherscan_api_key
+
         try:
-            base_url = f"https://api.etherscan.io/v2/api?chainid={chain_id}"
+            base_url = self._get_api_base_url(chain_id, use_blockscout)
             response = requests.get(base_url, params=params)
             response.raise_for_status()
             data = response.json()

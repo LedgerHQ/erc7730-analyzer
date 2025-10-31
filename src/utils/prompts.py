@@ -66,9 +66,13 @@ def generate_clear_signing_audit(
             source_code_section += "\n```\n\n"
 
             if source_code.get('internal_functions'):
-                source_code_section += "**Internal Functions Called:**\n```solidity\n"
-                source_code_section += "\n\n".join(source_code['internal_functions'])
-                source_code_section += "\n```\n\n"
+                source_code_section += "**Internal Functions Called:**\n"
+                for internal_func_data in source_code['internal_functions']:
+                    # Add docstring if available
+                    if internal_func_data.get('docstring'):
+                        source_code_section += f"```solidity\n{internal_func_data['docstring']}\n```\n\n"
+                    # Add function body
+                    source_code_section += f"```solidity\n{internal_func_data['body']}\n```\n\n"
 
             if source_code.get('truncated'):
                 source_code_section += "⚠️ **Note:** Source code was truncated to fit within limits. Focus on the main function.\n\n"
@@ -114,6 +118,52 @@ Compare these with what the user sees in ERC-7730 to ensure nothing is hidden or
 
 ---
 
+**ERC-7730 FORMAT TYPES SPECIFICATION:**
+
+All "format" fields in ERC-7730 MUST use one of these values:
+
+1. **"raw"** - Raw UINT parameter that cannot be linked to any specific type below
+   - Use when value is just a number with no special meaning
+
+2. **"amount"** - Amount in native currency (ETH)
+   - Use ONLY when you are CERTAIN the currency is Native ETH
+   - Commonly used with `"path": "@.value"` to show msg.value
+
+3. **"tokenAmount"** - Amount in ERC20 Token
+   - **REQUIRED PARAM**: MUST have `"tokenPath"` in params pointing to the token address parameter
+   - For native ETH support: MUST also have `"nativeCurrencyAddress"` in params (can be in field or $ref definition)
+   - Example: `{{"path": "_amount", "format": "tokenAmount", "params": {{"tokenPath": "_token", "nativeCurrencyAddress": ["$.metadata.constants.addressAsEth"]}}}}`
+
+4. **"nftName"** - ID of the NFT in the collection
+   - **REQUIRED PARAM**: MUST have `"collectionPath"` in params pointing to the NFT collection address
+   - Example: `{{"path": "_tokenId", "format": "nftName", "params": {{"collectionPath": "_collection"}}}}`
+
+5. **"addressName"** - Address parameter
+   - Use this format for ALL address parameters
+   - Example: `{{"path": "_recipient", "format": "addressName"}}`
+
+6. **"date"** - UINT representing a timestamp/date
+   - Use when parameter is a Unix timestamp
+   - Example: `{{"path": "_deadline", "format": "date"}}`
+
+7. **"duration"** - UINT representing a time duration
+   - Use when parameter represents a time period (seconds, days, etc.)
+   - Example: `{{"path": "_lockPeriod", "format": "duration"}}`
+
+8. **"enum"** - Value converted using referenced constant enumeration
+   - **REQUIRED PARAM**: MUST have path to enumeration in metadata.constants
+   - Path starts with root node `$.`
+   - Example: `{{"path": "_swapType", "format": "enum", "params": {{"$ref": "$.metadata.constants.swapTypes"}}}}`
+
+**CRITICAL VALIDATION RULES:**
+- If format is "tokenAmount" → MUST have "tokenPath" in params
+- If format is "nftName" → MUST have "collectionPath" in params
+- If format is "enum" → MUST reference a valid path in metadata.constants
+- Token addresses should be excluded from display when amount is shown with tokenPath reference
+- Always check both field params AND $ref definition params for required fields like nativeCurrencyAddress
+
+---
+
 FIRST REPORT: CRITICALS ONLY - BE ULTRA STRICT
 
 **CRITICAL = USER LOSES MONEY OR GETS WRONG TOKENS/AMOUNTS IN FINAL OUTCOME**
@@ -140,6 +190,12 @@ You MUST be EXTREMELY conservative. Only flag if a normal user would be shocked 
      * **Special transaction fields**: `@.from` = sender address, `@.value` = native currency value sent with tx
 6. **Broken `$ref` references** - Format references non-existent definitions/constants (display will fail)
 7. **Input parameter path mismatch** - ERC-7730 references a parameter path that doesn't exist in the ABI OR uses wrong path/name (e.g., format shows "_receiver" but ABI has "receiver", or shows "_tokens[0]" but should be "_swapData[0].token")
+7b. **Format validation failures**:
+   - **tokenAmount without tokenPath**: Field has `"format": "tokenAmount"` but missing `"tokenPath"` in params → CRITICAL
+   - **nftName without collectionPath**: Field has `"format": "nftName"` but missing `"collectionPath"` in params → CRITICAL
+   - **enum without constant reference**: Field has `"format": "enum"` but missing reference to metadata.constants → CRITICAL
+   - **Wrong format type**: Using wrong format (e.g., "amount" for ERC20 token, or "tokenAmount" without tokenPath)
+   - Check BOTH the field params AND any $ref definition params for these requirements
 8. **Native ETH handling in payable functions (for what the user sends and all functions even non payable for what he receives)** (this is critical and nuanced):
   - **IMPORTANT**: These rules apply to BOTH what the user SENDS and what the user RECEIVES
   - **HOW TO CHECK**: For EACH field that displays a token amount, check if that field OR its $ref definition has native ETH support
@@ -175,11 +231,11 @@ You MUST be EXTREMELY conservative. Only flag if a normal user would be shocked 
   - Only flag as critical if native ETH is actually being transferred AND display cannot show it
 8. **Amounts are displayed twice**
 9. **Spelling/grammar errors** in labels or intent
-10. **msg.value representation** - WHEN to use each approach:
+10. Labels and intents must not be longer than 20 characters
+11. **msg.value representation** - WHEN to use each approach:
    - **Use `@.value`**: When function ONLY accepts native ETH 
    - **Use input parameter**: When function has an amount parameter that EQUALS msg.value and can be also used for other tokens
    - **CRITICAL**: If payable function has no parameters AND no `@.value` field → user can't see amount being sent
-
 
 **CRITICAL REQUIREMENT - Can it be fixed with available input parameters?**
 - ONLY flag as CRITICAL if the missing/wrong information EXISTS in the function's input parameters
@@ -268,6 +324,12 @@ IMPORTANT: Keep the `>` blockquote format above.
 - Mismatch between displayed intent and actual token movements in logs
 - **Broken `$ref` references** - If format references `$.display.definitions.X` or `$.metadata.constants.Y` that don't exist, this is CRITICAL (display will fail)
 - **Input parameter path mismatch** - ERC-7730 references parameter paths that don't match the ABI (wrong names, wrong nesting, non-existent fields)
+- **Format validation failures**:
+  * **tokenAmount without tokenPath**: Field has `"format": "tokenAmount"` but missing `"tokenPath"` in params → CRITICAL
+  * **nftName without collectionPath**: Field has `"format": "nftName"` but missing `"collectionPath"` in params → CRITICAL
+  * **enum without constant reference**: Field has `"format": "enum"` but missing reference to metadata.constants → CRITICAL
+  * **Wrong format type**: Using wrong format (e.g., "amount" for ERC20 token, or "tokenAmount" without tokenPath)
+  * Check BOTH the field params AND any $ref definition params for these requirements
 - **Native ETH handling in payable functions (for what the user sends and all functions even non payable for what he receives)** (this is critical and nuanced):
   - **IMPORTANT**: These rules apply to BOTH what the user SENDS and what the user RECEIVES
   - **HOW TO CHECK**: For EACH field that displays a token amount, check if that field OR its $ref definition has native ETH support
@@ -307,6 +369,7 @@ IMPORTANT: Keep the `>` blockquote format above.
    - **Use `@.value`**: When function ONLY accepts native ETH 
    - **Use input parameter**: When function has an amount parameter that EQUALS msg.value and can be also used for other tokens
    - **CRITICAL**: If payable function has no parameters AND no `@.value` field → user can't see amount being sent
+- Labels and intents must not be longer than 20 characters
 
 List critical issues as bullet points. If none: **✅ No critical issues found**
 

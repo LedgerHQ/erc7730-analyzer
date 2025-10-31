@@ -335,6 +335,8 @@ def generate_summary_file(results: Dict, summary_file: Path):
 
         # Extract coverage and missing parameters info
         transactions = selector_data.get('transactions', [])
+
+        # Process selectors with OR without transactions
         if transactions:
             tx = transactions[0]
             decoded_input = tx.get('decoded_input', {})
@@ -398,6 +400,52 @@ def generate_summary_file(results: Dict, summary_file: Path):
                 minor_issues_list.append(issue_data)
             else:
                 no_issues_list.append(issue_data)
+        else:
+            # Selector without transactions - still include in report
+            # Extract information from AI audit report only
+            if audit_report:
+                risk_level = extract_risk_level(audit_report)
+                coverage_score = extract_coverage_score(audit_report)
+                critical_issues_from_ai = extract_critical_issues(audit_report)
+                ai_missing_params = extract_missing_parameters(audit_report)
+                display_issues_from_ai = extract_display_issues(audit_report)
+                recommendations = extract_recommendations(audit_report)
+            else:
+                risk_level = 'Unknown'
+                coverage_score = 'N/A'
+                critical_issues_from_ai = []
+                ai_missing_params = []
+                display_issues_from_ai = []
+                recommendations = []
+
+            issue_data = {
+                'selector': selector,
+                'function_name': function_name,
+                'audit_file': audit_file,
+                'coverage_pct': 0,  # No transactions to calculate coverage
+                'missing_count': 0,
+                'missing_params': [],
+                'shown_count': 0,
+                'excluded_count': 0,
+                'total_params': 0,
+                'risk_level': risk_level,
+                'coverage_score': coverage_score,
+                'critical_issues': critical_issues_from_ai,
+                'ai_missing_params': ai_missing_params,
+                'display_issues': display_issues_from_ai,
+                'recommendations': recommendations,
+                'no_historical_txs': True  # Flag to indicate no transactions
+            }
+
+            # Categorize by severity (no historical txs is a critical warning)
+            has_ai_critical = len(critical_issues_from_ai) > 0
+
+            if has_ai_critical:
+                critical_issues_list.append(issue_data)
+            else:
+                # Always add a critical for no historical transactions
+                issue_data['critical_issues'] = ['No historical transactions found for analysis']
+                critical_issues_list.append(issue_data)
 
     # Build summary table
     all_issues = critical_issues_list + major_issues_list + minor_issues_list + no_issues_list
@@ -409,12 +457,16 @@ def generate_summary_file(results: Dict, summary_file: Path):
         has_critical = len(issue['critical_issues']) > 0
         has_missing = len(issue['ai_missing_params']) > 0
         has_display = len(issue['display_issues']) > 0
+        no_historical_txs = issue.get('no_historical_txs', False)
 
         if has_critical:
             severity = "🔴 Critical"
             # Show first issue text instead of "Critical"
             first_issue = issue['critical_issues'][0]
             quick_desc = first_issue[:100] + "..." if len(first_issue) > 100 else first_issue
+            # Special handling for no historical transactions
+            if no_historical_txs and 'No historical transactions' in first_issue:
+                quick_desc = "⚠️ No historical transactions - static analysis only"
         elif has_missing:
             severity = "🟡 Major"
             quick_desc = f"Missing: {', '.join(issue['ai_missing_params'][:2])}"

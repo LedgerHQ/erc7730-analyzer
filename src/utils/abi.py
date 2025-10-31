@@ -78,6 +78,7 @@ class ABI:
             - param_internal_types: List of parameter internal types
             - signature: Full function signature
             - selector: Function selector
+            - stateMutability: Function state mutability (payable, nonpayable, view, pure)
         """
         for item in self.abi:
             if item.get("type") != "function":
@@ -98,6 +99,7 @@ class ABI:
                     ],
                     "signature": signature,
                     "selector": computed_selector,
+                    "stateMutability": item.get("stateMutability", "nonpayable"),
                 }
         return {}
 

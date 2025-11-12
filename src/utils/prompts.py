@@ -6,7 +6,7 @@ This module handles generating prompts and calling OpenAI for audit report gener
 
 import json
 import logging
-from typing import Dict, List
+from typing import Dict, List, Tuple
 from openai import OpenAI
 
 logger = logging.getLogger(__name__)
@@ -18,7 +18,7 @@ def generate_clear_signing_audit(
     erc7730_format: Dict,
     function_signature: str,
     source_code: Dict = None
-) -> str:
+) -> Tuple[str, str]:
     """
     Use AI to generate a clear signing audit report comparing decoded transactions
     with ERC-7730 format definitions.
@@ -31,7 +31,7 @@ def generate_clear_signing_audit(
         source_code: Optional dictionary with extracted source code
 
     Returns:
-        Audit report as markdown
+        Tuple of (critical_report, detailed_report) as markdown strings
     """
     try:
         client = OpenAI()
@@ -41,27 +41,28 @@ def generate_clear_signing_audit(
         source_code_section = ""
         if source_code and source_code.get('function'):
             source_code_section = "\n\n**Contract Source Code:**\n\n"
-            source_code_section += "You have access to the actual contract source code. Use this to understand the function's true behavior, identify hidden logic, and verify that ERC-7730 metadata accurately represents what the contract does.\n\n"
+            source_code_section += "You have access to the actual contract source code (Solidity or Vyper). Use this to understand the function's true behavior, identify hidden logic, and verify that ERC-7730 metadata accurately represents what the contract does.\n\n"
+            source_code_section += "**Note:** Vyper contracts use decorators (@external, @internal, @view, @payable) for function visibility instead of Solidity keywords. Vyper does not have structs or enums in the same way as Solidity.\n\n"
 
             if source_code.get('function_docstring'):
-                source_code_section += f"```solidity\n{source_code['function_docstring']}\n```\n\n"
+                source_code_section += f"```\n{source_code['function_docstring']}\n```\n\n"
 
             if source_code.get('structs'):
-                source_code_section += "**Structs used:**\n```solidity\n"
+                source_code_section += "**Structs used:**\n```\n"
                 source_code_section += "\n\n".join(source_code['structs'])
                 source_code_section += "\n```\n\n"
 
             if source_code.get('enums'):
-                source_code_section += "**Enums used:**\n```solidity\n"
+                source_code_section += "**Enums used:**\n```\n"
                 source_code_section += "\n\n".join(source_code['enums'])
                 source_code_section += "\n```\n\n"
 
             if source_code.get('constants'):
-                source_code_section += "**Constants used:**\n```solidity\n"
+                source_code_section += "**Constants used:**\n```\n"
                 source_code_section += "\n".join(source_code['constants'])
                 source_code_section += "\n```\n\n"
 
-            source_code_section += "**Main Function:**\n```solidity\n"
+            source_code_section += "**Main Function:**\n```\n"
             source_code_section += source_code['function']
             source_code_section += "\n```\n\n"
 
@@ -70,24 +71,26 @@ def generate_clear_signing_audit(
                 for internal_func_data in source_code['internal_functions']:
                     # Add docstring if available
                     if internal_func_data.get('docstring'):
-                        source_code_section += f"```solidity\n{internal_func_data['docstring']}\n```\n\n"
+                        source_code_section += f"```\n{internal_func_data['docstring']}\n```\n\n"
                     # Add function body
-                    source_code_section += f"```solidity\n{internal_func_data['body']}\n```\n\n"
+                    source_code_section += f"```\n{internal_func_data['body']}\n```\n\n"
 
             if source_code.get('truncated'):
                 source_code_section += "⚠️ **Note:** Source code was truncated to fit within limits. Focus on the main function.\n\n"
 
         # Prepare the prompt
-        prompt = f"""You are validating that ERC-7730 display matches what actually happens on-chain.
+        prompt = f"""You are a clear signing security auditor for ERC-7730 clear signing metadata. Your job is to ensure users see all CRITICAL information they need BEFORE signing.
+
+
+**What is ERC-7730?**
+ERC-7730 is a standard for displaying blockchain transaction parameters in human-readable form on hardware wallets (like Ledger). The goal is to show users what they're signing WITHOUT overwhelming them.
+
+**Contract Languages Supported:**
+This analysis supports both Solidity and Vyper contracts. Vyper uses Python-like syntax with decorators (@external, @internal, @view, @payable) for function visibility, while Solidity uses keywords (public, external, internal, private). The core ERC-7730 validation logic is the same for both languages.
 
 You MUST produce TWO separate sections in your response:
 1. **FIRST REPORT**: CRITICALS ONLY (ultra-strict, terse) - for the mini report
 2. **SECOND REPORT**: Full detailed analysis - for the comprehensive report
-
-REFERENCES:
-- https://github.com/LedgerHQ/clear-signing-erc7730-registry/blob/master/specs/erc-7730.md
-- https://github.com/LedgerHQ/clear-signing-erc7730-registry/blob/master/specs/erc7730-v1.schema.json
-- https://github.com/LedgerHQ/clear-signing-erc7730-registry/tree/master
 
 
 INPUTS:
@@ -118,6 +121,21 @@ Compare these with what the user sees in ERC-7730 to ensure nothing is hidden or
 
 ---
 
+**IMPORTANT ERC-7730 CONCEPTS:**
+
+**Array Index Notation:**
+- `[0]` - First element in an array
+- `[-1]` - **Last element in an array** (negative indices are VALID and standard in ERC-7730)
+
+**Swap Functions - What to Display:**
+- **ONLY show**: First amount IN and final amount OUT
+- **DO NOT show**: Intermediate swap amounts, intermediate tokens, or intermediate hops
+- **WHY**: Users only care about what they send and what they receive, not the routing path
+- **Approvals**: Do NOT flag approval events UNLESS the function is specifically `approve()` or `permit()` - swap functions will have approval events as part of their execution, which is normal
+- Multi-hop swaps displaying only first/last amounts is CORRECT and should NOT be flagged as missing information
+
+---
+
 **ERC-7730 FORMAT TYPES SPECIFICATION:**
 
 All "format" fields in ERC-7730 MUST use one of these values:
@@ -143,14 +161,22 @@ All "format" fields in ERC-7730 MUST use one of these values:
    - Example: `{{"path": "_recipient", "format": "addressName"}}`
 
 6. **"date"** - UINT representing a timestamp/date
-   - Use when parameter is a Unix timestamp
-   - Example: `{{"path": "_deadline", "format": "date"}}`
+   - **REQUIRED PARAM**: MUST have `"encoding"` parameter set to either `"timestamp"` or `"blockheight"`
+   - Use when parameter is a Unix timestamp or block height
+   - Example: `{{"path": "_deadline", "format": "date", "params": {{"encoding": "timestamp"}}}}`
 
 7. **"duration"** - UINT representing a time duration
    - Use when parameter represents a time period (seconds, days, etc.)
+   - Value interpreted as seconds, displayed as HH:MM:ss
    - Example: `{{"path": "_lockPeriod", "format": "duration"}}`
 
-8. **"enum"** - Value converted using referenced constant enumeration
+8. **"unit"** - UINT representing a value with custom unit
+   - **REQUIRED PARAM**: MUST have `"base"` parameter with unit symbol (SI unit, "%", "bps", etc.)
+   - Optional: `"decimals"` (default 0), `"prefix"` (boolean for SI prefix like k, M, G)
+   - Example: `{{"path": "_fee", "format": "unit", "params": {{"base": "%", "decimals": 2}}}}`
+   - Example: `{{"path": "_time", "format": "unit", "params": {{"base": "h"}}}}`
+
+9. **"enum"** - Value converted using referenced constant enumeration
    - **REQUIRED PARAM**: MUST have path to enumeration in metadata.constants
    - Path starts with root node `$.`
    - Example: `{{"path": "_swapType", "format": "enum", "params": {{"$ref": "$.metadata.constants.swapTypes"}}}}`
@@ -158,9 +184,26 @@ All "format" fields in ERC-7730 MUST use one of these values:
 **CRITICAL VALIDATION RULES:**
 - If format is "tokenAmount" → MUST have "tokenPath" in params
 - If format is "nftName" → MUST have "collectionPath" in params
+- If format is "date" → MUST have "encoding" parameter ("timestamp" or "blockheight")
+- If format is "unit" → MUST have "base" parameter (unit symbol)
 - If format is "enum" → MUST reference a valid path in metadata.constants
 - Token addresses should be excluded from display when amount is shown with tokenPath reference
 - Always check both field params AND $ref definition params for required fields like nativeCurrencyAddress
+
+**CONTAINER STRUCTURE VALUES (Transaction Fields):**
+These special paths reference the enclosing transaction/message, not the function parameters:
+- `@.from` - The sender/signer address (who is calling the function)
+- `@.to` - The destination contract address (where the transaction is sent)
+- `@.value` - The native currency amount sent with the transaction (msg.value in Solidity)
+Example uses:
+- `{{"path": "@.value", "format": "amount"}}` - Shows ETH/native currency being sent
+- `{{"path": "@.from", "format": "addressName"}}` - Shows sender as beneficiary
+- `{{"tokenPath": "@.to"}}` - Uses the contract's own address as token reference
+
+**REQUIRED AND EXCLUDED FIELDS:**
+- `"required"` array: Lists field paths that SHOULD be displayed to users
+- `"excluded"` array: Lists field paths that are intentionally hidden
+- **Check**: If a function parameter exists in decoded_input but has NO field formatter AND is NOT in the `excluded` array → This may indicate missing display information (mention in detailed report, not critical unless it's an amount/recipient/token)
 
 ---
 
@@ -183,7 +226,7 @@ You MUST be EXTREMELY conservative. Only flag if a normal user would be shocked 
    - **ONLY flag as CRITICAL if**: The displayed token is completely unrelated to any user input (e.g., hardcoded wrong address or pointing to wrong parameter)
 5. **Missing RECIPIENT parameter** - Two cases:
    - **Case A**: If recipient IS an INPUT parameter that receives funds and is NOT shown → CRITICAL
-   - **Case B**: If recipient is NOT in inputs (because it's always msg.sender) BUT is important to show:
+   - **Case B**: If recipient is NOT in ABI inputs (because it's always msg.sender) BUT is important to show:
      * Check if function always sends tokens/ETH to the sender (e.g., withdraw(), claimRewards(), unwrap())
      * If YES and NO recipient field exists → Recommend using `{{"path": "@.from", "label": "Beneficiary", "format": "addressName"}}`
      * This shows the user they're receiving funds to their own address
@@ -247,11 +290,13 @@ You MUST be EXTREMELY conservative. Only flag if a normal user would be shocked 
 - ✅ Sentinel values like CONTRACT_BALANCE, ADDRESS_THIS - implementation details users don't see
 - ✅ "Payer" logic or who sources tokens - as long as user gets right tokens/amounts
 - ✅ Missing parameters like sqrtPriceLimit, deadline, slippage - technical stuff
-- ✅ Intermediate approvals/transfers/hops - only final In/Out matters
+- ✅ **ETH/WETH wrapping scenarios** - When transaction `value` is non-zero (user sends ETH) but `tokenIn` parameter is WETH, this is VALID if the function automatically wraps ETH→WETH. Common in DEX functions like swapExactETHForTokens. The user KNOWS they're sending ETH (shown in wallet UI), and seeing WETH in the clear signing is correct because that's what the contract receives after wrapping
+- ✅ Internal approvals/transfers done BY the protocol during execution (if not triggered by user params)
 - ✅ Recipient being a constant/sentinel value - as long as user receives tokens
 - ✅ Contract balance logic - implementation detail
 - ✅ Internal routing - users don't care HOW swap happens
-- ✅ ANY parameter regular users wouldn't understand without reading Solidity
+- ✅ ANY parameter regular users wouldn't understand without reading contract source code (Solidity/Vyper)
+- ✅ State changes that cannot be predicted from function parameters alone
 - ✅ Unused definitions/constants in metadata - cleanup issue, NOT critical (mention in detailed report)
 - ✅ **Negative array indices** - this is part of the ERC-7730 spec to access last element and is REQUIRED to work
 - ✅ **ERC-7730 spec features** - Do NOT flag spec-compliant features as "may not be supported" - they MUST be supported
@@ -273,21 +318,52 @@ BE STRICT. When in doubt, DO NOT flag as critical.
 
 **FORMAT FOR FIRST REPORT:**
 
-If NO critical issues found, output ONLY:
-```
-✅ No critical issues found.
+Output the EXACT markdown structure shown below. Start with the ## header.
+
+## Critical Issues for `{function_signature}`
+
+**Selector:** `{selector}`
+
+---
+
+<details>
+<summary><strong>📋 ERC-7730 Format Definition</strong> (click to expand)</summary>
+
+This is the complete ERC-7730 metadata for this selector, including all referenced definitions and constants:
+
+```json
+{json.dumps(erc7730_format, indent=2)}
 ```
 
-If critical issues ARE found, output:
-```
-🔴 Critical Issues:
-- [Issue 1 description - be specific and concise]
-- [Issue 2 description - be specific and concise]
+</details>
 
-💡 Recommendations:
-- [Recommendation 1 - be specific]
-- [Recommendation 2 - be specific]
-```
+---
+
+### **Issues Found:**
+
+List critical issues directly as bullet points below. Be specific and concise. Do NOT use question format.
+Use the exact criteria from the "ONLY flag as CRITICAL if:" section above.
+
+If NO critical issues exist, write only: "✅ No critical issues found"
+
+**Your analysis:**
+
+[Write your bullet points here]
+
+---
+
+**Recommendations:**
+
+If critical issues were found above, propose specific corrections:
+- How to fix each issue (which parameters to use, what labels to change, etc.)
+- Example corrected format snippets if helpful
+
+**IMPORTANT:** If a critical parameter CANNOT be clear signed using the current ERC-7730 specification (due to spec limitations like deeply nested arrays, dynamic data structures, or unsupported field types), explicitly state:
+- "Parameter [name] cannot be clear signed with current ERC-7730 spec because [reason]"
+- Explain what limitation prevents it from being displayed
+- If possible, suggest workarounds or alternative approaches
+
+If no critical issues, write: "No recommendations needed."
 
 ---
 
@@ -315,7 +391,7 @@ IMPORTANT: Keep the `>` blockquote format above. Then write one sentence assessi
 
 IMPORTANT: Keep the `>` blockquote format above.
 
-**Check for:**
+{f"⚠️ **NO HISTORICAL TRANSACTIONS FOUND** - This selector has no transaction history. Analysis is based on source code and function signature only. Validation of actual on-chain behavior is not possible without transaction data.\n\n" if not decoded_transactions else ""}**Check for:**
 - Token addresses shown are inverted/incorrect vs receipt_logs
 - Amount values mapped to wrong tokens
 - Critical parameters shown with misleading labels
@@ -402,7 +478,8 @@ List display/formatting issues. Examples:
   - Ensure label text matches the referenced definition's purpose
   - Check for orphaned definitions/constants that are declared but never used
   - Verify constant values (like native ETH address) are correct and consistent
-  - **DISPLAY EDGE CASE - Function always inputs or outputs native ETH but trusts user input for display**:
+- **metadata.token redundancy** - If `metadata.token` exists BUT the contract has `name()`, `symbol()`, and `decimals()` functions in the ABI/source code, the metadata.token is redundant (wallets can fetch this info directly from the contract). Note this as a minor cleanup suggestion, not critical.
+- **DISPLAY EDGE CASE - Function always inputs or outputs native ETH but trusts user input for display**:
     * If function name or code shows it ONLY inputs or outputs in native ETH (e.g., "ERC20ToNative", "NativeToERC20", or contract collects address(this).balance and sends ETH or only accepts ETH from user as input)
     * AND the ERC-7730 uses a user input parameter for tokenPath (e.g., `"tokenPath": "receivingAssetId" or "sendingAssetId"`)
     * Even if nativeCurrencyAddress is present, user might input WRONG address (ERC20 instead of sentinel)
@@ -450,9 +527,14 @@ Repeat for 2-3 more transactions with the same format.
 | **Security Risk** | 🔴 High / 🟡 Medium / 🟢 Low | One sentence why |
 
 #### 💡 Key Recommendations
-- Recommendation 1 (be specific)
-- Recommendation 2 (be specific)
+- Recommendation 1 (be specific about how to fix critical issues)
+- Recommendation 2 (be specific about parameter additions/corrections)
 - Recommendation 3 (if needed)
+
+**IMPORTANT:** If any critical parameter CANNOT be clear signed using the current ERC-7730 specification (due to spec limitations like deeply nested arrays, dynamic data structures, or unsupported field types), explicitly state:
+- "Parameter [name] cannot be clear signed with current ERC-7730 spec because [reason]"
+- Explain what limitation prevents it from being displayed
+- If possible, suggest workarounds or alternative approaches
 
 ---
 
@@ -463,10 +545,36 @@ Repeat for 2-3 more transactions with the same format.
             messages=[{"role": "user", "content": prompt}]
         )
 
-        audit_report = response.choices[0].message.content
+        full_report = response.choices[0].message.content
         logger.info(f"Successfully generated audit report for {selector}")
-        return audit_report
+
+        # Split the report based on section headers
+        critical_report = ""
+        detailed_report = ""
+
+        # Look for the two distinct section markers
+        critical_marker = "## Critical Issues for"
+        detailed_marker = "## 🔍 Clear Signing Audit Report"
+
+        # Check if AI generated the expected markers
+        has_critical_marker = critical_marker in full_report
+        has_detailed_marker = detailed_marker in full_report
+
+        if has_critical_marker and has_detailed_marker:
+            # Both markers present - normal case
+            parts = full_report.split(detailed_marker, 1)
+            critical_report = parts[0].strip()
+            detailed_report = detailed_marker + parts[1].strip()
+            logger.info(f"Successfully split report: Critical ({len(critical_report)} chars), Detailed ({len(detailed_report)} chars)")
+        else:
+            # Fallback - return full report in both
+            logger.warning("Could not find expected section markers in AI response")
+            critical_report = full_report
+            detailed_report = full_report
+
+        return critical_report, detailed_report
 
     except Exception as e:
         logger.error(f"Failed to generate audit report: {e}")
-        return f"Error generating audit: {str(e)}"
+        error_msg = f"Error generating audit: {str(e)}"
+        return error_msg, error_msg

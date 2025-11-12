@@ -3,7 +3,7 @@ Source code extraction and management for ERC-7730 analyzer.
 
 This module handles:
 - Fetching contract source code from Sourcify/Etherscan
-- Parsing Solidity code to extract functions, structs, and internal functions
+- Parsing Solidity and Vyper code to extract functions, structs, and internal functions
 - Proxy detection and implementation fetching
 - Diamond proxy facet resolution
 - Caching extracted code for efficient lookups
@@ -19,7 +19,10 @@ logger = logging.getLogger(__name__)
 
 
 class SolidityCodeParser:
-    """Parser for extracting functions, structs, and internal functions from Solidity code."""
+    """Parser for extracting functions, structs, and internal functions from Solidity code.
+
+    Note: For Vyper contracts, use SourceCodeExtractor.extract_vyper_functions() instead.
+    """
 
     def __init__(self, source_code: str):
         """
@@ -285,6 +288,143 @@ class SourceCodeExtractor:
         """
         self.etherscan_api_key = etherscan_api_key
         self.code_cache = {}  # Cache: contract_address -> extracted code dict
+
+    def is_vyper_code(self, source_code: str) -> bool:
+        """
+        Detect if source code is Vyper.
+
+        Args:
+            source_code: The source code to check
+
+        Returns:
+            True if Vyper, False if Solidity
+        """
+        # Vyper-specific patterns
+        vyper_patterns = [
+            r'@external',
+            r'@internal',
+            r'@view',
+            r'@pure',
+            r'@payable',
+            r'def\s+__init__\(',  # Vyper constructor
+            r':\s*constant\(',     # Vyper constant
+        ]
+
+        for pattern in vyper_patterns:
+            if re.search(pattern, source_code):
+                return True
+
+        return False
+
+    def extract_vyper_functions(self, source_code: str) -> Dict[str, Dict]:
+        """
+        Extract functions from Vyper source code.
+
+        Vyper functions have decorators (@external, @internal, etc.) at column 0,
+        followed by the function definition. Interface declarations are indented
+        and don't have these decorators, so we can distinguish them.
+
+        Args:
+            source_code: Vyper source code
+
+        Returns:
+            Dict mapping function keys to function data
+        """
+        functions = {}
+
+        # Strategy: Look for any decorator block at column 0 followed by function definitions
+        # Then check if @external or @internal is present in the decorators
+        # Pattern explanation:
+        # - ((?:^@[^\n]*\n)+) - One or more decorator lines at start of line (captured)
+        # - ^def\s+(\w+)\s*\( - def keyword, function name, and opening paren at start of line
+        # We'll find the closing paren separately since parameters can be multi-line and contain nested parens
+
+        decorator_pattern = r'((?:^@[^\n]*\n)+)^def\s+(\w+)\s*\('
+
+        matches = list(re.finditer(decorator_pattern, source_code, re.MULTILINE))
+        logger.info(f"Found {len(matches)} functions with decorators")
+
+        for match in matches:
+            decorators_text = match.group(1)  # All decorator lines
+            func_name = match.group(2)  # Function name
+
+            # Check if @external or @internal is in the decorators
+            visibility = None
+            if '@external' in decorators_text:
+                visibility = 'external'
+            elif '@internal' in decorators_text:
+                visibility = 'internal'
+
+            if not visibility:
+                logger.info(f"  Skipping '{func_name}' - no @external or @internal decorator")
+                continue
+
+            logger.info(f"  Found {visibility} function: {func_name}")
+
+            # Extract function body from source
+            start_pos = match.start()
+            end_pos = len(source_code)
+
+            # Find next @external or @internal decorator (indicates next function)
+            # or next interface/event/struct definition
+            next_func_match = re.search(r'\n(?:@(?:external|internal)|interface\s+\w+:|event\s+\w+:|struct\s+\w+:)', source_code[match.end():])
+            if next_func_match:
+                end_pos = match.end() + next_func_match.start()
+
+            body = source_code[start_pos:end_pos].strip()
+            line_count = body.count('\n') + 1
+            start_line = source_code[:start_pos].count('\n') + 1
+
+            func_key = f"{func_name}_{visibility}_{start_line}"
+            functions[func_key] = {
+                'name': func_name,
+                'visibility': visibility,
+                'body': body,
+                'line_count': line_count,
+                'start_line': start_line
+            }
+
+        # Also look for special functions without @external/@internal decorators
+        # These include __init__, __default__, etc.
+        special_pattern = r'^def\s+((?:__\w+__))\s*\('
+        special_matches = list(re.finditer(special_pattern, source_code, re.MULTILINE))
+        logger.info(f"Found {len(special_matches)} special functions (e.g., __init__, __default__)")
+
+        for match in special_matches:
+            func_name = match.group(1)
+
+            # Extract function body
+            start_pos = match.start()
+            end_pos = len(source_code)
+
+            # Find next function or top-level definition
+            next_match = re.search(r'\n(?:@(?:external|internal)|^def\s+\w+|interface\s+\w+:|event\s+\w+:|struct\s+\w+:)', source_code[match.end():], re.MULTILINE)
+            if next_match:
+                end_pos = match.end() + next_match.start()
+
+            body = source_code[start_pos:end_pos].strip()
+            line_count = body.count('\n') + 1
+            start_line = source_code[:start_pos].count('\n') + 1
+
+            # Special functions are considered 'external' for visibility purposes
+            visibility = 'external'
+
+            func_key = f"{func_name}_{visibility}_{start_line}"
+            if func_key not in functions:  # Avoid duplicates
+                functions[func_key] = {
+                    'name': func_name,
+                    'visibility': visibility,
+                    'body': body,
+                    'line_count': line_count,
+                    'start_line': start_line
+                }
+
+        logger.info(f"Extracted {len(functions)} functions from Vyper code")
+        if functions:
+            function_names = [f['name'] for f in functions.values()]
+            logger.info(f"Vyper functions found: {', '.join(function_names[:20])}")
+
+        return functions
 
     def fetch_source_from_sourcify(self, contract_address: str, chain_id: int) -> Optional[str]:
         """
@@ -728,19 +868,34 @@ class SourceCodeExtractor:
                         source_code = self.fetch_source_from_etherscan(facet_addr, chain_id)
 
                     if source_code:
-                        # Parse the source code
-                        parser = SolidityCodeParser(source_code)
+                        # Detect if facet code is Vyper or Solidity
+                        is_vyper = self.is_vyper_code(source_code)
 
-                        facet_structs = parser.extract_structs()
-                        facet_enums = parser.extract_enums()
-                        facet_constants = parser.extract_constants()
-                        facet_functions = parser.extract_functions()
+                        if is_vyper:
+                            logger.info(f"    Detected Vyper code in facet - using Vyper parser")
+                            facet_functions = self.extract_vyper_functions(source_code)
+                            facet_structs = {}
+                            facet_enums = {}
+                            facet_constants = {}
+                            facet_internal = {
+                                k: v for k, v in facet_functions.items()
+                                if v['visibility'] == 'internal'
+                            }
+                        else:
+                            logger.info(f"    Detected Solidity code in facet - using Solidity parser")
+                            # Parse the source code
+                            parser = SolidityCodeParser(source_code)
 
-                        # Separate internal functions
-                        facet_internal = {
-                            k: v for k, v in facet_functions.items()
-                            if v['visibility'] in ['internal', 'private']
-                        }
+                            facet_structs = parser.extract_structs()
+                            facet_enums = parser.extract_enums()
+                            facet_constants = parser.extract_constants()
+                            facet_functions = parser.extract_functions()
+
+                            # Separate internal functions
+                            facet_internal = {
+                                k: v for k, v in facet_functions.items()
+                                if v['visibility'] in ['internal', 'private']
+                            }
 
                         # Merge into combined results
                         all_functions.update(facet_functions)
@@ -786,19 +941,36 @@ class SourceCodeExtractor:
 
         result['source_code'] = source_code
 
-        # Parse the code
-        parser = SolidityCodeParser(source_code)
+        # Detect if code is Vyper or Solidity
+        is_vyper = self.is_vyper_code(source_code)
 
-        result['structs'] = parser.extract_structs()
-        result['enums'] = parser.extract_enums()
-        result['constants'] = parser.extract_constants()
-        result['functions'] = parser.extract_functions()
+        if is_vyper:
+            logger.info("Detected Vyper code - using Vyper parser")
+            # Extract functions using Vyper parser
+            result['functions'] = self.extract_vyper_functions(source_code)
+            # Vyper doesn't have structs/enums in the same way as Solidity
+            result['structs'] = {}
+            result['enums'] = {}
+            result['constants'] = {}
+            result['internal_functions'] = {
+                k: v for k, v in result['functions'].items()
+                if v['visibility'] == 'internal'
+            }
+        else:
+            logger.info("Detected Solidity code - using Solidity parser")
+            # Parse using Solidity parser
+            parser = SolidityCodeParser(source_code)
 
-        # Separate internal functions
-        result['internal_functions'] = {
-            k: v for k, v in result['functions'].items()
-            if v['visibility'] in ['internal', 'private']
-        }
+            result['structs'] = parser.extract_structs()
+            result['enums'] = parser.extract_enums()
+            result['constants'] = parser.extract_constants()
+            result['functions'] = parser.extract_functions()
+
+            # Separate internal functions
+            result['internal_functions'] = {
+                k: v for k, v in result['functions'].items()
+                if v['visibility'] in ['internal', 'private']
+            }
 
         logger.info(f"Extracted {len(result['functions'])} functions, "
                    f"{len(result['structs'])} structs, "

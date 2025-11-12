@@ -499,7 +499,8 @@ class ERC7730Analyzer:
                         logger.info(code_block)
 
             # Generate clear signing audit report
-            audit_report = None
+            audit_report_critical = None
+            audit_report_detailed = None
             has_no_transactions = not decoded_txs
 
             if erc7730_format:
@@ -510,7 +511,7 @@ class ERC7730Analyzer:
                     logger.info(f"Generating AI audit report for {selector}...")
                 logger.info(f"{'='*60}")
 
-                audit_report = generate_clear_signing_audit(
+                critical_report, detailed_report = generate_clear_signing_audit(
                     selector,
                     decoded_txs,  # Will be empty list if no transactions
                     erc7730_format_expanded,  # Use expanded format with metadata and display.definitions
@@ -518,7 +519,7 @@ class ERC7730Analyzer:
                     source_code=function_source
                 )
 
-                # If no transactions, prepend a critical warning to the audit report
+                # If no transactions, prepend a critical warning to BOTH reports
                 if has_no_transactions:
                     no_tx_warning = """🔴 **CRITICAL WARNING: No Historical Transactions Found**
 
@@ -541,9 +542,15 @@ class ERC7730Analyzer:
 ---
 
 """
-                    audit_report = no_tx_warning + audit_report
+                    # Prepend warning to BOTH reports
+                    critical_report = no_tx_warning + critical_report
+                    detailed_report = no_tx_warning + detailed_report
 
-                logger.info(f"\n{audit_report}\n")
+                audit_report_critical = critical_report
+                audit_report_detailed = detailed_report
+
+                logger.info(f"\nCritical Report:\n{critical_report}\n")
+                logger.info(f"\nDetailed Report:\n{detailed_report}\n")
 
             results['selectors'][selector] = {
                 'function_name': function_name,
@@ -552,7 +559,8 @@ class ERC7730Analyzer:
                 'chain_id': selector_deployment['chainId'],
                 'transactions': decoded_txs,
                 'erc7730_format': erc7730_format,
-                'audit_report': audit_report
+                'audit_report_critical': audit_report_critical,
+                'audit_report_detailed': audit_report_detailed
             }
 
         logger.info(f"\n{'='*60}")

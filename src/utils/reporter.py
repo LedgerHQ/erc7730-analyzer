@@ -142,7 +142,21 @@ def extract_second_report(audit_report: str) -> str:
 
 def parse_first_report(audit_report: str) -> tuple:
     """
-    Extract critical issues and recommendations from FIRST REPORT section.
+    Extract critical issues and recommendations from critical report.
+
+    The critical report has the format:
+    ## Critical Issues for `function_signature`
+    **Selector:** `selector`
+    ---
+    <details>...</details>
+    ---
+    ### **Issues Found:**
+    - Issue 1
+    - Issue 2
+    [or "✅ No critical issues found"]
+    ---
+    **Recommendations:**
+    - Recommendation 1
 
     Returns:
         tuple: (critical_issues: list, recommendations: list)
@@ -150,28 +164,25 @@ def parse_first_report(audit_report: str) -> tuple:
     critical = []
     recommendations = []
 
-    # Extract FIRST REPORT section (before SECOND REPORT)
-    first_report_match = re.search(
-        r'FIRST REPORT:.*?(?=SECOND REPORT:|$)',
+    # Check if it says "No critical issues found"
+    if '✅ No critical issues found' in audit_report or '✅ no critical issues found' in audit_report.lower():
+        return [], []
+
+    # Extract critical issues (lines starting with - under "### **Issues Found:**")
+    # The format has instructions, then "**Your analysis:**", then the actual bullet points
+    critical_section = re.search(
+        r'###\s*\*\*Issues Found:\*\*.*?\*\*Your analysis:\*\*(.*?)(?=---|$)',
         audit_report,
         re.DOTALL | re.IGNORECASE
     )
 
-    if not first_report_match:
-        return [], []
-
-    first_report = first_report_match.group(0)
-
-    # Check if it says "No critical issues found"
-    if '✅ No critical issues found' in first_report or '✅ no critical issues found' in first_report.lower():
-        return [], []
-
-    # Extract critical issues (lines starting with - under "Critical Issues:")
-    critical_section = re.search(
-        r'🔴 Critical Issues:(.*?)(?=💡 Recommendations:|SECOND REPORT:|$)',
-        first_report,
-        re.DOTALL | re.IGNORECASE
-    )
+    # Fallback: if "**Your analysis:**" not found, try the old format
+    if not critical_section:
+        critical_section = re.search(
+            r'###\s*\*\*Issues Found:\*\*(.*?)(?=---|\*\*Recommendations:\*\*|$)',
+            audit_report,
+            re.DOTALL | re.IGNORECASE
+        )
 
     if critical_section:
         for line in critical_section.group(1).split('\n'):
@@ -181,10 +192,10 @@ def parse_first_report(audit_report: str) -> tuple:
                 if issue_text:
                     critical.append(issue_text)
 
-    # Extract recommendations
+    # Extract recommendations (lines starting with - under "**Recommendations:**")
     rec_section = re.search(
-        r'💡 Recommendations:(.*?)(?=SECOND REPORT:|$)',
-        first_report,
+        r'\*\*Recommendations:\*\*(.*?)(?=$)',
+        audit_report,
         re.DOTALL | re.IGNORECASE
     )
 
@@ -331,7 +342,11 @@ def generate_summary_file(results: Dict, summary_file: Path):
     for selector, selector_data in results.get('selectors', {}).items():
         function_name = selector_data.get('function_name', 'unknown')
         audit_file = f"audit_{selector}_{function_name}.md"
-        audit_report = selector_data.get('audit_report', '')
+
+        # Get detailed report for extraction (with backward compatibility)
+        audit_report_detailed = selector_data.get('audit_report_detailed', '')
+        if not audit_report_detailed:
+            audit_report_detailed = selector_data.get('audit_report', '')
 
         # Extract coverage and missing parameters info
         transactions = selector_data.get('transactions', [])
@@ -354,14 +369,14 @@ def generate_summary_file(results: Dict, summary_file: Path):
             missing_params = [p for p in decoded_input.keys()
                             if p not in erc7730_fields and p not in excluded_fields]
 
-            # Extract key information from AI audit report
-            if audit_report:
-                risk_level = extract_risk_level(audit_report)
-                coverage_score = extract_coverage_score(audit_report)
-                critical_issues_from_ai = extract_critical_issues(audit_report)
-                ai_missing_params = extract_missing_parameters(audit_report)
-                display_issues_from_ai = extract_display_issues(audit_report)
-                recommendations = extract_recommendations(audit_report)
+            # Extract key information from AI audit report (using detailed report)
+            if audit_report_detailed:
+                risk_level = extract_risk_level(audit_report_detailed)
+                coverage_score = extract_coverage_score(audit_report_detailed)
+                critical_issues_from_ai = extract_critical_issues(audit_report_detailed)
+                ai_missing_params = extract_missing_parameters(audit_report_detailed)
+                display_issues_from_ai = extract_display_issues(audit_report_detailed)
+                recommendations = extract_recommendations(audit_report_detailed)
             else:
                 risk_level = 'Unknown'
                 coverage_score = 'N/A'
@@ -403,13 +418,13 @@ def generate_summary_file(results: Dict, summary_file: Path):
         else:
             # Selector without transactions - still include in report
             # Extract information from AI audit report only
-            if audit_report:
-                risk_level = extract_risk_level(audit_report)
-                coverage_score = extract_coverage_score(audit_report)
-                critical_issues_from_ai = extract_critical_issues(audit_report)
-                ai_missing_params = extract_missing_parameters(audit_report)
-                display_issues_from_ai = extract_display_issues(audit_report)
-                recommendations = extract_recommendations(audit_report)
+            if audit_report_detailed:
+                risk_level = extract_risk_level(audit_report_detailed)
+                coverage_score = extract_coverage_score(audit_report_detailed)
+                critical_issues_from_ai = extract_critical_issues(audit_report_detailed)
+                ai_missing_params = extract_missing_parameters(audit_report_detailed)
+                display_issues_from_ai = extract_display_issues(audit_report_detailed)
+                recommendations = extract_recommendations(audit_report_detailed)
             else:
                 risk_level = 'Unknown'
                 coverage_score = 'N/A'
@@ -585,13 +600,17 @@ def generate_summary_file(results: Dict, summary_file: Path):
 
             report += "</details>\n\n"
 
-        # Add AI audit report (extract SECOND REPORT section only)
-        audit_report_content = selector_data.get('audit_report', '')
-        if audit_report_content:
-            # Extract only the SECOND REPORT section for detailed analysis
-            second_report = extract_second_report(audit_report_content)
+        # Add AI audit report (use detailed report directly)
+        audit_report_detailed = selector_data.get('audit_report_detailed', '')
+        if not audit_report_detailed:
+            # Fallback: extract from combined report
+            audit_report_content = selector_data.get('audit_report', '')
+            if audit_report_content:
+                audit_report_detailed = extract_second_report(audit_report_content)
+
+        if audit_report_detailed:
             report += "---\n\n"
-            report += second_report
+            report += audit_report_detailed
             report += "\n\n---\n\n"
         else:
             report += "---\n\n*No audit report available for this selector.*\n\n---\n\n"
@@ -643,7 +662,12 @@ def generate_criticals_report(results: Dict, criticals_file: Path):
     for selector, selector_data in results.get('selectors', {}).items():
         function_name = selector_data.get('function_name', 'unknown')
         function_sig = selector_data.get('function_signature', 'N/A')
-        audit_report = selector_data.get('audit_report', '')
+
+        # Get critical report directly (with backward compatibility)
+        audit_report_critical = selector_data.get('audit_report_critical', '')
+        if not audit_report_critical:
+            # Fallback: extract from combined report
+            audit_report_critical = selector_data.get('audit_report', '')
 
         func_data = {
             'selector': selector,
@@ -654,9 +678,9 @@ def generate_criticals_report(results: Dict, criticals_file: Path):
             'chain_id': selector_data.get('chain_id', 'N/A')
         }
 
-        if audit_report:
+        if audit_report_critical:
             # Parse FIRST REPORT section for critical issues and recommendations
-            critical_issues, recommendations = parse_first_report(audit_report)
+            critical_issues, recommendations = parse_first_report(audit_report_critical)
 
             func_data['critical_issues'] = critical_issues
             func_data['recommendations'] = recommendations

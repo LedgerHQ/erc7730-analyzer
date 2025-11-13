@@ -12,8 +12,12 @@ This module handles:
 import logging
 import time
 from typing import Dict, List, Any, Optional
+from pathlib import Path
 import requests
 from web3 import Web3
+
+from .raw_tx_parser import load_raw_transactions, group_transactions_by_selector
+from .abi import ABI
 
 logger = logging.getLogger(__name__)
 
@@ -359,6 +363,129 @@ class TransactionFetcher:
 
         logger.warning(f"No transactions found for any selector on chain {chain_id}")
         return {s.lower(): [] for s in selectors}
+
+    def integrate_manual_transactions(
+        self,
+        fetched_txs: Dict[str, List[Dict[str, Any]]],
+        raw_txs_file: Optional[Path],
+        contract_address: str,
+        abi: List[Dict[str, Any]],
+        chain_id: int = 1
+    ) -> Dict[str, List[Dict[str, Any]]]:
+        """
+        Integrate manually provided raw transactions with fetched transactions.
+
+        Manual transactions are parsed, decoded, and merged with fetched transactions.
+        They are added to the beginning of the transaction list for each selector.
+
+        Args:
+            fetched_txs: Dictionary of fetched transactions (selector -> list of txs)
+            raw_txs_file: Path to JSON file with raw transactions (optional)
+            contract_address: Contract address to verify against
+            abi: Contract ABI for decoding
+            chain_id: Chain ID
+
+        Returns:
+            Combined dictionary of transactions with manual txs prepended
+        """
+        if not raw_txs_file or not raw_txs_file.exists():
+            logger.info("No manual transactions file provided")
+            return fetched_txs
+
+        logger.info(f"Loading manual transactions from {raw_txs_file}")
+
+        # Load and parse raw transactions
+        parsed_manual_txs = load_raw_transactions(raw_txs_file)
+
+        if not parsed_manual_txs:
+            logger.warning("No valid manual transactions found in file")
+            return fetched_txs
+
+        # Group by selector
+        manual_by_selector = group_transactions_by_selector(parsed_manual_txs)
+
+        logger.info(f"Found {len(parsed_manual_txs)} manual transaction(s) for {len(manual_by_selector)} selector(s)")
+
+        # Create ABI helper for decoding
+        abi_helper = ABI(abi)
+
+        # Convert manual transactions to the format expected by the analyzer
+        result = {k: list(v) for k, v in fetched_txs.items()}  # Copy fetched txs
+
+        for selector, manual_txs in manual_by_selector.items():
+            selector_lower = selector.lower()
+
+            # Filter manual transactions for this contract only
+            contract_manual_txs = [
+                tx for tx in manual_txs
+                if tx.get('to', '').lower() == contract_address.lower()
+            ]
+
+            if not contract_manual_txs:
+                logger.debug(f"No manual transactions for contract {contract_address} with selector {selector}")
+                continue
+
+            logger.info(f"Processing {len(contract_manual_txs)} manual transaction(s) for selector {selector}")
+
+            # Convert to analyzer format and decode
+            converted_txs = []
+            for manual_tx in contract_manual_txs:
+                # Create transaction dict in Etherscan format
+                tx_dict = {
+                    'hash': manual_tx.get('tx_hash', 'manual_tx'),
+                    'from': '0x0000000000000000000000000000000000000000',  # Unknown sender
+                    'to': manual_tx['to'],
+                    'value': str(manual_tx['value']),
+                    'input': manual_tx['input'],
+                    'blockNumber': '0',
+                    'timeStamp': '0',
+                    'source': 'manual',
+                    'description': manual_tx.get('description', '')
+                }
+
+                # Get function data from ABI for this selector
+                function_data = abi_helper.find_function_by_selector(selector)
+
+                if not function_data:
+                    logger.warning(f"No function found in ABI for selector {selector}")
+                    continue
+
+                # Decode the transaction input
+                decoded_input = self.decode_transaction_input(
+                    manual_tx['input'],
+                    function_data,
+                    abi_helper
+                )
+
+                if decoded_input:
+                    tx_dict['decoded_input'] = decoded_input
+                    logger.debug(f"✓ Decoded manual TX for selector {selector}")
+                else:
+                    logger.warning(f"✗ Failed to decode manual TX for selector {selector}")
+                    continue
+
+                # Try to fetch receipt if we have a real tx hash
+                if manual_tx.get('tx_hash') and manual_tx['tx_hash'].startswith('0x'):
+                    logger.info(f"Attempting to fetch receipt for manual TX {manual_tx['tx_hash']}")
+                    receipt = self.fetch_transaction_receipt(
+                        manual_tx['tx_hash'],
+                        chain_id
+                    )
+                    if receipt:
+                        tx_dict['receipt_logs'] = receipt.get('receipt_logs', [])
+                        logger.info(f"✓ Fetched receipt with {len(receipt.get('receipt_logs', []))} logs")
+
+                converted_txs.append(tx_dict)
+
+            # Merge with fetched transactions (manual txs first)
+            if selector_lower not in result:
+                result[selector_lower] = []
+
+            result[selector_lower] = converted_txs + result[selector_lower]
+            logger.info(f"✓ Added {len(converted_txs)} manual transaction(s) to selector {selector} "
+                       f"(total: {len(result[selector_lower])})")
+
+        return result
 
     def _fetch_transactions_blockscout_v2(
         self,

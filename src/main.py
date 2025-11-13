@@ -35,6 +35,7 @@ def main():
 Environment Variables (can also be set in .env file):
   ERC7730_FILE          Path to ERC-7730 JSON file
   ABI_FILE              Path to contract ABI JSON file (optional)
+  RAW_TXS_FILE          Path to JSON file with raw transactions (optional)
   ETHERSCAN_API_KEY     Etherscan API key
   OPENAI_API_KEY        OpenAI API key for AI-powered audits (optional)
   LOOKBACK_DAYS         Number of days to look back (default: 20)
@@ -53,6 +54,12 @@ Priority: Command-line arguments > Environment variables > Defaults
         type=Path,
         default=os.getenv('ABI_FILE'),
         help='Path to contract ABI JSON file (env: ABI_FILE, optional)'
+    )
+    parser.add_argument(
+        '--raw-txs',
+        type=Path,
+        default=os.getenv('RAW_TXS_FILE'),
+        help='Path to JSON file with raw transactions (env: RAW_TXS_FILE, optional)'
     )
     parser.add_argument(
         '--api-key',
@@ -112,7 +119,7 @@ Priority: Command-line arguments > Environment variables > Defaults
     )
 
     # Run analysis
-    results = analyzer.analyze(args.erc7730_file, args.abi)
+    results = analyzer.analyze(args.erc7730_file, args.abi, args.raw_txs)
 
     # Always create output directory and save results
     output_dir = Path("output")

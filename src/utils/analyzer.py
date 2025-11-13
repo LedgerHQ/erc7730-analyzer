@@ -163,7 +163,8 @@ class ERC7730Analyzer:
     def analyze(
         self,
         erc7730_file: Path,
-        abi_file: Optional[Path] = None
+        abi_file: Optional[Path] = None,
+        raw_txs_file: Optional[Path] = None
     ) -> Dict[str, Any]:
         """
         Main analysis function.
@@ -171,6 +172,7 @@ class ERC7730Analyzer:
         Args:
             erc7730_file: Path to ERC-7730 JSON file
             abi_file: Optional path to ABI JSON file
+            raw_txs_file: Optional path to JSON file with raw transactions
 
         Returns:
             Analysis results
@@ -308,6 +310,26 @@ class ERC7730Analyzer:
         if not_found_count > 0:
             logger.warning(f"  ⚠ {not_found_count} selector(s) without transactions: {list(selectors_needing_txs)}")
         logger.info(f"{'='*60}\n")
+
+        # Integrate manual transactions if provided
+        if raw_txs_file:
+            logger.info(f"\n{'='*60}")
+            logger.info(f"Integrating manual transactions from {raw_txs_file}")
+            logger.info(f"{'='*60}")
+
+            # Use the primary deployment for manual transaction integration
+            primary_deployment = deployments[0] if deployments else None
+            if primary_deployment:
+                all_selector_txs = self.tx_fetcher.integrate_manual_transactions(
+                    all_selector_txs,
+                    raw_txs_file,
+                    primary_deployment['address'],
+                    abi,
+                    primary_deployment['chainId']
+                )
+                logger.info(f"{'='*60}\n")
+            else:
+                logger.warning("No deployment available for manual transaction integration")
 
         # Use the first deployment that had transactions for source code extraction
         used_deployment = deployment_per_selector.get(next(iter(deployment_per_selector), None)) if deployment_per_selector else deployments[0] if deployments else None

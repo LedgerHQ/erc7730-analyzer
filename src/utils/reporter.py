@@ -743,16 +743,18 @@ def generate_criticals_report(results: Dict, criticals_file: Path):
         if func.get('has_critical'):
             # Critical Issues
             report += "### 🔴 Critical Issues\n\n"
-            for i, issue in enumerate(func['critical_issues'], 1):
-                report += f"{i}. {issue}\n"
+            for issue in func['critical_issues']:
+                # Add bullet point formatting
+                report += f"- {issue}\n"
 
             report += "\n"
 
             # Recommendations
             if func['recommendations']:
                 report += "### 💡 Recommendations\n\n"
-                for i, rec in enumerate(func['recommendations'], 1):
-                    report += f"{i}. {rec}\n"
+                for rec in func['recommendations']:
+                    # Add bullet point formatting
+                    report += f"- {rec}\n"
 
                 report += "\n"
         else:

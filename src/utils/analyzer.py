@@ -88,20 +88,147 @@ class ERC7730Analyzer:
         if 'display' in erc7730_data and 'formats' in erc7730_data['display']:
             formats = erc7730_data['display']['formats']
             for key in formats.keys():
+                if not isinstance(key, str):
+                    logger.warning(f"Skipping non-string display key: {key}")
+                    continue
+
+                formatted_key = key.strip()
+
                 # Check if key is already a selector
-                if key.startswith('0x') and len(key) == 10:
-                    selector = key.lower()
+                if formatted_key.startswith('0x') and len(formatted_key) == 10:
+                    selector = formatted_key.lower()
                     selectors.append(selector)
                     selector_to_format_key[selector] = key
+                    continue
+
+                # Normalize signature before hashing so parameter names don't affect selectors
+                normalized_signature = self._normalize_function_signature(formatted_key)
+                if not normalized_signature:
+                    logger.warning(f"Could not normalize signature '{formatted_key}' - skipping")
+                    continue
+
+                selector = '0x' + self.w3.keccak(text=normalized_signature).hex()[:8]
+                if normalized_signature != formatted_key:
+                    logger.info(
+                        f"Calculated selector for '{formatted_key}' "
+                        f"(normalized '{normalized_signature}'): {selector}"
+                    )
                 else:
-                    # It's a function signature, calculate the selector
-                    selector = '0x' + self.w3.keccak(text=key).hex()[:8]
-                    logger.info(f"Calculated selector for '{key}': {selector}")
-                    selectors.append(selector.lower())
-                    selector_to_format_key[selector.lower()] = key
+                    logger.info(f"Calculated selector for '{formatted_key}': {selector}")
+
+                selector_lower = selector.lower()
+                selectors.append(selector_lower)
+                selector_to_format_key[selector_lower] = key
 
         logger.info(f"Found {len(selectors)} selectors: {selectors}")
         return selectors, selector_to_format_key
+
+    def _normalize_function_signature(self, signature: str) -> str:
+        """
+        Convert a display format signature (which may include parameter names)
+        into its canonical Solidity signature (types only).
+        """
+        signature = signature.strip()
+        if not signature or '(' not in signature or ')' not in signature:
+            return signature
+
+        open_idx = signature.find('(')
+        close_idx = signature.rfind(')')
+        if close_idx <= open_idx:
+            return signature
+
+        function_name = signature[:open_idx].strip()
+        params_body = signature[open_idx + 1:close_idx]
+
+        if not function_name:
+            return signature
+
+        params = self._split_signature_params(params_body)
+        normalized_params = [self._normalize_param_type(param) for param in params if param]
+
+        return f"{function_name}({','.join(normalized_params)})"
+
+    def _split_signature_params(self, params_str: str) -> List[str]:
+        """
+        Split a function parameter string into individual parameters while
+        respecting nested tuple parentheses.
+        """
+        params = []
+        current = []
+        depth = 0
+
+        for char in params_str:
+            if char == ',' and depth == 0:
+                param = ''.join(current).strip()
+                if param:
+                    params.append(param)
+                current = []
+                continue
+
+            if char == '(':
+                depth += 1
+            elif char == ')':
+                depth = max(depth - 1, 0)
+
+            current.append(char)
+
+        # Add the last parameter
+        tail = ''.join(current).strip()
+        if tail:
+            params.append(tail)
+
+        return params
+
+    def _normalize_param_type(self, param: str) -> str:
+        """
+        Remove parameter names, storage modifiers, and whitespace from a single
+        parameter string to obtain its canonical Solidity type representation.
+        """
+        param = param.strip()
+        if not param:
+            return ''
+
+        # Tuple parameter e.g. "(address src,address dst) desc"
+        if param[0] == '(':
+            depth = 0
+            inner_chars = []
+            idx = 0
+
+            while idx < len(param):
+                char = param[idx]
+                if char == '(':
+                    depth += 1
+                    if depth > 1:
+                        inner_chars.append(char)
+                elif char == ')':
+                    depth -= 1
+                    if depth > 0:
+                        inner_chars.append(char)
+                    if depth == 0:
+                        idx += 1
+                        break
+                else:
+                    if depth > 0:
+                        inner_chars.append(char)
+                idx += 1
+
+            inner_str = ''.join(inner_chars)
+            inner_params = self._split_signature_params(inner_str)
+            normalized_inner = ','.join(
+                filter(None, (self._normalize_param_type(p) for p in inner_params))
+            )
+
+            # Capture any array suffix like [] or [2]
+            suffix_chars = []
+            while idx < len(param) and param[idx] in '[]0123456789':
+                suffix_chars.append(param[idx])
+                idx += 1
+
+            return f"({normalized_inner}){''.join(suffix_chars)}"
+
+        # Non-tuple parameter: take the first token as the type (e.g., "uint256 amount")
+        token = param.split()[0]
+        return token.rstrip(',')
 
     def get_contract_deployments(self, erc7730_data: Dict[str, Any]) -> List[Dict[str, Any]]:
         """
@@ -267,48 +394,88 @@ class ERC7730Analyzer:
         logger.info(f"Fetching transactions for all {len(selectors)} selectors at once...")
         logger.info(f"{'='*60}")
 
-        # Initialize transaction storage and track which selectors still need txs
+        # Initialize transaction storage and track how many samples are still needed
+        transactions_per_selector = 5  # Matches tx_fetcher default
         all_selector_txs = {s.lower(): [] for s in selectors}
-        selectors_needing_txs = set(s.lower() for s in selectors)
+        selectors_remaining = {
+            s.lower(): transactions_per_selector
+            for s in selectors
+        }
         deployment_per_selector = {}  # Track which deployment was used for each selector
 
         # Try each deployment, continuing to search for selectors that don't have transactions yet
         for deployment in deployments:
-            if not selectors_needing_txs:
+            selectors_to_query = [
+                selector
+                for selector, remaining in selectors_remaining.items()
+                if remaining > 0
+            ]
+
+            if not selectors_to_query:
                 # All selectors have transactions, no need to continue
                 break
 
             contract_address = deployment['address']
             chain_id = deployment['chainId']
             logger.info(f"Trying deployment: {contract_address} on chain {chain_id}")
-            logger.info(f"  Looking for transactions for {len(selectors_needing_txs)} remaining selector(s)")
+            logger.info(f"  Looking for transactions for {len(selectors_to_query)} remaining selector(s)")
 
             # Fetch transactions only for selectors that don't have any yet
             deployment_txs = self.tx_fetcher.fetch_all_transactions_for_selectors(
                 contract_address,
-                list(selectors_needing_txs),
+                selectors_to_query,
                 chain_id,
-                per_selector=5,
+                per_selector=transactions_per_selector,
                 payable_selectors=payable_selectors
             )
 
             # Update results for selectors that found transactions
             for selector, txs in deployment_txs.items():
-                if txs and selector in selectors_needing_txs:
-                    all_selector_txs[selector] = txs
-                    selectors_needing_txs.remove(selector)
-                    deployment_per_selector[selector] = deployment
-                    logger.info(f"  ✓ Found {len(txs)} transaction(s) for {selector} on chain {chain_id}")
+                if not txs:
+                    continue
+
+                selector_lower = selector.lower()
+                if selector_lower not in selectors_remaining:
+                    continue
+
+                remaining_needed = selectors_remaining[selector_lower]
+                if remaining_needed <= 0:
+                    continue
+
+                # Only keep as many transactions as still needed
+                to_add = txs[:remaining_needed]
+                if not to_add:
+                    continue
+
+                all_selector_txs[selector_lower].extend(to_add)
+                selectors_remaining[selector_lower] = max(0, remaining_needed - len(to_add))
+                deployment_per_selector.setdefault(selector_lower, deployment)
+                logger.info(
+                    f"  ✓ Aggregated {len(all_selector_txs[selector_lower])}/"
+                    f"{transactions_per_selector} transaction(s) for {selector_lower} "
+                    f"(added {len(to_add)} from chain {chain_id})"
+                )
 
         # Log final results
-        found_count = len([s for s, txs in all_selector_txs.items() if txs])
-        not_found_count = len(selectors_needing_txs)
+        satisfied_selectors = [
+            sel for sel, remaining in selectors_remaining.items()
+            if remaining <= 0
+        ]
+        selectors_missing = [
+            sel for sel, remaining in selectors_remaining.items()
+            if remaining > 0
+        ]
+
+        found_count = len(satisfied_selectors)
+        not_found_count = len(selectors_missing)
 
         logger.info(f"\n{'='*60}")
         logger.info(f"Transaction search complete:")
         logger.info(f"  ✓ {found_count} selector(s) with transactions")
         if not_found_count > 0:
-            logger.warning(f"  ⚠ {not_found_count} selector(s) without transactions: {list(selectors_needing_txs)}")
+            logger.warning(
+                f"  ⚠ {not_found_count} selector(s) still missing samples: {selectors_missing}"
+            )
         logger.info(f"{'='*60}\n")
 
         # Integrate manual transactions if provided
@@ -414,11 +581,17 @@ class ERC7730Analyzer:
                     }
 
                     # Fetch transaction receipt and decode logs
-                    logger.info(f"Fetching receipt for transaction {tx['hash']}")
-                    receipt = self.tx_fetcher.fetch_transaction_receipt(
-                        tx['hash'],
-                        selector_deployment['chainId']
-                    )
+                    # Only fetch receipt if we have a valid transaction hash (starts with 0x and is 66 chars)
+                    tx_hash = tx.get('hash', '')
+                    if tx_hash.startswith('0x') and len(tx_hash) == 66:
+                        logger.info(f"Fetching receipt for transaction {tx_hash}")
+                        receipt = self.tx_fetcher.fetch_transaction_receipt(
+                            tx_hash,
+                            selector_deployment['chainId']
+                        )
+                    else:
+                        logger.debug(f"Skipping receipt fetch for transaction {tx_hash} (not a valid TX hash)")
+                        receipt = None
 
                     if receipt and receipt.get('logs'):
                         decoded_logs = []

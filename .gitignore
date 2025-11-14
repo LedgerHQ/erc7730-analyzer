@@ -20,3 +20,6 @@ audit_reports/
 *token*
 .DS_Store
 Thumbs.db
+old/
+registry/
+Analysis/

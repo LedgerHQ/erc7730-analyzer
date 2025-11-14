@@ -25,9 +25,12 @@ logger = logging.getLogger(__name__)
 # Blockscout API endpoints for chains that don't use Etherscan
 # Note: These use Blockscout v2 API with different structure than Etherscan
 BLOCKSCOUT_URLS = {
-    44787: 'https://celo-alfajores.blockscout.com',  # Celo Alfajores Testnet
-    42220: 'https://celo.blockscout.com',             # Celo Mainnet
+    56: 'https://blockscout.com/bnb/mainnet',         # BNB Smart Chain Mainnet
+    97: 'https://blockscout.com/bnb/testnet',         # BNB Smart Chain Testnet
     100: 'https://gnosis.blockscout.com',             # Gnosis Chain
+    137: 'https://polygon.blockscout.com',            # Polygon PoS
+    42220: 'https://celo.blockscout.com',             # Celo Mainnet
+    44787: 'https://celo-alfajores.blockscout.com',   # Celo Alfajores Testnet
     # Add more as needed
 }
 
@@ -388,18 +391,72 @@ class TransactionFetcher:
         Returns:
             Combined dictionary of transactions with manual txs prepended
         """
-        if not raw_txs_file or not raw_txs_file.exists():
+        if not raw_txs_file:
             logger.info("No manual transactions file provided")
+            return fetched_txs
+
+        raw_txs_path = Path(raw_txs_file)
+
+        if not raw_txs_path.exists():
+            logger.info(f"Manual transactions file {raw_txs_path} not found - skipping")
+            return fetched_txs
+
+        if raw_txs_path.is_dir():
+            logger.info(f"Manual transactions path {raw_txs_path} is a directory - skipping manual tx integration")
             return fetched_txs
 
         logger.info(f"Loading manual transactions from {raw_txs_file}")
 
         # Load and parse raw transactions
-        parsed_manual_txs = load_raw_transactions(raw_txs_file)
+        parsed_manual_txs = load_raw_transactions(raw_txs_path)
 
         if not parsed_manual_txs:
             logger.warning("No valid manual transactions found in file")
             return fetched_txs
+
+        # Fetch transactions that are marked as hash_only
+        for manual_tx in parsed_manual_txs:
+            if manual_tx.get('mode') == 'hash_only':
+                tx_hash = manual_tx['tx_hash']
+                logger.info(f"Fetching transaction data for {tx_hash} from Etherscan")
+
+                # Fetch transaction from Etherscan
+                try:
+                    params = {
+                        'module': 'proxy',
+                        'action': 'eth_getTransactionByHash',
+                        'txhash': tx_hash,
+                        'apikey': self.etherscan_api_key
+                    }
+
+                    base_url = self._get_api_base_url(chain_id, False)
+                    response = requests.get(base_url, params=params)
+                    response.raise_for_status()
+                    data = response.json()
+
+                    # Etherscan proxy API returns result directly (not wrapped in status/result)
+                    tx_data = data.get('result')
+
+                    if tx_data and isinstance(tx_data, dict) and tx_data.get('hash'):
+                        manual_tx['to'] = tx_data.get('to', '')
+                        manual_tx['input'] = tx_data.get('input', '')
+                        manual_tx['value'] = int(tx_data.get('value', '0x0'), 16)
+                        manual_tx['selector'] = tx_data.get('input', '')[:10] if tx_data.get('input') else None
+                        manual_tx['from'] = tx_data.get('from', '')
+                        manual_tx['mode'] = 'fetched'
+                        logger.info(f"✓ Fetched transaction: selector={manual_tx['selector']}, to={manual_tx['to']}")
+                    else:
+                        error_msg = data.get('message') or data.get('error') or 'Transaction not found or invalid response'
+                        logger.warning(f"✗ Failed to fetch transaction {tx_hash}: {error_msg}")
+                        logger.info(f"Response keys: {list(data.keys() if isinstance(data, dict) else [])}")
+                        logger.info(f"Response data: {str(data)[:200]}")
+                        manual_tx['mode'] = 'fetch_failed'
+                except Exception as e:
+                    logger.error(f"✗ Error fetching transaction {tx_hash}: {e}")
+                    manual_tx['mode'] = 'fetch_failed'
+
+        # Filter out failed fetches
+        parsed_manual_txs = [tx for tx in parsed_manual_txs if tx.get('mode') != 'fetch_failed']
 
         # Group by selector
         manual_by_selector = group_transactions_by_selector(parsed_manual_txs)
@@ -429,10 +486,18 @@ class TransactionFetcher:
 
             # Convert to analyzer format and decode
             converted_txs = []
-            for manual_tx in contract_manual_txs:
+            for idx, manual_tx in enumerate(contract_manual_txs, 1):
+                # Use a friendly identifier for manual transactions
+                tx_hash = manual_tx.get('tx_hash', '').strip()
+                tx_id = tx_hash if tx_hash and tx_hash.startswith('0x') else f"manual_tx_{idx}"
+
+                logger.info(f"Processing manual transaction {idx}/{len(contract_manual_txs)} for selector {selector}")
+                if manual_tx.get('description'):
+                    logger.info(f"  Description: {manual_tx['description']}")
+
                 # Create transaction dict in Etherscan format
                 tx_dict = {
-                    'hash': manual_tx.get('tx_hash', 'manual_tx'),
+                    'hash': tx_id,
                     'from': '0x0000000000000000000000000000000000000000',  # Unknown sender
                     'to': manual_tx['to'],
                     'value': str(manual_tx['value']),
@@ -459,21 +524,23 @@ class TransactionFetcher:
 
                 if decoded_input:
                     tx_dict['decoded_input'] = decoded_input
-                    logger.debug(f"✓ Decoded manual TX for selector {selector}")
+                    logger.info(f"✓ Successfully decoded manual transaction {tx_id}")
                 else:
-                    logger.warning(f"✗ Failed to decode manual TX for selector {selector}")
+                    logger.warning(f"✗ Failed to decode manual transaction {tx_id}")
                     continue
 
                 # Try to fetch receipt if we have a real tx hash
-                if manual_tx.get('tx_hash') and manual_tx['tx_hash'].startswith('0x'):
-                    logger.info(f"Attempting to fetch receipt for manual TX {manual_tx['tx_hash']}")
+                if tx_hash and tx_hash.startswith('0x'):
+                    logger.info(f"Attempting to fetch receipt for manual TX {tx_hash}")
                     receipt = self.fetch_transaction_receipt(
-                        manual_tx['tx_hash'],
+                        tx_hash,
                         chain_id
                     )
                     if receipt:
                         tx_dict['receipt_logs'] = receipt.get('receipt_logs', [])
                         logger.info(f"✓ Fetched receipt with {len(receipt.get('receipt_logs', []))} logs")
+                else:
+                    logger.debug(f"No transaction hash provided for manual TX - skipping receipt fetch")
 
                 converted_txs.append(tx_dict)
 
@@ -510,13 +577,21 @@ class TransactionFetcher:
         """
         chain_id = int(chain_id)
 
-        # Initialize result dict with lowercase selectors
-        selector_txs = {s.lower(): [] for s in selectors}
-        selector_wanted = {s.lower(): per_selector for s in selectors}
+        # Normalize selectors to lowercase for consistent dictionary keys
+        selectors = [s.lower() for s in selectors]
+        selector_txs = {s: [] for s in selectors}
+        selector_wanted = {s: per_selector for s in selectors}
+
+        # Only keep payable selectors that are part of this batch
+        if payable_selectors is None:
+            payable_selectors = set()
+        else:
+            payable_selectors = {s.lower() for s in payable_selectors}
+        payable_selectors = {s for s in payable_selectors if s in selector_txs}
 
         # For payable selectors, track native ETH and ERC20 transactions separately
-        selector_native_txs = {s.lower(): [] for s in payable_selectors}
-        selector_erc20_txs = {s.lower(): [] for s in payable_selectors}
+        selector_native_txs = {s: [] for s in payable_selectors}
+        selector_erc20_txs = {s: [] for s in payable_selectors}
 
         # Fetch transactions from Blockscout v2
         blockscout_txs = self._fetch_blockscout_v2_transactions(
@@ -660,13 +735,21 @@ class TransactionFetcher:
                 payable_selectors
             )
 
-        # Initialize result dict with lowercase selectors
-        selector_txs = {s.lower(): [] for s in selectors}
-        selector_wanted = {s.lower(): per_selector for s in selectors}
+        # Normalize selectors to lowercase for consistent dictionary keys
+        selectors = [s.lower() for s in selectors]
+        selector_txs = {s: [] for s in selectors}
+        selector_wanted = {s: per_selector for s in selectors}
+
+        # Only keep payable selectors that are part of this batch
+        if payable_selectors is None:
+            payable_selectors = set()
+        else:
+            payable_selectors = {s.lower() for s in payable_selectors}
+        payable_selectors = {s for s in payable_selectors if s in selector_txs}
 
         # For payable selectors, track native ETH and ERC20 transactions separately
-        selector_native_txs = {s.lower(): [] for s in payable_selectors}
-        selector_erc20_txs = {s.lower(): [] for s in payable_selectors}
+        selector_native_txs = {s: [] for s in payable_selectors}
+        selector_erc20_txs = {s: [] for s in payable_selectors}
 
         # Get block range for the lookback period
         now = int(time.time())

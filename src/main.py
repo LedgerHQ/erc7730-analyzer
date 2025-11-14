@@ -121,6 +121,11 @@ Priority: Command-line arguments > Environment variables > Defaults
     # Run analysis
     results = analyzer.analyze(args.erc7730_file, args.abi, args.raw_txs)
 
+    # Check if analysis failed
+    if not results or not isinstance(results, dict):
+        logger.error("Analysis failed - no results returned")
+        return 1
+
     # Always create output directory and save results
     output_dir = Path("output")
     output_dir.mkdir(exist_ok=True)
@@ -129,7 +134,7 @@ Priority: Command-line arguments > Environment variables > Defaults
 
     # Generate timestamp for filenames
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    context_id = results.get('context', {}).get('$id', 'unknown').replace(' ', '_')
+    context_id = (results.get('context', {}).get('$id') or 'unknown').replace(' ', '_')
 
     # Generate detailed summary file
     summary_file = output_dir / f"SUMMARY_{context_id}_{timestamp}.md"

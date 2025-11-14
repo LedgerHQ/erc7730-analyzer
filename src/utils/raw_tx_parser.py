@@ -169,21 +169,26 @@ def _parse_legacy_transaction(tx_bytes: bytes) -> Optional[Dict[str, Any]]:
         return None
 
 
-def load_raw_transactions(file_path: Path) -> List[Dict[str, Any]]:
+def load_raw_transactions(file_path: Path, fetch_by_hash_callback=None) -> List[Dict[str, Any]]:
     """
     Load and parse raw transactions from a JSON file.
 
     Expected JSON format:
     [
         {
-            "txHash": "0x..." (optional),
-            "rawTx": "0x..." (required),
+            "txHash": "0x..." (optional - used if rawTx is empty),
+            "rawTx": "0x..." (optional - if empty, will fetch by txHash),
             "description": "..." (optional)
         }
     ]
 
+    Supports two modes:
+    1. Raw transaction provided: Parse the RLP-encoded raw transaction
+    2. Only TX hash provided: Return metadata for later fetching (requires callback)
+
     Args:
         file_path: Path to JSON file containing raw transactions
+        fetch_by_hash_callback: Optional function to fetch transaction by hash
 
     Returns:
         List of parsed transactions with metadata
@@ -202,23 +207,49 @@ def load_raw_transactions(file_path: Path) -> List[Dict[str, Any]]:
                 logger.warning(f"Skipping invalid entry at index {idx}: not a dictionary")
                 continue
 
-            if 'rawTx' not in raw_tx_entry:
-                logger.warning(f"Skipping entry at index {idx}: missing 'rawTx' field")
+            tx_hash = raw_tx_entry.get('txHash', '').strip()
+            raw_tx = raw_tx_entry.get('rawTx', '').strip()
+
+            # Must have either rawTx or txHash
+            if not raw_tx and not tx_hash:
+                logger.warning(f"Skipping entry at index {idx}: missing both 'rawTx' and 'txHash' fields")
                 continue
 
-            # Parse the raw transaction
-            parsed = parse_raw_transaction(raw_tx_entry['rawTx'])
+            # Mode 1: Parse raw transaction
+            if raw_tx:
+                parsed = parse_raw_transaction(raw_tx)
 
-            if parsed:
-                # Add metadata from the JSON entry
-                parsed['tx_hash'] = raw_tx_entry.get('txHash', f"manual_tx_{idx}")
-                parsed['description'] = raw_tx_entry.get('description', '')
-                parsed['source'] = 'manual'
-                parsed_txs.append(parsed)
+                if parsed:
+                    # Add metadata from the JSON entry
+                    parsed['tx_hash'] = tx_hash if tx_hash else f"manual_tx_{idx}"
+                    parsed['description'] = raw_tx_entry.get('description', '')
+                    parsed['source'] = 'manual'
+                    parsed['mode'] = 'raw'
+                    parsed_txs.append(parsed)
 
-                logger.info(f"✓ Parsed manual TX {idx + 1}: {parsed['selector']} -> {parsed['to']}")
+                    logger.info(f"✓ Parsed manual TX {idx + 1} (raw): {parsed['selector']} -> {parsed['to']}")
+                else:
+                    logger.warning(f"✗ Failed to parse raw transaction at index {idx}")
+
+            # Mode 2: Just TX hash - mark for later fetching
+            elif tx_hash and tx_hash.startswith('0x'):
+                # Return a placeholder that indicates we need to fetch by hash
+                placeholder = {
+                    'tx_hash': tx_hash,
+                    'description': raw_tx_entry.get('description', ''),
+                    'source': 'manual',
+                    'mode': 'hash_only',
+                    # These will be filled when fetched
+                    'to': None,
+                    'selector': None,
+                    'input': None,
+                    'value': None,
+                    'chain_id': None
+                }
+                parsed_txs.append(placeholder)
+                logger.info(f"✓ Added manual TX {idx + 1} (by hash): {tx_hash}")
             else:
-                logger.warning(f"✗ Failed to parse raw transaction at index {idx}")
+                logger.warning(f"Skipping entry at index {idx}: invalid txHash format")
 
         logger.info(f"Loaded {len(parsed_txs)}/{len(raw_txs)} manual transactions from {file_path}")
         return parsed_txs

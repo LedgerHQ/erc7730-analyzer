@@ -280,6 +280,12 @@ You MUST be EXTREMELY conservative. Only flag if a normal user would be shocked 
    - **Use input parameter**: When function has an amount parameter that EQUALS msg.value and can be also used for other tokens
    - **CRITICAL**: If payable function has no parameters AND no `@.value` field → user can't see amount being sent
 
+**CRITICAL REQUIREMENT - Array indexing validation:**
+- When ERC-7730 uses array indexing (like `"tokenPath": "route.[-1]"` or `"tokens.[2]"`), verify the index points to actual data relevant to the user
+- **Common issue**: Fixed-size arrays where unused slots contain `0x0000...` or other sentinels
+- **How to check**: Look at source code and decoded transaction parameters and verify array indices reference real data, not empty/sentinel slots
+- **CRITICAL if**: The indexed element is a sentinel (0x00) while real data exists elsewhere in the array
+
 **CRITICAL REQUIREMENT - Can it be fixed with available input parameters?**
 - ONLY flag as CRITICAL if the missing/wrong information EXISTS in the function's input parameters
 - Example: If ERC-7730 doesn't show recipient but recipient is an input parameter → CRITICAL
@@ -352,18 +358,55 @@ If NO critical issues exist, write only: "✅ No critical issues found"
 
 ---
 
-**Recommendations:**
+### **Recommendations:**
 
-If critical issues were found above, propose specific corrections:
-- How to fix each issue (which parameters to use, what labels to change, etc.)
-- Example corrected format snippets if helpful
+**CRITICAL FORMATTING REQUIREMENTS - READ CAREFULLY:**
 
-**IMPORTANT:** If a critical parameter CANNOT be clear signed using the current ERC-7730 specification (due to spec limitations like deeply nested arrays, dynamic data structures, or unsupported field types), explicitly state:
-- "Parameter [name] cannot be clear signed with current ERC-7730 spec because [reason]"
-- Explain what limitation prevents it from being displayed
-- If possible, suggest workarounds or alternative approaches
+✅ **USE BULLET POINTS with dashes (-), NOT numbered lists**
+✅ **Each recommendation must be a COMPLETE, STANDALONE sentence**
+✅ **Each bullet point must END with a period (.)**
+✅ **DO NOT use colons (:) at the end of recommendations**
+✅ **DO NOT start with numbers like "1.", "2.", "3."**
 
-If no critical issues, write: "No recommendations needed."
+**How to write recommendations:**
+
+For each critical issue found above, write ONE bullet point that:
+1. States the fix clearly
+2. Includes the specific code/field to add or change
+3. Is a complete sentence ending with a period
+
+**GOOD EXAMPLES:**
+```markdown
+- **Add msg.value display:** Include a field with `"path": "@.value"`, `"label": "Fee Amount"`, and `"format": "amount"` in the fields array to show the native ETH fee being sent.
+- **Fix inverted token addresses:** Swap the tokenPath values so `fromAmount` references `#.tokenIn` and `toAmount` references `#.tokenOut`.
+- **Show recipient address:** Add a field with `"path": "#.recipient"`, `"label": "Recipient"`, and `"format": "addressName"` to display where tokens are sent.
+```
+
+**BAD EXAMPLES (DO NOT DO THIS):**
+```markdown
+1. Add an explicit field showing msg.value:
+2. Example snippet to include in fields:
+3. (Optional) If maintainers want...
+4. ---
+```
+
+**For optional/advanced recommendations:**
+- Still use bullet points (-)
+- Mark them as "(Optional)" at the start
+- Keep them complete sentences
+
+**⚠️ CRITICAL - ERC-7730 SPEC LIMITATIONS:**
+
+If a critical parameter **CANNOT be clear signed** using the current ERC-7730 specification (due to spec limitations like deeply nested arrays, dynamic data structures, unsupported field types), you **MUST** explicitly state this with a complete explanation:
+
+**Required format for unsupported parameters:**
+- **[Parameter name] cannot be clear signed:** This parameter cannot be displayed with current ERC-7730 spec because [explain the specific limitation].
+- **Why this matters:** [Explain what information the user is missing and the security implications]
+
+
+**If no critical issues exist:** Write only:
+
+**No recommendations needed.**
 
 ---
 
@@ -564,7 +607,7 @@ Repeat for 2-3 more transactions with the same format.
             # Both markers present - normal case
             parts = full_report.split(detailed_marker, 1)
             critical_report = parts[0].strip()
-            detailed_report = detailed_marker + parts[1].strip()
+            detailed_report = detailed_marker + "\n\n" + parts[1].strip()
             logger.info(f"Successfully split report: Critical ({len(critical_report)} chars), Detailed ({len(detailed_report)} chars)")
         else:
             # Fallback - return full report in both

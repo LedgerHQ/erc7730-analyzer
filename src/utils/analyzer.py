@@ -44,7 +44,7 @@ class ERC7730Analyzer:
         self.tx_fetcher = TransactionFetcher(etherscan_api_key, lookback_days)
         self.source_extractor = SourceCodeExtractor(etherscan_api_key) if enable_source_code else None
         self.selector_to_format_key = {}
-        self.extracted_code = None  # Will store extracted code for the contract
+        self.extracted_codes = {}  # Will store extracted code for each chain deployment (keyed by chainId)
 
     def parse_erc7730_file(self, file_path: Path) -> Dict[str, Any]:
         """
@@ -62,11 +62,81 @@ class ERC7730Analyzer:
             with open(file_path, 'r') as f:
                 data = json.load(f)
 
+            # Merge includes if present
+            base_path = Path(file_path).parent
+            data = self._merge_includes(data, base_path)
+
             logger.info(f"Successfully loaded {file_path}")
             return data
         except Exception as e:
             logger.error(f"Failed to parse {file_path}: {e}")
             raise
+
+    def _merge_includes(self, data: Dict[str, Any], base_path: Path) -> Dict[str, Any]:
+        """
+        Merge ERC-7730 includes into the main file.
+
+        Args:
+            data: Parsed ERC-7730 JSON data
+            base_path: Directory path of the main file
+
+        Returns:
+            Merged ERC-7730 data with includes resolved
+        """
+        if 'includes' not in data:
+            return data
+
+        include_file = data['includes']
+        include_path = base_path / include_file
+
+        logger.info(f"Merging include file: {include_path}")
+
+        try:
+            with open(include_path, 'r') as f:
+                include_data = json.load(f)
+
+            # Recursively merge includes in the included file
+            include_data = self._merge_includes(include_data, base_path)
+
+            # Merge metadata (constants, enums, etc.)
+            if 'metadata' in include_data:
+                if 'metadata' not in data:
+                    data['metadata'] = {}
+                for key, value in include_data['metadata'].items():
+                    if key not in data['metadata']:
+                        data['metadata'][key] = value
+                    elif isinstance(value, dict) and isinstance(data['metadata'][key], dict):
+                        # Deep merge for nested dicts (e.g., constants, enums)
+                        # Include file values come first, main file can override
+                        data['metadata'][key] = {**value, **data['metadata'][key]}
+
+            # Merge display definitions
+            if 'display' in include_data:
+                if 'display' not in data:
+                    data['display'] = {}
+                if 'definitions' in include_data['display']:
+                    if 'definitions' not in data['display']:
+                        data['display']['definitions'] = {}
+                    # Include file definitions are added first, main file can override
+                    data['display']['definitions'] = {**include_data['display']['definitions'], **data['display']['definitions']}
+
+                # Merge display formats
+                if 'formats' in include_data['display']:
+                    if 'formats' not in data['display']:
+                        data['display']['formats'] = {}
+                    # Include file formats are added first, main file can override
+                    data['display']['formats'] = {**include_data['display']['formats'], **data['display']['formats']}
+
+            # Remove includes key after merging
+            del data['includes']
+
+            logger.info(f"Successfully merged include: {include_file}")
+
+        except Exception as e:
+            logger.error(f"Failed to merge include {include_file}: {e}")
+            raise
+
+        return data
 
     def extract_selectors(self, erc7730_data: Dict[str, Any]) -> tuple[List[str], Dict[str, str]]:
         """
@@ -402,6 +472,10 @@ class ERC7730Analyzer:
             for s in selectors
         }
         deployment_per_selector = {}  # Track which deployment was used for each selector
+        default_deployment = deployments[0] if deployments else {
+            'address': 'N/A',
+            'chainId': 1
+        }
 
         # Try each deployment, continuing to search for selectors that don't have transactions yet
         for deployment in deployments:
@@ -498,39 +572,51 @@ class ERC7730Analyzer:
             else:
                 logger.warning("No deployment available for manual transaction integration")
 
-        # Use the first deployment that had transactions for source code extraction
-        used_deployment = deployment_per_selector.get(next(iter(deployment_per_selector), None)) if deployment_per_selector else deployments[0] if deployments else None
-
-        if not used_deployment:
-            logger.warning("No transactions found across all deployments")
-            # Continue anyway for static analysis
-            used_deployment = deployments[0] if deployments else None
-            if not used_deployment:
-                return results
-
-        # Extract source code once at the beginning
-        if self.enable_source_code and self.source_extractor:
+        # Extract source code from ALL deployments (multi-chain support)
+        if self.enable_source_code and self.source_extractor and deployments:
             logger.info(f"\n{'='*60}")
-            logger.info("Extracting contract source code...")
+            logger.info("Extracting contract source code from all deployments...")
             logger.info(f"{'='*60}")
 
-            self.extracted_code = self.source_extractor.extract_contract_code(
-                used_deployment['address'],
-                used_deployment['chainId'],
-                selectors=selectors
-            )
+            # Track which chains we've already extracted from to avoid duplicates
+            extracted_chains = set()
 
-            if self.extracted_code['source_code']:
-                logger.info(f"✓ Source code extracted successfully")
-                logger.info(f"  - Functions: {len(self.extracted_code['functions'])}")
-                logger.info(f"  - Structs: {len(self.extracted_code['structs'])}")
-                logger.info(f"  - Enums: {len(self.extracted_code['enums'])}")
-                if self.extracted_code['is_proxy']:
-                    logger.info(f"  - Proxy detected, using implementation: {self.extracted_code['implementation']}")
-                if self.extracted_code['is_diamond']:
-                    logger.info(f"  - Diamond proxy detected with {len(set(self.extracted_code['facets'].values()))} facets")
+            for deployment in deployments:
+                chain_id = deployment['chainId']
+                address = deployment['address']
+
+                # Skip if we already extracted from this chain
+                if chain_id in extracted_chains:
+                    logger.info(f"Skipping chain {chain_id} - already extracted")
+                    continue
+
+                logger.info(f"\n📦 Extracting from chain {chain_id} at {address}")
+
+                extracted_code = self.source_extractor.extract_contract_code(
+                    address,
+                    chain_id,
+                    selectors=selectors
+                )
+
+                if extracted_code['source_code']:
+                    self.extracted_codes[chain_id] = extracted_code
+                    extracted_chains.add(chain_id)
+
+                    logger.info(f"✓ Source code extracted successfully for chain {chain_id}")
+                    logger.info(f"  - Functions: {len(extracted_code['functions'])}")
+                    logger.info(f"  - Structs: {len(extracted_code['structs'])}")
+                    logger.info(f"  - Enums: {len(extracted_code['enums'])}")
+                    if extracted_code['is_proxy']:
+                        logger.info(f"  - Proxy detected, using implementation: {extracted_code['implementation']}")
+                    if extracted_code['is_diamond']:
+                        logger.info(f"  - Diamond proxy detected with {len(set(extracted_code['facets'].values()))} facets")
+                else:
+                    logger.warning(f"Could not extract source code for chain {chain_id}")
+
+            if self.extracted_codes:
+                logger.info(f"\n✓ Successfully extracted source code from {len(self.extracted_codes)} chain(s): {list(self.extracted_codes.keys())}")
             else:
-                logger.warning("Could not extract source code, continuing without it")
+                logger.warning("Could not extract source code from any deployment, continuing without it")
 
         # Analyze each selector with its pre-fetched transactions
         for selector in selectors:
@@ -552,7 +638,7 @@ class ERC7730Analyzer:
             transactions = all_selector_txs.get(selector.lower(), [])
 
             # Get the deployment used for this selector (for chain_id and contract_address)
-            selector_deployment = deployment_per_selector.get(selector.lower(), used_deployment)
+            selector_deployment = deployment_per_selector.get(selector.lower(), default_deployment)
 
             if not transactions:
                 logger.warning(f"No transactions found for selector {selector} - will perform static analysis only")
@@ -631,67 +717,82 @@ class ERC7730Analyzer:
 
             audit_report = None
 
-            # Extract source code for this specific function
+            # Extract source code for this specific function (search across all chains)
             function_source = None
-            if self.extracted_code and self.extracted_code['source_code']:
-                logger.info(f"Extracting source code for function: {function_name}")
-                function_source = self.source_extractor.get_function_with_dependencies(
-                    function_name,
-                    self.extracted_code,
-                    max_lines=300
-                )
+            if self.extracted_codes:
+                logger.info(f"Searching for function '{function_name}' across {len(self.extracted_codes)} chain(s)...")
 
-                if function_source and function_source['function']:
-                    logger.info(f"✓ Extracted function code ({function_source['total_lines']} lines)")
-                    logger.info(f"  - Constants: {len(function_source.get('constants', []))}")
-                    logger.info(f"  - Structs: {len(function_source['structs'])}")
-                    logger.info(f"  - Enums: {len(function_source['enums'])}")
-                    logger.info(f"  - Internal functions: {len(function_source['internal_functions'])}")
-                    if function_source['truncated']:
-                        logger.info(f"  ⚠ Code was truncated to fit within line limit")
+                # Try each chain until we find the function
+                for chain_id, extracted_code in self.extracted_codes.items():
+                    if not extracted_code['source_code']:
+                        continue
 
-                    # Display code in debug mode as a single cohesive block
-                    if logger.isEnabledFor(logging.INFO):
-                        code_block = f"\n{'='*60}\n"
-                        code_block += "SOURCE CODE (being sent to AI):\n"
-                        code_block += f"{'='*60}\n\n"
+                    logger.info(f"  Checking chain {chain_id}...")
+                    function_source = self.source_extractor.get_function_with_dependencies(
+                        function_name,
+                        extracted_code,
+                        max_lines=300
+                    )
 
-                        if function_source.get('function_docstring'):
-                            code_block += f"// Docstring:\n{function_source['function_docstring']}\n\n"
+                    if function_source and function_source['function']:
+                        logger.info(f"✓ Found function on chain {chain_id}!")
+                        logger.info(f"✓ Extracted function code ({function_source['total_lines']} lines)")
+                        logger.info(f"  - Constants: {len(function_source.get('constants', []))}")
+                        logger.info(f"  - Structs: {len(function_source['structs'])}")
+                        logger.info(f"  - Enums: {len(function_source['enums'])}")
+                        logger.info(f"  - Internal functions: {len(function_source['internal_functions'])}")
+                        if function_source['truncated']:
+                            logger.info(f"  ⚠ Code was truncated to fit within line limit")
+                        break  # Stop searching once found
+                    else:
+                        logger.info(f"  Function not found on chain {chain_id}")
 
-                        if function_source.get('constants'):
-                            code_block += "// Constants:\n"
-                            for constant in function_source['constants']:
-                                code_block += f"{constant}\n"
-                            code_block += "\n"
+                if not function_source or not function_source.get('function'):
+                    logger.warning(f"Function '{function_name}' not found in any of the {len(self.extracted_codes)} chain(s)")
 
-                        if function_source['structs']:
-                            code_block += "// Structs:\n"
-                            for struct in function_source['structs']:
-                                code_block += f"{struct}\n"
-                            code_block += "\n"
+            # Display code in debug mode as a single cohesive block
+            if function_source and function_source.get('function'):
+                if logger.isEnabledFor(logging.INFO):
+                    code_block = f"\n{'='*60}\n"
+                    code_block += "SOURCE CODE (being sent to AI):\n"
+                    code_block += f"{'='*60}\n\n"
 
-                        if function_source['enums']:
-                            code_block += "// Enums:\n"
-                            for enum in function_source['enums']:
-                                code_block += f"{enum}\n"
-                            code_block += "\n"
+                    if function_source.get('function_docstring'):
+                        code_block += f"// Docstring:\n{function_source['function_docstring']}\n\n"
 
-                        code_block += "// Main function:\n"
-                        code_block += function_source['function']
+                    if function_source.get('constants'):
+                        code_block += "// Constants:\n"
+                        for constant in function_source['constants']:
+                            code_block += f"{constant}\n"
+                        code_block += "\n"
 
-                        if function_source['internal_functions']:
-                            code_block += "\n\n// Internal functions called:\n"
-                            for internal_func in function_source['internal_functions']:
-                                # Format internal function with docstring and body
-                                if internal_func.get('docstring'):
-                                    code_block += f"{internal_func['docstring']}\n"
-                                code_block += f"{internal_func['body']}\n\n"
+                    if function_source['structs']:
+                        code_block += "// Structs:\n"
+                        for struct in function_source['structs']:
+                            code_block += f"{struct}\n"
+                        code_block += "\n"
 
-                        code_block += f"\n{'='*60}\n"
+                    if function_source['enums']:
+                        code_block += "// Enums:\n"
+                        for enum in function_source['enums']:
+                            code_block += f"{enum}\n"
+                        code_block += "\n"
 
-                        # Single log call for entire code block
-                        logger.info(code_block)
+                    code_block += "// Main function:\n"
+                    code_block += function_source['function']
+
+                    if function_source['internal_functions']:
+                        code_block += "\n\n// Internal functions called:\n"
+                        for internal_func in function_source['internal_functions']:
+                            # Format internal function with docstring and body
+                            if internal_func.get('docstring'):
+                                code_block += f"{internal_func['docstring']}\n"
+                            code_block += f"{internal_func['body']}\n\n"
+
+                    code_block += f"\n{'='*60}\n"
+
+                    # Single log call for entire code block
+                    logger.info(code_block)
 
             # Generate clear signing audit report
             audit_report_critical = None

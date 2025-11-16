@@ -7,7 +7,7 @@ This module handles generating markdown and JSON reports from analysis results.
 import json
 import re
 import logging
-from typing import Dict, Any
+from typing import Dict, Any, List
 from pathlib import Path
 from datetime import datetime
 
@@ -39,20 +39,21 @@ def extract_coverage_score(audit_report: str) -> str:
 
 def expand_erc7730_format_with_refs(selector_format: Dict[str, Any], full_erc7730: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Expand ERC-7730 format to include referenced definitions and constants.
+    Expand ERC-7730 format to include referenced definitions, constants, and enums.
 
     Args:
         selector_format: The format definition for a specific selector
         full_erc7730: The complete ERC-7730 data with metadata and display sections
 
     Returns:
-        Expanded format with inline definitions and constants
+        Expanded format with inline definitions, constants, and enums
     """
     result = {}
 
     # Collect referenced definitions
     referenced_defs = set()
     referenced_constants = set()
+    referenced_enums = set()
 
     def find_refs(obj):
         """Recursively find $ref references in the format"""
@@ -63,6 +64,10 @@ def expand_erc7730_format_with_refs(selector_format: Dict[str, Any], full_erc773
                     if value.startswith('$.display.definitions.'):
                         def_name = value.replace('$.display.definitions.', '')
                         referenced_defs.add(def_name)
+                    # Extract enum name from $.metadata.enums.interestRateMode
+                    elif value.startswith('$.metadata.enums.'):
+                        enum_name = value.replace('$.metadata.enums.', '')
+                        referenced_enums.add(enum_name)
                 elif isinstance(value, (dict, list)):
                     find_refs(value)
         elif isinstance(obj, list):
@@ -97,13 +102,23 @@ def expand_erc7730_format_with_refs(selector_format: Dict[str, Any], full_erc773
             if def_name in full_erc7730['display']['definitions']:
                 find_constant_refs(full_erc7730['display']['definitions'][def_name])
 
-    # Build result with metadata constants if any are referenced
-    if referenced_constants:
-        result['metadata'] = {'constants': {}}
-        if 'metadata' in full_erc7730 and 'constants' in full_erc7730['metadata']:
+    # Build result with metadata (constants and enums) if any are referenced
+    if referenced_constants or referenced_enums:
+        result['metadata'] = {}
+
+        # Add referenced constants
+        if referenced_constants and 'metadata' in full_erc7730 and 'constants' in full_erc7730['metadata']:
+            result['metadata']['constants'] = {}
             for const_name in referenced_constants:
                 if const_name in full_erc7730['metadata']['constants']:
                     result['metadata']['constants'][const_name] = full_erc7730['metadata']['constants'][const_name]
+
+        # Add referenced enums
+        if referenced_enums and 'metadata' in full_erc7730 and 'enums' in full_erc7730['metadata']:
+            result['metadata']['enums'] = {}
+            for enum_name in referenced_enums:
+                if enum_name in full_erc7730['metadata']['enums']:
+                    result['metadata']['enums'][enum_name] = full_erc7730['metadata']['enums'][enum_name]
 
     # Build result with display definitions if any are referenced
     if referenced_defs:
@@ -168,29 +183,49 @@ def parse_first_report(audit_report: str) -> tuple:
     if '✅ No critical issues found' in audit_report or '✅ no critical issues found' in audit_report.lower():
         return [], []
 
-    # Extract critical issues (lines starting with - under "### **Issues Found:**")
-    # The format has instructions, then "**Your analysis:**", then the actual bullet points
+    def _extract_issue_bullets(section_text: str) -> List[str]:
+        """Helper to pull bullet lines from a section."""
+        issues = []
+        for line in section_text.split('\n'):
+            line = line.strip()
+            # Stop when we hit the "Your analysis:" marker
+            if line.lower().startswith('**your analysis'):
+                break
+            # Skip empty lines (don't break, just continue)
+            if not line:
+                continue
+            # Skip markdown separators (---, - ---, etc.)
+            if re.match(r'^[-*]+\s*[-*]*\s*$', line):
+                continue
+            # Extract bullet points
+            if line.startswith(('-', '*')):
+                issue_text = re.sub(r'^[-*]\s+', '', line).strip()
+                # Remove bold markdown wrapper if present
+                issue_text = re.sub(r'^\*\*(.*)\*\*$', r'\1', issue_text)
+                if issue_text:
+                    issues.append(issue_text)
+        return issues
+
+    # Extract critical issues under "### **Issues Found:**"
     critical_section = re.search(
-        r'###\s*\*\*Issues Found:\*\*.*?\*\*Your analysis:\*\*(.*?)(?=---|$)',
+        r'###\s*\*\*Issues Found:\*\*(.*?)(?=###|\*\*Recommendations:\*\*|---|$)',
         audit_report,
         re.DOTALL | re.IGNORECASE
     )
 
-    # Fallback: if "**Your analysis:**" not found, try the old format
-    if not critical_section:
-        critical_section = re.search(
-            r'###\s*\*\*Issues Found:\*\*(.*?)(?=---|\*\*Recommendations:\*\*|$)',
-            audit_report,
-            re.DOTALL | re.IGNORECASE
-        )
-
     if critical_section:
-        for line in critical_section.group(1).split('\n'):
-            line = line.strip()
-            if line.startswith('-'):
-                issue_text = re.sub(r'^[-*]\s+', '', line).strip()
-                if issue_text:
-                    critical.append(issue_text)
+        section_text = critical_section.group(1)
+
+        # Prefer text before "**Your analysis:**"
+        analysis_split = re.split(r'\*\*Your analysis:\*\*', section_text, flags=re.IGNORECASE)
+        pre_analysis_text = analysis_split[0]
+        extracted = _extract_issue_bullets(pre_analysis_text)
+
+        # Fallback: include entire section (for legacy formats) if nothing found
+        if not extracted:
+            extracted = _extract_issue_bullets(section_text)
+
+        critical.extend(extracted)
 
     # Extract recommendations (lines starting with - under "**Recommendations:**")
     rec_section = re.search(
@@ -202,8 +237,17 @@ def parse_first_report(audit_report: str) -> tuple:
     if rec_section:
         for line in rec_section.group(1).split('\n'):
             line = line.strip()
+            # Skip empty lines
+            if not line:
+                continue
+            # Skip markdown separators (---, - ---, etc.)
+            if re.match(r'^[-*]+\s*[-*]*\s*$', line):
+                continue
+            # Extract bullet points
             if line.startswith('-'):
                 rec_text = re.sub(r'^[-*]\s+', '', line).strip()
+                # Remove bold markdown wrapper if present
+                rec_text = re.sub(r'^\*\*(.*)\*\*$', r'\1', rec_text)
                 if rec_text:
                     recommendations.append(rec_text)
 

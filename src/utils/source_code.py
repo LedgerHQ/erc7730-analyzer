@@ -138,10 +138,10 @@ class SolidityCodeParser:
         functions = {}
 
         # Pattern to match function declarations
-        # Matches: function name(params) visibility modifiers returns(...)
-        # Updated to handle custom modifiers (e.g., nonReentrant, custom modifiers with args like refundExcessNative(_receiver))
-        # The pattern now allows any sequence of words, whitespace, and modifier calls (with parentheses)
-        function_pattern = r'function\s+(\w+)\s*\(([^)]*)\)\s+((?:(?:\w+(?:\([^)]*\))?)\s*)+)(?:returns\s*\([^)]*\))?\s*\{'
+        # Matches: function name(params) [everything until opening brace]
+        # Uses simple non-backtracking pattern to avoid catastrophic backtracking on complex modifiers
+        # Matches everything between ) and { as visibility_block, then parse it separately
+        function_pattern = r'function\s+(\w+)\s*\(([^)]*)\)\s+([^{]+)\{'
 
         for match in re.finditer(function_pattern, self.source_code):
             function_name = match.group(1)
@@ -961,10 +961,21 @@ class SourceCodeExtractor:
             # Parse using Solidity parser
             parser = SolidityCodeParser(source_code)
 
+            logger.info("  [1/4] Extracting structs...")
             result['structs'] = parser.extract_structs()
+            logger.info(f"  ✓ Found {len(result['structs'])} structs")
+
+            logger.info("  [2/4] Extracting enums...")
             result['enums'] = parser.extract_enums()
+            logger.info(f"  ✓ Found {len(result['enums'])} enums")
+
+            logger.info("  [3/4] Extracting constants...")
             result['constants'] = parser.extract_constants()
+            logger.info(f"  ✓ Found {len(result['constants'])} constants")
+
+            logger.info("  [4/4] Extracting functions (this may take a while for large contracts)...")
             result['functions'] = parser.extract_functions()
+            logger.info(f"  ✓ Found {len(result['functions'])} functions")
 
             # Separate internal functions
             result['internal_functions'] = {
@@ -1059,6 +1070,9 @@ class SourceCodeExtractor:
         # Add internal functions that are called
         # Also scan them for library calls
         for internal_call in internal_calls:
+            found = False
+
+            # First check in internal_functions (private/internal visibility)
             for func_data in extracted_code['internal_functions'].values():
                 if func_data['name'] == internal_call:
                     result['internal_functions'].append({
@@ -1067,11 +1081,32 @@ class SourceCodeExtractor:
                     })
                     all_code_to_scan.append(func_data['body'])  # Scan internal functions for constants too
                     result['total_lines'] += func_data['line_count']
+                    logger.info(f"    ✓ Including internal function: {internal_call}()")
 
                     # Scan this internal function for library calls too
                     internal_lib_calls = parser.find_library_calls(func_data['body'])
                     library_calls.extend(internal_lib_calls)
+                    found = True
                     break
+
+            # If not found in internal functions, check in all functions (public/external)
+            # This handles wrapper functions that call other public functions
+            if not found:
+                for func_data in extracted_code['functions'].values():
+                    if func_data['name'] == internal_call and func_data['name'] != function_name:
+                        # Avoid infinite recursion by not including the function itself
+                        result['internal_functions'].append({
+                            'body': func_data['body'],
+                            'docstring': func_data.get('docstring')
+                        })
+                        all_code_to_scan.append(func_data['body'])
+                        result['total_lines'] += func_data['line_count']
+                        logger.info(f"    ✓ Including called public/external function: {internal_call}()")
+
+                        # Scan this function for library calls too
+                        public_lib_calls = parser.find_library_calls(func_data['body'])
+                        library_calls.extend(public_lib_calls)
+                        break
 
         # Add library functions that are called (e.g., LibAsset.isNativeAsset)
         # We need to recursively scan for nested library calls

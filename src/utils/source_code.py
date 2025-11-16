@@ -1059,6 +1059,9 @@ class SourceCodeExtractor:
         # Add internal functions that are called
         # Also scan them for library calls
         for internal_call in internal_calls:
+            found = False
+
+            # First check in internal_functions (private/internal visibility)
             for func_data in extracted_code['internal_functions'].values():
                 if func_data['name'] == internal_call:
                     result['internal_functions'].append({
@@ -1067,11 +1070,32 @@ class SourceCodeExtractor:
                     })
                     all_code_to_scan.append(func_data['body'])  # Scan internal functions for constants too
                     result['total_lines'] += func_data['line_count']
+                    logger.info(f"    ✓ Including internal function: {internal_call}()")
 
                     # Scan this internal function for library calls too
                     internal_lib_calls = parser.find_library_calls(func_data['body'])
                     library_calls.extend(internal_lib_calls)
+                    found = True
                     break
+
+            # If not found in internal functions, check in all functions (public/external)
+            # This handles wrapper functions that call other public functions
+            if not found:
+                for func_data in extracted_code['functions'].values():
+                    if func_data['name'] == internal_call and func_data['name'] != function_name:
+                        # Avoid infinite recursion by not including the function itself
+                        result['internal_functions'].append({
+                            'body': func_data['body'],
+                            'docstring': func_data.get('docstring')
+                        })
+                        all_code_to_scan.append(func_data['body'])
+                        result['total_lines'] += func_data['line_count']
+                        logger.info(f"    ✓ Including called public/external function: {internal_call}()")
+
+                        # Scan this function for library calls too
+                        public_lib_calls = parser.find_library_calls(func_data['body'])
+                        library_calls.extend(public_lib_calls)
+                        break
 
         # Add library functions that are called (e.g., LibAsset.isNativeAsset)
         # We need to recursively scan for nested library calls

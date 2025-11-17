@@ -138,10 +138,10 @@ class SolidityCodeParser:
         functions = {}
 
         # Pattern to match function declarations
-        # Matches: function name(params) visibility modifiers returns(...)
-        # Updated to handle custom modifiers (e.g., nonReentrant, custom modifiers with args like refundExcessNative(_receiver))
-        # The pattern now allows any sequence of words, whitespace, and modifier calls (with parentheses)
-        function_pattern = r'function\s+(\w+)\s*\(([^)]*)\)\s+((?:(?:\w+(?:\([^)]*\))?)\s*)+)(?:returns\s*\([^)]*\))?\s*\{'
+        # Matches: function name(params) [everything until opening brace]
+        # Uses simple non-backtracking pattern to avoid catastrophic backtracking on complex modifiers
+        # Matches everything between ) and { as visibility_block, then parse it separately
+        function_pattern = r'function\s+(\w+)\s*\(([^)]*)\)\s+([^{]+)\{'
 
         for match in re.finditer(function_pattern, self.source_code):
             function_name = match.group(1)
@@ -961,10 +961,21 @@ class SourceCodeExtractor:
             # Parse using Solidity parser
             parser = SolidityCodeParser(source_code)
 
+            logger.info("  [1/4] Extracting structs...")
             result['structs'] = parser.extract_structs()
+            logger.info(f"  ✓ Found {len(result['structs'])} structs")
+
+            logger.info("  [2/4] Extracting enums...")
             result['enums'] = parser.extract_enums()
+            logger.info(f"  ✓ Found {len(result['enums'])} enums")
+
+            logger.info("  [3/4] Extracting constants...")
             result['constants'] = parser.extract_constants()
+            logger.info(f"  ✓ Found {len(result['constants'])} constants")
+
+            logger.info("  [4/4] Extracting functions (this may take a while for large contracts)...")
             result['functions'] = parser.extract_functions()
+            logger.info(f"  ✓ Found {len(result['functions'])} functions")
 
             # Separate internal functions
             result['internal_functions'] = {

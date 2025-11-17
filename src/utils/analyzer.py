@@ -98,7 +98,7 @@ class ERC7730Analyzer:
             # Recursively merge includes in the included file
             include_data = self._merge_includes(include_data, base_path)
 
-            # Merge metadata
+            # Merge metadata (constants, enums, etc.)
             if 'metadata' in include_data:
                 if 'metadata' not in data:
                     data['metadata'] = {}
@@ -106,7 +106,8 @@ class ERC7730Analyzer:
                     if key not in data['metadata']:
                         data['metadata'][key] = value
                     elif isinstance(value, dict) and isinstance(data['metadata'][key], dict):
-                        # Deep merge for nested dicts (e.g., constants)
+                        # Deep merge for nested dicts (e.g., constants, enums)
+                        # Include file values come first, main file can override
                         data['metadata'][key] = {**value, **data['metadata'][key]}
 
             # Merge display definitions
@@ -471,6 +472,10 @@ class ERC7730Analyzer:
             for s in selectors
         }
         deployment_per_selector = {}  # Track which deployment was used for each selector
+        default_deployment = deployments[0] if deployments else {
+            'address': 'N/A',
+            'chainId': 1
+        }
 
         # Try each deployment, continuing to search for selectors that don't have transactions yet
         for deployment in deployments:
@@ -633,7 +638,7 @@ class ERC7730Analyzer:
             transactions = all_selector_txs.get(selector.lower(), [])
 
             # Get the deployment used for this selector (for chain_id and contract_address)
-            selector_deployment = deployment_per_selector.get(selector.lower(), used_deployment)
+            selector_deployment = deployment_per_selector.get(selector.lower(), default_deployment)
 
             if not transactions:
                 logger.warning(f"No transactions found for selector {selector} - will perform static analysis only")

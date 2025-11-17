@@ -160,12 +160,16 @@ All "format" fields in ERC-7730 MUST use one of these values:
    - Commonly used with `"path": "@.value"` to show msg.value
 
 3. **"tokenAmount"** - Amount in ERC20 Token
-   - **REQUIRED PARAM**: MUST have `"tokenPath"` in params pointing to the token address parameter
-   - **EXCEPTIONS where tokenPath is NOT required** (not critical, but add WARNING in detailed report):
+   - **TWO WAYS to specify the token**:
+     * **Option A - Dynamic token (from input parameter)**: Use `"tokenPath"` pointing to the parameter name
+       - Example: `{{"path": "amount", "format": "tokenAmount", "params": {{"tokenPath": "token"}}}}`
+     * **Option B - Fixed token (hardcoded address)**: Use `"token"` with the hardcoded address
+       - Example: `{{"path": "amount", "format": "tokenAmount", "params": {{"token": "0x1234..."}}}}`
+       - Use this for migration contracts or functions that ONLY operate on a specific token
+   - **CRITICAL if NEITHER tokenPath NOR token is present** UNLESS one of these exceptions applies:
      * Exception 1: Function ONLY supports native ETH (no other token possible) AND has `nativeCurrencyAddress`
-     * Exception 2: Token address is NOT available in function inputs (e.g. computed on-chain) or cannot be taken from the inputs due to a limitation of the 7730 AND has `nativeCurrencyAddress` for native transfers only
+     * Exception 2: Token address is NOT available in function inputs (e.g. computed on-chain from pool/DEX) AND has `nativeCurrencyAddress` for native transfers only
    - For native ETH support: MUST also have `"nativeCurrencyAddress"` in params (can be in field or $ref definition)
-   - Example: `{{"path": "_amount", "format": "tokenAmount", "params": {{"tokenPath": "_token", "nativeCurrencyAddress": ["$.metadata.constants.addressAsEth"]}}}}`
 
 4. **"nftName"** - ID of the NFT in the collection
    - **REQUIRED PARAM**: MUST have `"collectionPath"` in params pointing to the NFT collection address
@@ -195,10 +199,12 @@ All "format" fields in ERC-7730 MUST use one of these values:
    - Example: `{{"path": "_fee", "format": "unit", "params": {{"base": "%", "decimals": 2}}}}`
    - Example: `{{"path": "_time", "format": "unit", "params": {{"base": "h"}}}}`
 
-9. **"enum"** - Value converted using referenced constant enumeration
-   - **REQUIRED PARAM**: MUST have path to enumeration in metadata.constants
+9. **"enum"** - Value converted using referenced enumeration
+   - **REQUIRED PARAM**: MUST have `$ref` path to enumeration in metadata.constants OR metadata.enums
+   - Both `$.metadata.constants.*` and `$.metadata.enums.*` are valid
    - Path starts with root node `$.`
-   - Example: `{{"path": "_swapType", "format": "enum", "params": {{"$ref": "$.metadata.constants.swapTypes"}}}}`
+   - Example (constants): `{{"path": "_swapType", "format": "enum", "params": {{"$ref": "$.metadata.constants.swapTypes"}}}}`
+   - Example (enums): `{{"path": "_rateMode", "format": "enum", "params": {{"$ref": "$.metadata.enums.interestRateMode"}}}}`
 
 **CRITICAL VALIDATION RULES:**
 - If format is "tokenAmount" → MUST have "tokenPath" in params
@@ -258,13 +264,16 @@ You MUST be EXTREMELY conservative. Only flag if a normal user would be shocked 
 6. **Broken `$ref` references** - Format references non-existent definitions/constants (display will fail)
 7. **Input parameter path mismatch** - ERC-7730 references a parameter path that doesn't exist in the ABI OR uses wrong path/name (e.g., format shows "_receiver" but ABI has "receiver", or shows "_tokens[0]" but should be "_swapData[0].token")
 7b. **Format validation failures**:
-   - **tokenAmount without tokenPath**: Field has `"format": "tokenAmount"` but missing `"tokenPath"` in params
-     * → CRITICAL **UNLESS** one of these exceptions applies:
+   - **tokenAmount without token specification**: Field has `"format": "tokenAmount"` but missing BOTH `"tokenPath"` AND `"token"` in params
+     * → Token can be specified in TWO ways:
+       1. **Dynamic (from parameter)**: `"tokenPath": "paramName"` - token address comes from function input
+       2. **Fixed (hardcoded)**: `"token": "0x..."` - for migration contracts or functions operating on single specific token
+     * → CRITICAL if NEITHER is present **UNLESS** one of these exceptions applies:
        1. Function ONLY supports native ETH (check source code: no ERC20 support, hardcoded ETH) AND has `nativeCurrencyAddress`
-       2. Token address is NOT in function inputs (encoded in bytes/pools, computed on-chain) or cannot be determined from inputs due to a limitation in 7730 AND has `nativeCurrencyAddress`
-     * → If exception applies: NOT CRITICAL, but add **WARNING in detailed report** explaining the limitation (e.g., "This field displays amounts for native ETH only. ERC20 tokens cannot be displayed because they are determined on-chain.")
+       2. Token address is NOT in function inputs (computed from pool/DEX, encoded in bytes, determined on-chain) AND has `nativeCurrencyAddress`
+     * → If exception 2 applies (token determined by pool): This is a **SPEC LIMITATION** - Add to "Parameters that cannot be clear signed" section, NOT to critical issues. Example: "Output token cannot be clear signed because it is determined by the pool/DEX and not an explicit function input"
    - **nftName without collectionPath**: Field has `"format": "nftName"` but missing `"collectionPath"` in params → CRITICAL
-   - **enum without constant reference**: Field has `"format": "enum"` but missing reference to metadata.constants → CRITICAL
+   - **enum without reference**: Field has `"format": "enum"` but missing `$ref` to metadata.constants OR metadata.enums → CRITICAL
    - **Wrong format type**: Using wrong format (e.g., "amount" for ERC20 token, or "tokenAmount" without tokenPath)
      * **EXCEPTION - Type casting uint256/bytes32 ↔ address**: Using `"addressName"` format on `uint256`, `bytes32`, or `bytes20` ABI type is VALID (casting is supported by taking 20 bytes). Similarly, using `"raw"` or numeric formats on `address` type is valid. These are NOT critical type mismatches.
      * **EXCEPTION - Token amount as "raw" when token cannot be determined**: If a field displays a token amount (e.g., amountOut, minReceive) but uses `"format": "raw"` instead of `"tokenAmount"`, this is ACCEPTABLE if the token address cannot be determined from function inputs (e.g., output token is computed from pool addresses/routes). This is NOT critical - it's a known concession. Only mention in recommendations: "User will see raw amount without token symbol/decimals because output token cannot be determined from inputs."
@@ -275,6 +284,12 @@ You MUST be EXTREMELY conservative. Only flag if a normal user would be shocked 
     * Example: `uniswapV3SwapToWithPermit()` is NOT payable but calls `uniswapV3SwapTo()` which is payable
     * In this case, the internal function's payable logic will NEVER execute because `msg.value == 0`
     * **Do NOT flag missing @.value if the main function is not payable**
+  - **IMPORTANT - Non-payable function showing ETH as option**: If a function is NOT payable but the descriptor includes `nativeCurrencyAddress` (showing ETH as possible input):
+    * This is NOT CRITICAL - it's a UX improvement recommendation only
+    * The transaction will revert if user tries to send ETH to a non-payable function (no funds lost)
+    * The UI/frontend likely prevents this anyway
+    * Add to RECOMMENDATIONS: "Function is not payable but descriptor shows ETH as possible input. Consider removing nativeCurrencyAddress for better UX to prevent users from selecting ETH which would cause transaction to revert."
+    * Do NOT add to critical issues
   - **IMPORTANT**: These rules apply to BOTH what the user SENDS and what the user RECEIVES
   - **HOW TO CHECK**: For EACH field that displays a token amount, check if that field OR its $ref definition has native ETH support
   - **Understanding format types**:
@@ -323,9 +338,15 @@ You MUST be EXTREMELY conservative. Only flag if a normal user would be shocked 
 
 **CRITICAL REQUIREMENT - Can it be fixed with available input parameters?**
 - ONLY flag as CRITICAL if the missing/wrong information EXISTS in the function's input parameters AND can be displayed with current ERC-7730 spec
-- Example: If ERC-7730 doesn't show recipient but recipient is an input parameter → CRITICAL
-- Example: If showing max or min amount not actual amounts (which is computed on-chain, not in input) → NOT CRITICAL (that's how the function works)
-- **Rule: If the information cannot be obtained from input parameters OR cannot be displayed with ERC-7730 spec (e.g., bitmask flags), it's NOT a critical issue - it's a spec limitation**
+- Example CRITICAL: ERC-7730 doesn't show recipient but recipient is an input parameter → CRITICAL (can be fixed)
+- Example NOT CRITICAL: Showing max/min amount not actual amounts (computed on-chain, not in inputs) → NOT CRITICAL (that's how the function works)
+- **Rule: If the information cannot be obtained from input parameters OR cannot be displayed with ERC-7730 spec, it's NOT a critical issue - it's a SPEC LIMITATION (add to section 6️⃣, not section 2)**
+
+**Examples of SPEC LIMITATIONS (NOT critical issues):**
+1. **Packed/bitflag parameters** - `makerTraits` with packed nonce/epoch/flags requiring bitwise operations → Cannot display with ERC-7730
+2. **Output token from pool** - `minReturn` where output token determined by pool/DEX address → Cannot reliably map to specific ERC20
+3. **Arbitrary calldata** - Multicall/delegatecall functions with arbitrary actions → Not necessary to decode, users understand these are generic execution
+4. **Values computed on-chain** - Actual swap amounts, slippage-adjusted amounts → Only max/min available in inputs
 
 **DO NOT FLAG (these are NOT critical):**
 - ✅ Sentinel values like CONTRACT_BALANCE, ADDRESS_THIS - implementation details users don't see
@@ -355,12 +376,18 @@ You MUST be EXTREMELY conservative. Only flag if a normal user would be shocked 
 - "Missing sqrtPriceLimit parameter" → NOT CRITICAL (technical)
 - "Showing a max or min amount rather than exact ones" → NOT CRITICAL (actual amount is computed on-chain, not available in inputs)
 - "Missing actual spend amount for max-based swaps" → NOT CRITICAL (that's how max-based swaps work - you specify max, actual is computed)
+- "tokenAmount uses 'token' parameter instead of 'tokenPath'" → NOT CRITICAL. Using `"token": "0x..."` is valid for hardcoded token addresses (e.g., migration contracts that only operate on one specific token like CHSB). This is an alternative to `"tokenPath"` for fixed-token functions.
 - "tokenAmount without tokenPath when token address cannot be determined from inputs" → NOT CRITICAL if function ONLY supports native ETH OR destination token is not in inputs (computed on-chain) OR the tokena ddress cannot be determined from the inputs dur to a 7730 limitation AND has nativeCurrencyAddress (add WARNING in detailed report explaining the limitation)
 - "Token amount displayed as raw format instead of tokenAmount" → NOT CRITICAL if the token address cannot be determined from function inputs (e.g., output token computed from pools/routes). This is an acceptable concession. Only mention in recommendations: "User will see raw amount without token symbol/decimals because output token cannot be determined from inputs."
 - "Type mismatch: uint256 displayed as addressName" → NOT CRITICAL (valid casting, e.g., pools.[-1] as uint256 can be cast to address by taking 20 bytes)
 - "Type mismatch: bytes32 displayed as addressName" → NOT CRITICAL (valid casting, bytes32 can be interpreted as address)
 - "Bitmask flags parameter not displayed" → NOT CRITICAL if source code shows bitwise AND operations (e.g., `flags & _SHOULD_CLAIM`) because ERC-7730 spec cannot display bitmasks (add to "Parameters that cannot be clear signed" section with explanation)
+- "Packed parameter like makerTraits with nonce/epoch/flags not decoded" → NOT CRITICAL (SPEC LIMITATION). ERC-7730 cannot perform bitwise shifts/masks to extract packed values. Add to spec limitations section.
+- "Output token determined by pool/DEX not shown" → NOT CRITICAL (SPEC LIMITATION). Example: `minReturn` in `ethUnoswap` where DEX/pool determines output token. Cannot reliably map to specific ERC20 address. Add to spec limitations section.
+- "Arbitrary low-level call details not shown" → NOT CRITICAL. Multicall/delegatecall to self with arbitrary actions - users understand these are generic execution functions, no need to decode arbitrary calldata.
 - "Recipient field without senderAddress param when source code has zero-check fallback" → NOT CRITICAL but add WARNING in detailed report recommending `"senderAddress": ["0x0000000000000000000000000000000000000000"]` to handle zero address fallback to msg.sender (e.g., when code shows `recipient = (param == address(0)) ? msg.sender : param`)
+- "Non-payable function shows ETH as possible input (nativeCurrencyAddress present)" → NOT CRITICAL (UX improvement only). Transaction will revert if user tries to send ETH to non-payable function - no funds lost. UI/frontend likely prevents this. Add to RECOMMENDATIONS: "Consider removing nativeCurrencyAddress for better UX" but do NOT flag as critical.
+- "Enum references $.metadata.enums instead of $.metadata.constants" → NOT CRITICAL. Both `$.metadata.enums.*` and `$.metadata.constants.*` are valid paths for enum $ref. Example: `"$ref": "$.metadata.enums.interestRateMode"` is correct.
 
 BE STRICT. When in doubt, DO NOT flag as critical.
 
@@ -407,6 +434,8 @@ If NO critical issues exist, write only: "✅ No critical issues found"
 
 ### **Recommendations:**
 
+**⚠️ ALWAYS INCLUDE THIS SECTION - Even if no critical issues found!**
+
 **CRITICAL FORMATTING REQUIREMENTS - READ CAREFULLY:**
 
 ✅ **USE BULLET POINTS with dashes (-), NOT numbered lists**
@@ -417,7 +446,7 @@ If NO critical issues exist, write only: "✅ No critical issues found"
 
 **How to write recommendations:**
 
-**Two types of recommendations:**
+**Three types of recommendations (include ALL that apply):**
 1. **Fixes for critical issues** - For each critical issue from "Issues Found" section, write ONE bullet point that:
    - States the fix clearly
    - Includes the specific code/field to add or change
@@ -427,12 +456,26 @@ If NO critical issues exist, write only: "✅ No critical issues found"
    - These do NOT go in "Issues Found" section
    - List them here in Recommendations with full explanation
    - Follow the "ERC-7730 SPEC LIMITATIONS" format below
+   - **ALWAYS include these even when no critical issues exist**
 
-**GOOD EXAMPLES:**
+3. **Optional improvements** - Even when descriptor is correct, suggest UX enhancements:
+   - Adding senderAddress parameter for zero-check fallbacks
+   - Better label wording
+   - Additional helpful fields
+   - **Include these even when no critical issues exist**
+
+**GOOD EXAMPLES (with critical issues):**
 ```markdown
 - **Add msg.value display:** Include a field with `"path": "@.value"`, `"label": "Fee Amount"`, and `"format": "amount"` in the fields array to show the native ETH fee being sent.
 - **Fix inverted token addresses:** Swap the tokenPath values so `fromAmount` references `#.tokenIn` and `toAmount` references `#.tokenOut`.
 - **Show recipient address:** Add a field with `"path": "#.recipient"`, `"label": "Recipient"`, and `"format": "addressName"` to display where tokens are sent.
+```
+
+**GOOD EXAMPLES (no critical issues, but still recommendations):**
+```markdown
+- **Output token cannot be clear signed:** The `minReturn` field displays the minimum amount to receive, but the output token is determined by the pool/DEX address and not available as a function input, so ERC-7730 cannot reliably map this to a specific ERC20 address with tokenPath.
+- **(Optional) Add senderAddress parameter:** Consider adding `"senderAddress": ["0x0000000000000000000000000000000000000000"]` to the recipient field to handle the zero-address fallback pattern detected in the source code where `recipient == address(0) ? msg.sender : recipient`.
+- **(Optional) Improve label clarity:** Consider changing the label from "To" to "Recipient Address" for better user clarity.
 ```
 
 **BAD EXAMPLES (DO NOT DO THIS):**
@@ -467,10 +510,16 @@ If a critical parameter **CANNOT be clear signed** using the current ERC-7730 sp
 - **Why this matters:** [Explain what information the user is missing and the security implications, e.g., "Users cannot see which behavior flags are enabled (SHOULD_CLAIM, REQUIRES_EXTRA_ETH, PARTIAL_FILL), affecting token routing and ETH requirements"]
 - **Detected pattern:** [If applicable, show the code pattern that proves it's a bitmask, e.g., "Source code shows: `if (flags & _SHOULD_CLAIM != 0)` and `if (flags & _REQUIRES_EXTRA_ETH != 0)`"]
 
+**IMPORTANT - ALWAYS PROVIDE RECOMMENDATIONS:**
 
-**If no critical issues exist:** Write only:
+Even if there are **NO critical issues**, you MUST still provide recommendations in this section. Include:
+- **Spec limitations**: Parameters that cannot be clear signed (bitmask flags, output tokens from pools, packed data, etc.)
+- **Optional improvements**: Better labels, adding senderAddress parameter, display enhancements, etc.
+- **Best practices**: Suggestions that improve UX even if not critical
 
-**No recommendations needed.**
+**If truly no recommendations exist** (rare), write only:
+
+**No additional recommendations - descriptor is comprehensive.**
 
 ---
 
@@ -513,13 +562,16 @@ IMPORTANT: Keep the `>` blockquote format above.
 - **Broken `$ref` references** - If format references `$.display.definitions.X` or `$.metadata.constants.Y` that don't exist, this is CRITICAL (display will fail)
 - **Input parameter path mismatch** - ERC-7730 references parameter paths that don't match the ABI (wrong names, wrong nesting, non-existent fields)
 - **Format validation failures**:
-  * **tokenAmount without tokenPath**: Field has `"format": "tokenAmount"` but missing `"tokenPath"` in params
-    - → CRITICAL **UNLESS** one of these exceptions applies:
+  * **tokenAmount without token specification**: Field has `"format": "tokenAmount"` but missing BOTH `"tokenPath"` AND `"token"` in params
+    - → Token can be specified in TWO ways:
+      1. **Dynamic (from parameter)**: `"tokenPath": "paramName"` - token address comes from function input
+      2. **Fixed (hardcoded)**: `"token": "0x..."` - for migration contracts or functions operating on single specific token
+    - → CRITICAL if NEITHER is present **UNLESS** one of these exceptions applies:
       1. Function ONLY supports native ETH (check source code: no ERC20 support, hardcoded ETH) AND has `nativeCurrencyAddress`
-      2. Token address is NOT in function inputs (computed on-chain) OR the token address cannot be determined from inputs due to a limitation in 7730 AND has `nativeCurrencyAddress`
-    - → If exception applies: NOT CRITICAL, but add **WARNING in detailed report under "Display Issues"** explaining the limitation (e.g., "This field displays amounts for native ETH only. ERC20 tokens cannot be displayed due to missing tokenPath because destination token is calculated on-chain from pools parameter.")
+      2. Token address is NOT in function inputs (computed from pool/DEX on-chain) AND has `nativeCurrencyAddress`
+    - → If exception 2 applies (token determined by pool): This is a **SPEC LIMITATION** - add to "Parameters that cannot be clear signed" section, NOT to critical issues
   * **nftName without collectionPath**: Field has `"format": "nftName"` but missing `"collectionPath"` in params → CRITICAL
-  * **enum without constant reference**: Field has `"format": "enum"` but missing reference to metadata.constants → CRITICAL
+  * **enum without reference**: Field has `"format": "enum"` but missing `$ref` to metadata.constants OR metadata.enums → CRITICAL
   * **Wrong format type**: Using wrong format (e.g., "amount" for ERC20 token, or "tokenAmount" without tokenPath)
     - **EXCEPTION - Type casting uint256/bytes32 ↔ address**: Using `"addressName"` format on `uint256`, `bytes32`, or `bytes20` ABI type is VALID (casting is supported). Similarly, using numeric formats on `address` type is valid. These are NOT critical type mismatches.
     - **EXCEPTION - Token amount as "raw" when token cannot be determined**: If a field displays a token amount (e.g., amountOut, minReceive) but uses `"format": "raw"` instead of `"tokenAmount"`, this is ACCEPTABLE if the token address cannot be determined from function inputs (e.g., output token is computed from pool addresses/routes). This is NOT critical - it's a known concession. Only mention in recommendations: "User will see raw amount without token symbol/decimals because output token cannot be determined from inputs."
@@ -530,6 +582,12 @@ IMPORTANT: Keep the `>` blockquote format above.
     * Example: `uniswapV3SwapToWithPermit()` is NOT payable but calls `uniswapV3SwapTo()` which is payable
     * The internal payable function's ETH logic will NEVER execute because `msg.value == 0` always
     * **Do NOT flag missing @.value if the main function is not payable**
+  - **IMPORTANT - Non-payable function showing ETH as option**: If a function is NOT payable but the descriptor includes `nativeCurrencyAddress` (showing ETH as possible input):
+    * This is NOT CRITICAL - it's a UX improvement recommendation only
+    * The transaction will revert if user tries to send ETH to a non-payable function (no funds lost)
+    * The UI/frontend likely prevents this anyway
+    * Add to RECOMMENDATIONS under "Display Issues": "Function is not payable but descriptor shows ETH as possible input. Consider removing nativeCurrencyAddress for better UX to prevent users from selecting ETH which would cause transaction to revert."
+    * Do NOT add to critical issues
   - **IMPORTANT**: These rules apply to BOTH what the user SENDS and what the user RECEIVES
   - **HOW TO CHECK**: For EACH field that displays a token amount, check if that field OR its $ref definition has native ETH support
   - **Understanding format types**:
@@ -670,9 +728,11 @@ If any parameter CANNOT be clear signed using the current ERC-7730 specification
 - **Detected pattern:** [Code evidence, e.g., "Source code shows bitwise operations: `if (flags & _SHOULD_CLAIM != 0)`"]
 
 **Common spec limitations to detect:**
-1. **Bitmask flags** - Source code shows `param & CONSTANT` operations → ERC-7730 enum cannot display multiple flag combinations
-2. **Deeply nested arrays** - Path like `orders[].amounts[]` beyond spec capabilities
-3. **Dynamic/computed data** - Values calculated on-chain, not in function inputs
+1. **Bitmask flags / Packed data** - Source code shows `param & CONSTANT` operations or bitwise shifts → ERC-7730 enum cannot display multiple flag combinations or extract packed values. Example: `makerTraits` with packed nonce/epoch/flags
+2. **Output token determined by pool/DEX** - Output token computed from pool address, not explicit in inputs → Cannot reliably map to specific ERC20 address. Example: `minReturn` in Uniswap pool swaps where pool determines output token
+3. **Deeply nested arrays** - Path like `orders[].amounts[]` beyond spec capabilities
+4. **Dynamic/computed data** - Values calculated on-chain, not in function inputs
+5. **Arbitrary low-level calls** - Functions that execute arbitrary calldata (multicall, delegatecall to self) → Not necessary to decode arbitrary actions, users understand these are generic execution functions
 
 **Example output:**
 - **desc.flags cannot be clear signed:** This parameter is a bitmask combining multiple boolean flags (SHOULD_CLAIM=0x04, REQUIRES_EXTRA_ETH=0x02, PARTIAL_FILL=0x01). ERC-7730's enum format only supports simple 1:1 value→label mappings and cannot perform bitwise AND operations or display multiple flags simultaneously.

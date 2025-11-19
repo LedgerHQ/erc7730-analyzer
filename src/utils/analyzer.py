@@ -856,7 +856,8 @@ class ERC7730Analyzer:
                 'transactions': decoded_txs,
                 'erc7730_format': erc7730_format,
                 'audit_report_critical': audit_report_critical,
-                'audit_report_detailed': audit_report_detailed
+                'audit_report_detailed': audit_report_detailed,
+                'source_code': function_source  # Store source code for reports
             }
 
         logger.info(f"\n{'='*60}")

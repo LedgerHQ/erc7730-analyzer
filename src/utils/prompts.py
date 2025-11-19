@@ -744,7 +744,7 @@ If any parameter CANNOT be clear signed using the current ERC-7730 specification
 **Use bold, italic, emojis, tables, blockquotes, and horizontal rules to make it visually appealing and easy to scan.**"""
 
         response = client.chat.completions.create(
-            model="gpt-5-mini",
+            model="gpt-5-mini-2025-08-07",
             messages=[{"role": "user", "content": prompt}]
         )
 

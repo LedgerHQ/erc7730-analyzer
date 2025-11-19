@@ -343,6 +343,65 @@ def extract_recommendations(audit_report: str) -> list:
     return recommendations[:3]
 
 
+def format_source_code_section(source_code: Dict) -> str:
+    """
+    Format source code dictionary into a markdown collapsible section.
+
+    Args:
+        source_code: Dictionary with extracted source code components
+
+    Returns:
+        Formatted markdown string for source code section
+    """
+    if not source_code or not source_code.get('function'):
+        return ""
+
+    code_block = ""
+
+    # Add function docstring if available
+    if source_code.get('function_docstring'):
+        code_block += f"// Docstring:\n{source_code['function_docstring']}\n\n"
+
+    # Add constants if available
+    if source_code.get('constants'):
+        code_block += "// Constants:\n"
+        for constant in source_code['constants']:
+            code_block += f"{constant}\n"
+        code_block += "\n"
+
+    # Add structs if available
+    if source_code.get('structs'):
+        code_block += "// Structs:\n"
+        for struct in source_code['structs']:
+            code_block += f"{struct}\n"
+        code_block += "\n"
+
+    # Add enums if available
+    if source_code.get('enums'):
+        code_block += "// Enums:\n"
+        for enum in source_code['enums']:
+            code_block += f"{enum}\n"
+        code_block += "\n"
+
+    # Add main function
+    code_block += "// Main function:\n"
+    code_block += source_code['function']
+
+    # Add internal functions if available
+    if source_code.get('internal_functions'):
+        code_block += "\n\n// Internal functions called:\n"
+        for internal_func in source_code['internal_functions']:
+            if internal_func.get('docstring'):
+                code_block += f"{internal_func['docstring']}\n"
+            code_block += f"{internal_func['body']}\n\n"
+
+    # Add truncation warning if needed
+    if source_code.get('truncated'):
+        code_block += "\n// ⚠️ Note: Code was truncated to fit within line limit\n"
+
+    return code_block
+
+
 def generate_summary_file(results: Dict, summary_file: Path):
     """
     Generate a single comprehensive report file with summary table and detailed sections.
@@ -572,6 +631,26 @@ def generate_summary_file(results: Dict, summary_file: Path):
         report += json.dumps(expanded_format, indent=2)
         report += "\n```\n\n</details>\n\n"
 
+        # Add source code section (collapsible) - only if there are critical issues
+        audit_report_detailed = selector_data.get('audit_report_detailed', '')
+        if not audit_report_detailed:
+            audit_report_detailed = selector_data.get('audit_report', '')
+
+        has_critical_issues = False
+        if audit_report_detailed:
+            critical_issues_from_ai = extract_critical_issues(audit_report_detailed)
+            has_critical_issues = len(critical_issues_from_ai) > 0
+
+        if has_critical_issues:
+            source_code = selector_data.get('source_code')
+            if source_code:
+                formatted_code = format_source_code_section(source_code)
+                if formatted_code:
+                    report += "<details>\n<summary><b>📝 Source Code (Sent to AI)</b></summary>\n\n"
+                    report += "```solidity\n"
+                    report += formatted_code
+                    report += "```\n\n</details>\n\n"
+
         # Add side-by-side comparison (collapsible)
         transactions = selector_data.get('transactions', [])
         if transactions:
@@ -783,6 +862,19 @@ def generate_criticals_report(results: Dict, criticals_file: Path):
         expanded_format = expand_erc7730_format_with_refs(selector_format, full_erc7730)
         report += json.dumps(expanded_format, indent=2)
         report += "\n```\n\n</details>\n\n"
+
+        # Add source code section (collapsible) - only if there are critical issues
+        if func.get('has_critical'):
+            # Get source code from results
+            selector_data = results.get('selectors', {}).get(func['selector'], {})
+            source_code = selector_data.get('source_code')
+            if source_code:
+                formatted_code = format_source_code_section(source_code)
+                if formatted_code:
+                    report += "<details>\n<summary><b>📝 Source Code (Sent to AI)</b></summary>\n\n"
+                    report += "```solidity\n"
+                    report += formatted_code
+                    report += "```\n\n</details>\n\n"
 
         if func.get('has_critical'):
             # Critical Issues

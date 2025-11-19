@@ -96,6 +96,82 @@ jobs:
           path: output/
           retention-days: 30
 
+      - name: Create annotations for critical issues
+        if: always() && steps.changed-files.outputs.any_changed == 'true'
+        run: |
+          # Find CRITICALS report
+          CRITICALS_FILE=$(ls output/CRITICALS_*.md 2>/dev/null | head -1)
+
+          if [ -f "$CRITICALS_FILE" ]; then
+            # Extract contract name from filename (e.g., CRITICALS_wstETH_20251119.md -> wstETH)
+            CONTRACT_NAME=$(basename "$CRITICALS_FILE" | sed 's/CRITICALS_\(.*\)_[0-9]*.md/\1/')
+
+            # Find the corresponding calldata file
+            CALLDATA_FILE=$(find . -name "calldata-${CONTRACT_NAME}.json" 2>/dev/null | head -1)
+            if [ -z "$CALLDATA_FILE" ]; then
+              CALLDATA_FILE=$(ls **/calldata-*.json 2>/dev/null | head -1)
+            fi
+
+            # Parse CRITICALS file for issues
+            # Look for lines with 🔴 in the summary table
+            while IFS='|' read -r col1 col2 col3 col4 col5; do
+              if [[ "$col4" == *"🔴"* ]]; then
+                # Extract function name and selector
+                FUNCTION=$(echo "$col1" | sed 's/`//g' | xargs)
+                SELECTOR=$(echo "$col2" | sed 's/`//g' | xargs)
+                ISSUE=$(echo "$col4" | sed 's/🔴 Critical//g' | xargs)
+
+                if [ -n "$FUNCTION" ] && [ "$FUNCTION" != "Function" ]; then
+                  # Create error annotation
+                  if [ -n "$CALLDATA_FILE" ]; then
+                    echo "::error file=${CALLDATA_FILE},title=🔴 Critical Issue in ${FUNCTION} (${SELECTOR})::${ISSUE} - View full report: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+                  else
+                    echo "::error title=🔴 Critical Issue in ${FUNCTION} (${SELECTOR})::${ISSUE} - View full report: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+                  fi
+                fi
+              fi
+            done < "$CRITICALS_FILE"
+
+            # Also create a notice with link to full report
+            echo "::notice title=📊 ERC-7730 Analysis Complete::Critical issues detected. View full report at ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          else
+            echo "::notice title=📊 ERC-7730 Analysis Complete::No critical issues detected. View full report at ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          fi
+
+      - name: Add reports to job summary
+        if: always() && steps.changed-files.outputs.any_changed == 'true'
+        run: |
+          echo "## 📊 ERC-7730 Analysis Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          # Find CRITICALS report
+          CRITICALS_FILE=$(ls output/CRITICALS_*.md 2>/dev/null | head -1)
+          if [ -f "$CRITICALS_FILE" ]; then
+            echo "### 🔴 Critical Issues Report" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            cat "$CRITICALS_FILE" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "---" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+          fi
+
+          # Find SUMMARY report
+          SUMMARY_FILE=$(ls output/SUMMARY_*.md 2>/dev/null | head -1)
+          if [ -f "$SUMMARY_FILE" ]; then
+            echo "### 📋 Detailed Summary" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "<details>" >> $GITHUB_STEP_SUMMARY
+            echo "<summary>Click to expand full summary</summary>" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            cat "$SUMMARY_FILE" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "</details>" >> $GITHUB_STEP_SUMMARY
+          fi
+
+          # Add download link
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "📥 [Download all reports as artifacts](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})" >> $GITHUB_STEP_SUMMARY
+
       - name: Post summary to PR
         if: always() && steps.changed-files.outputs.any_changed == 'true'
         uses: actions/github-script@v7

@@ -96,10 +96,12 @@ def expand_erc7730_format_with_refs(selector_format: Dict[str, Any], full_erc773
     find_refs(selector_format)
     find_constant_refs(selector_format)
 
-    # Also check definitions for constant references
+    # Also check definitions for enum and constant references
     if referenced_defs and 'display' in full_erc7730 and 'definitions' in full_erc7730['display']:
         for def_name in referenced_defs:
             if def_name in full_erc7730['display']['definitions']:
+                # Check for both enum and constant references in definitions
+                find_refs(full_erc7730['display']['definitions'][def_name])
                 find_constant_refs(full_erc7730['display']['definitions'][def_name])
 
     # Build result with metadata (constants and enums) if any are referenced
@@ -358,6 +360,20 @@ def format_source_code_section(source_code: Dict) -> str:
 
     code_block = ""
 
+    # Add custom types if available (HIGHEST PRIORITY - needed for bitpacked params)
+    if source_code.get('custom_types'):
+        code_block += "// Custom types:\n"
+        for custom_type in source_code['custom_types']:
+            code_block += f"{custom_type}\n"
+        code_block += "\n"
+
+    # Add using statements if available
+    if source_code.get('using_statements'):
+        code_block += "// Using statements:\n"
+        for using_stmt in source_code['using_statements']:
+            code_block += f"{using_stmt}\n"
+        code_block += "\n"
+
     # Add function docstring if available
     if source_code.get('function_docstring'):
         code_block += f"// Docstring:\n{source_code['function_docstring']}\n\n"
@@ -394,6 +410,12 @@ def format_source_code_section(source_code: Dict) -> str:
             if internal_func.get('docstring'):
                 code_block += f"{internal_func['docstring']}\n"
             code_block += f"{internal_func['body']}\n\n"
+
+    # Add libraries if available (LOWEST PRIORITY - shown last)
+    if source_code.get('libraries'):
+        code_block += "\n// Libraries:\n"
+        for library in source_code['libraries']:
+            code_block += f"{library}\n\n"
 
     # Add truncation warning if needed
     if source_code.get('truncated'):
@@ -863,18 +885,17 @@ def generate_criticals_report(results: Dict, criticals_file: Path):
         report += json.dumps(expanded_format, indent=2)
         report += "\n```\n\n</details>\n\n"
 
-        # Add source code section (collapsible) - only if there are critical issues
-        if func.get('has_critical'):
-            # Get source code from results
-            selector_data = results.get('selectors', {}).get(func['selector'], {})
-            source_code = selector_data.get('source_code')
-            if source_code:
-                formatted_code = format_source_code_section(source_code)
-                if formatted_code:
-                    report += "<details>\n<summary><b>📝 Source Code (Sent to AI)</b></summary>\n\n"
-                    report += "```solidity\n"
-                    report += formatted_code
-                    report += "```\n\n</details>\n\n"
+        # Add source code section (collapsible) - always show, not just for critical issues
+        # Get source code from results
+        selector_data = results.get('selectors', {}).get(func['selector'], {})
+        source_code = selector_data.get('source_code')
+        if source_code:
+            formatted_code = format_source_code_section(source_code)
+            if formatted_code:
+                report += "<details>\n<summary><b>📝 Source Code</b></summary>\n\n"
+                report += "```solidity\n"
+                report += formatted_code
+                report += "```\n\n</details>\n\n"
 
         if func.get('has_critical'):
             # Critical Issues
@@ -884,19 +905,19 @@ def generate_criticals_report(results: Dict, criticals_file: Path):
                 report += f"- {issue}\n"
 
             report += "\n"
-
-            # Recommendations
-            if func['recommendations']:
-                report += "### 💡 Recommendations\n\n"
-                for rec in func['recommendations']:
-                    # Add bullet point formatting
-                    report += f"- {rec}\n"
-
-                report += "\n"
         else:
             # No critical issues
             report += "### ✅ No Critical Issues\n\n"
             report += "No critical issues found.\n\n"
+
+        # Recommendations (always show, even when no critical issues)
+        if func['recommendations']:
+            report += "### 💡 Recommendations\n\n"
+            for rec in func['recommendations']:
+                # Add bullet point formatting
+                report += f"- {rec}\n"
+
+            report += "\n"
 
         report += "---\n\n"
 

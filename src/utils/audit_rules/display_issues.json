@@ -1,0 +1,174 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "ERC-7730 Display and Formatting Issues",
+  "description": "Common display and formatting issues to check in ERC-7730 descriptors (non-critical UX issues)",
+  "version": "1.0.0",
+
+  "section_description": "Issues with how information is presented to users (non-critical UX improvements)",
+
+  "common_display_issues": [
+    {
+      "id": 1,
+      "type": "Parameter labels unclear or confusing",
+      "description": "Field labels that don't clearly convey what the parameter represents",
+      "examples": [
+        "Label 'To' instead of 'Recipient Address'",
+        "Label 'Value' for a token amount without specifying which token",
+        "Using technical names instead of user-friendly descriptions"
+      ],
+      "severity": "low",
+      "action": "Suggest clearer, more descriptive label text"
+    },
+    {
+      "id": 2,
+      "type": "Missing context",
+      "description": "Information displayed without sufficient context for user understanding",
+      "examples": [
+        "Recipient not clearly identified (showing address without label)",
+        "Amount shown without token symbol",
+        "Deadline shown as timestamp without indicating it's an expiration time"
+      ],
+      "severity": "medium",
+      "action": "Recommend adding context through better labels or additional fields"
+    },
+    {
+      "id": 3,
+      "type": "Format issues",
+      "description": "Incorrect format types for parameters (decimals, addresses, dates, etc.)",
+      "examples": [
+        "Using 'raw' format for a timestamp instead of 'date'",
+        "Using 'amount' format for an address",
+        "Missing 'tokenPath' for tokenAmount format"
+      ],
+      "severity": "medium",
+      "action": "Recommend correct format type"
+    },
+    {
+      "id": 4,
+      "type": "Spelling and grammar errors",
+      "description": "Typos or grammatical errors in labels, intent, or field descriptions",
+      "examples": [
+        "Misspelled words in labels",
+        "Incorrect capitalization",
+        "Grammar mistakes in intent description"
+      ],
+      "severity": "low",
+      "action": "Point out specific errors and suggest corrections"
+    },
+    {
+      "id": 5,
+      "type": "Coherence issues between metadata and selector format",
+      "description": "Inconsistencies or problems with how metadata definitions/constants are referenced and used",
+      "checks": [
+        "Check that `$ref` references point to existing definitions/constants",
+        "Verify definitions/constants referenced are actually used appropriately",
+        "Ensure label text matches the referenced definition's purpose",
+        "Check for orphaned definitions/constants that are declared but never used",
+        "Verify constant values (like native ETH address) are correct and consistent"
+      ],
+      "examples": [
+        "Field references `$.display.definitions.tokenAmount` but that definition doesn't exist",
+        "Constant `addressAsEth` defined but never referenced",
+        "Definition `beneficiary` has label 'Amount' (mismatch)"
+      ],
+      "severity": "medium",
+      "action": "Identify broken references or orphaned metadata and recommend cleanup"
+    },
+    {
+      "id": 6,
+      "type": "metadata.token redundancy",
+      "description": "Token metadata is redundant when contract has name(), symbol(), and decimals() functions",
+      "condition": "If `metadata.token` exists BUT the contract has `name()`, `symbol()`, and `decimals()` functions in the ABI/source code",
+      "why_redundant": "Wallets can fetch this info directly from the contract",
+      "severity": "low",
+      "action": "Note this as a minor cleanup suggestion, not critical. Wallets will query the contract anyway."
+    },
+    {
+      "id": 7,
+      "type": "Missing senderAddress for zero-check fallback",
+      "description": "Source code has conditional fallback to msg.sender when address parameter is zero, but ERC-7730 field lacks senderAddress parameter",
+      "pattern": "recipient = (param == address(0)) ? msg.sender : param",
+      "condition": "Source code shows conditional fallback pattern like `recipient = (param == address(0)) ? msg.sender : param` BUT the addressName field lacks `\"senderAddress\": [\"0x0000000000000000000000000000000000000000\"]` param",
+      "why_matters": "The wallet cannot properly display `@.from` when user passes zero address",
+      "severity": "medium",
+      "action": "Recommend adding `senderAddress` parameter to the field",
+      "example_fix": {
+        "current": {
+          "path": "recipient",
+          "label": "Recipient",
+          "format": "addressName"
+        },
+        "recommended": {
+          "path": "recipient",
+          "label": "Recipient",
+          "format": "addressName",
+          "params": {
+            "senderAddress": [
+              "0x0000000000000000000000000000000000000000"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": 8,
+      "type": "DISPLAY EDGE CASE - Function always inputs/outputs native ETH but trusts user input for display",
+      "description": "Contract always deals in native ETH but uses user input parameter for tokenPath, risking display mismatch",
+      "conditions": [
+        "Function name or code shows it ONLY inputs or outputs in native ETH (e.g., 'ERC20ToNative', 'NativeToERC20', or contract collects address(this).balance and sends ETH or only accepts ETH from user as input)",
+        "AND the ERC-7730 uses a user input parameter for tokenPath (e.g., `\"tokenPath\": \"receivingAssetId\"` or `\"sendingAssetId\"`)",
+        "Even if nativeCurrencyAddress is present, user might input WRONG address (ERC20 instead of sentinel)",
+        "Display will show wrong token (e.g., '100 USDC') while user actually receives or sends native ETH"
+      ],
+      "severity": "medium",
+      "why_matters": "Mismatch between what contract does vs what display shows based on user input",
+      "solution": "tokenPath should be hardcoded to a native sentinel constant OR use @.value, not trust user input",
+      "example": {
+        "function_name": "swapERC20ToNative(address sendingAssetId, uint256 amount, uint256 minReceive)",
+        "problem": {
+          "field": {
+            "path": "minReceive",
+            "label": "Minimum to Receive",
+            "format": "tokenAmount",
+            "params": {
+              "tokenPath": "sendingAssetId",
+              "nativeCurrencyAddress": [
+                "0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE"
+              ]
+            }
+          },
+          "issue": "User receives native ETH but tokenPath points to sendingAssetId (input token). If user passes USDC address, display shows '100 USDC received' when they actually receive 100 ETH."
+        },
+        "solution": {
+          "option1": {
+            "description": "Hardcode to native sentinel constant",
+            "field": {
+              "path": "minReceive",
+              "label": "Minimum to Receive",
+              "format": "tokenAmount",
+              "params": {
+                "token": "0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE"
+              }
+            }
+          },
+          "option2": {
+            "description": "Use @.value if amount equals msg.value",
+            "field": {
+              "path": "@.value",
+              "label": "Amount to Receive",
+              "format": "amount"
+            }
+          }
+        }
+      }
+    }
+  ],
+
+  "severity_levels": {
+    "low": "Minor UX improvement, doesn't affect security or critical understanding",
+    "medium": "Could cause user confusion or minor misunderstanding, should be addressed",
+    "high": "Likely to cause significant confusion, borderline critical"
+  },
+
+  "when_none_found": "**✅ No display issues found**"
+}

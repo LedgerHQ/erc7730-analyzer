@@ -119,6 +119,87 @@ class SolidityCodeParser:
 
         return constants
 
+    def extract_custom_types(self) -> Dict[str, str]:
+        """
+        Extract all custom type definitions from the code.
+
+        Custom types are user-defined types like: type TakerTraits is uint256;
+
+        Returns:
+            Dictionary mapping type name to type declaration
+        """
+        custom_types = {}
+
+        # Pattern to match: type TypeName is BaseType;
+        type_pattern = r'type\s+(\w+)\s+is\s+([^;]+);'
+
+        for match in re.finditer(type_pattern, self.cleaned_code):
+            type_name = match.group(1)
+            type_decl = match.group(0).strip()
+            custom_types[type_name] = type_decl
+            logger.debug(f"Found custom type: {type_name}")
+
+        return custom_types
+
+    def extract_using_statements(self) -> List[str]:
+        """
+        Extract all 'using' statements from the code.
+
+        Using statements attach library functions to types: using LibName for TypeName;
+
+        Returns:
+            List of using statement strings
+        """
+        using_statements = []
+
+        # Pattern to match: using LibName for TypeName;
+        using_pattern = r'using\s+\w+\s+for\s+[^;]+;'
+
+        for match in re.finditer(using_pattern, self.cleaned_code):
+            using_stmt = match.group(0).strip()
+            using_statements.append(using_stmt)
+            logger.debug(f"Found using statement: {using_stmt}")
+
+        return using_statements
+
+    def extract_libraries(self) -> Dict[str, str]:
+        """
+        Extract all library definitions from the code.
+
+        Returns:
+            Dictionary mapping library name to full library code
+        """
+        libraries = {}
+
+        # Pattern to match library declaration
+        library_pattern = r'library\s+(\w+)\s*\{'
+
+        for match in re.finditer(library_pattern, self.source_code):
+            library_name = match.group(1)
+            start_pos = match.start()
+            body_start = match.end() - 1  # Position of opening brace
+
+            # Find matching closing brace
+            open_braces = 0
+            i = body_start
+            while i < len(self.source_code):
+                if self.source_code[i] == '{':
+                    open_braces += 1
+                elif self.source_code[i] == '}':
+                    open_braces -= 1
+                    if open_braces == 0:
+                        body_end = i + 1
+                        break
+                i += 1
+            else:
+                body_end = len(self.source_code)
+
+            library_body = self.source_code[start_pos:body_end]
+            libraries[library_name] = library_body.strip()
+            logger.debug(f"Found library: {library_name}")
+
+        return libraries
+
     def extract_functions(self) -> Dict[str, Dict[str, Any]]:
         """
         Extract all function definitions (public, external, internal, private).
@@ -854,6 +935,9 @@ class SourceCodeExtractor:
                 # Extract source code from each unique facet
                 logger.info(f"Extracting source code from {len(unique_facet_addresses)} unique facets...")
                 all_functions = {}
+                all_custom_types = {}
+                all_using_statements = []
+                all_libraries = {}
                 all_structs = {}
                 all_enums = {}
                 all_constants = {}
@@ -886,6 +970,9 @@ class SourceCodeExtractor:
                             # Parse the source code
                             parser = SolidityCodeParser(source_code)
 
+                            facet_custom_types = parser.extract_custom_types()
+                            facet_using_statements = parser.extract_using_statements()
+                            facet_libraries = parser.extract_libraries()
                             facet_structs = parser.extract_structs()
                             facet_enums = parser.extract_enums()
                             facet_constants = parser.extract_constants()
@@ -899,23 +986,29 @@ class SourceCodeExtractor:
 
                         # Merge into combined results
                         all_functions.update(facet_functions)
+                        all_custom_types.update(facet_custom_types)
+                        all_using_statements.extend(facet_using_statements)
+                        all_libraries.update(facet_libraries)
                         all_structs.update(facet_structs)
                         all_enums.update(facet_enums)
                         all_constants.update(facet_constants)
                         all_internal_functions.update(facet_internal)
 
-                        logger.info(f"    Added {len(facet_functions)} functions, {len(facet_structs)} structs, {len(facet_enums)} enums, {len(facet_constants)} constants from facet")
+                        logger.info(f"    Added {len(facet_functions)} functions, {len(facet_custom_types)} custom types, {len(facet_using_statements)} using statements, {len(facet_libraries)} libraries, {len(facet_structs)} structs, {len(facet_enums)} enums, {len(facet_constants)} constants from facet")
                     else:
                         logger.warning(f"    Could not fetch source code for facet {facet_addr}")
 
                 result['functions'] = all_functions
+                result['custom_types'] = all_custom_types
+                result['using_statements'] = all_using_statements
+                result['libraries'] = all_libraries
                 result['structs'] = all_structs
                 result['enums'] = all_enums
                 result['constants'] = all_constants
                 result['internal_functions'] = all_internal_functions
                 result['source_code'] = f"Diamond proxy with {len(unique_facet_addresses)} facets"
 
-                logger.info(f"✓ Extracted total: {len(all_functions)} functions, {len(all_structs)} structs, {len(all_enums)} enums, {len(all_constants)} constants from all facets")
+                logger.info(f"✓ Extracted total: {len(all_functions)} functions, {len(all_custom_types)} custom types, {len(all_using_statements)} using statements, {len(all_libraries)} libraries, {len(all_structs)} structs, {len(all_enums)} enums, {len(all_constants)} constants from all facets")
 
                 # Cache and return
                 self.code_cache[cache_key] = result
@@ -961,19 +1054,31 @@ class SourceCodeExtractor:
             # Parse using Solidity parser
             parser = SolidityCodeParser(source_code)
 
-            logger.info("  [1/4] Extracting structs...")
+            logger.info("  [1/7] Extracting custom types...")
+            result['custom_types'] = parser.extract_custom_types()
+            logger.info(f"  ✓ Found {len(result['custom_types'])} custom types")
+
+            logger.info("  [2/7] Extracting using statements...")
+            result['using_statements'] = parser.extract_using_statements()
+            logger.info(f"  ✓ Found {len(result['using_statements'])} using statements")
+
+            logger.info("  [3/7] Extracting libraries...")
+            result['libraries'] = parser.extract_libraries()
+            logger.info(f"  ✓ Found {len(result['libraries'])} libraries")
+
+            logger.info("  [4/7] Extracting structs...")
             result['structs'] = parser.extract_structs()
             logger.info(f"  ✓ Found {len(result['structs'])} structs")
 
-            logger.info("  [2/4] Extracting enums...")
+            logger.info("  [5/7] Extracting enums...")
             result['enums'] = parser.extract_enums()
             logger.info(f"  ✓ Found {len(result['enums'])} enums")
 
-            logger.info("  [3/4] Extracting constants...")
+            logger.info("  [6/7] Extracting constants...")
             result['constants'] = parser.extract_constants()
             logger.info(f"  ✓ Found {len(result['constants'])} constants")
 
-            logger.info("  [4/4] Extracting functions (this may take a while for large contracts)...")
+            logger.info("  [7/7] Extracting functions (this may take a while for large contracts)...")
             result['functions'] = parser.extract_functions()
             logger.info(f"  ✓ Found {len(result['functions'])} functions")
 
@@ -984,6 +1089,9 @@ class SourceCodeExtractor:
             }
 
         logger.info(f"Extracted {len(result['functions'])} functions, "
+                   f"{len(result.get('custom_types', {}))} custom types, "
+                   f"{len(result.get('using_statements', []))} using statements, "
+                   f"{len(result.get('libraries', {}))} libraries, "
                    f"{len(result['structs'])} structs, "
                    f"{len(result['enums'])} enums, "
                    f"{len(result['constants'])} constants")
@@ -1000,7 +1108,7 @@ class SourceCodeExtractor:
         max_lines: int = 300
     ) -> Dict[str, Any]:
         """
-        Get a function's code along with its dependencies (structs, internal functions).
+        Get a function's code along with its dependencies (structs, internal functions, libraries, etc.).
 
         Args:
             function_name: Name of the function
@@ -1011,6 +1119,9 @@ class SourceCodeExtractor:
             Dictionary with:
             {
                 'function': str,
+                'custom_types': List[str],
+                'using_statements': List[str],
+                'libraries': List[str],
                 'structs': List[str],
                 'internal_functions': List[str],
                 'enums': List[str],
@@ -1029,6 +1140,9 @@ class SourceCodeExtractor:
             logger.warning(f"Function {function_name} not found")
             return {
                 'function': None,
+                'custom_types': [],
+                'using_statements': [],
+                'libraries': [],
                 'structs': [],
                 'internal_functions': [],
                 'enums': [],
@@ -1045,6 +1159,9 @@ class SourceCodeExtractor:
         result = {
             'function': target_function['body'],
             'function_docstring': target_function.get('docstring'),
+            'custom_types': [],
+            'using_statements': [],
+            'libraries': [],
             'structs': [],
             'internal_functions': [],  # Will store dicts with 'body' and 'docstring'
             'enums': [],
@@ -1066,6 +1183,56 @@ class SourceCodeExtractor:
             if enum_name in target_function['body']:
                 result['enums'].append(enum_code)
                 result['total_lines'] += enum_code.count('\n') + 1
+
+        # Add referenced custom types (e.g., type TakerTraits is uint256;)
+        # Also track which custom types are used to find their associated libraries
+        used_custom_types = set()
+        for type_name, type_code in extracted_code.get('custom_types', {}).items():
+            # Check if type is referenced in function body or structs
+            if type_name in target_function['body'] or any(type_name in s for s in result['structs']):
+                result['custom_types'].append(type_code)
+                result['total_lines'] += type_code.count('\n') + 1
+                used_custom_types.add(type_name)
+                logger.info(f"    ✓ Including custom type: {type_name}")
+
+        # Collect library names from library calls for using statement filtering
+        referenced_library_names = set()
+        for lib_call in library_calls:
+            if '.' in lib_call:
+                lib_name = lib_call.split('.')[0]
+                referenced_library_names.add(lib_name)
+
+        # Also find libraries associated with custom types via "using" statements
+        # Pattern: "using LibraryName for CustomType;"
+        for using_stmt in extracted_code.get('using_statements', []):
+            for type_name in used_custom_types:
+                if f"for {type_name}" in using_stmt:
+                    # Extract library name from "using LibName for TypeName;"
+                    match = re.search(r'using\s+(\w+)\s+for\s+' + type_name, using_stmt)
+                    if match:
+                        lib_name = match.group(1)
+                        referenced_library_names.add(lib_name)
+                        logger.info(f"    ✓ Found library {lib_name} for custom type {type_name} via using statement")
+
+        # Add using statements related to types or libraries referenced in the function
+        for using_stmt in extracted_code.get('using_statements', []):
+            # Include using statements if:
+            # 1. They relate to custom types we included
+            # 2. They relate to libraries that are called
+            should_include = False
+            for type_name in [t.split()[-2] for t in result['custom_types']]:  # Extract type name from "type X is Y;"
+                if type_name in using_stmt:
+                    should_include = True
+                    break
+            if not should_include:
+                for lib_name in referenced_library_names:
+                    if lib_name in using_stmt:
+                        should_include = True
+                        break
+            if should_include:
+                result['using_statements'].append(using_stmt)
+                result['total_lines'] += 1
+                logger.info(f"    ✓ Including using statement: {using_stmt}")
 
         # Add internal functions that are called
         # Also scan them for library calls
@@ -1179,6 +1346,14 @@ class SourceCodeExtractor:
 
                 if not found:
                     logger.warning(f"    ✗ Could not find library function {lib_call} in source code")
+
+        # Add full library definitions for referenced libraries
+        for lib_name in referenced_library_names:
+            if lib_name in extracted_code.get('libraries', {}):
+                library_code = extracted_code['libraries'][lib_name]
+                result['libraries'].append(library_code)
+                result['total_lines'] += library_code.count('\n') + 1
+                logger.info(f"    ✓ Including full library: {lib_name}")
 
         # Find constants used in the function and its internal calls (including library functions)
         combined_code = '\n'.join(all_code_to_scan)

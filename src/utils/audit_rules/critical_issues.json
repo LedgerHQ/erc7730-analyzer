@@ -1,0 +1,328 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "ERC-7730 Critical Issues Criteria",
+  "description": "Detailed criteria for what constitutes a CRITICAL issue in ERC-7730 clear signing security audits",
+  "version": "1.0.0",
+
+  "definition": "CRITICAL = USER LOSES MONEY OR GETS WRONG TOKENS/AMOUNTS IN FINAL OUTCOME. Only flag if a normal user would be shocked by what actually happens.",
+
+  "rule": "You MUST be EXTREMELY conservative. Only flag if a normal user would be shocked by what actually happens.",
+
+  "critical_criteria": [
+    {
+      "id": 1,
+      "title": "Final amount IN is WRONG",
+      "description": "User sends 100 USDC but ERC-7730 shows 50 USDC",
+      "severity": "critical"
+    },
+    {
+      "id": 2,
+      "title": "Final amount OUT is WRONG",
+      "description": "User receives 1 ETH but ERC-7730 shows 2 ETH",
+      "severity": "critical"
+    },
+    {
+      "id": 3,
+      "title": "Token addresses INVERTED",
+      "description": "ERC-7730 shows 'USDC→DAI' but logs show 'DAI→USDC'",
+      "severity": "critical"
+    },
+    {
+      "id": 4,
+      "title": "Completely WRONG token",
+      "description": "ERC-7730 shows user sends/receives USDC but they actually send/receive DAI",
+      "exception": {
+        "description": "If tokenPath points to user-supplied parameter (e.g., sendingAssetId) but contract mechanism differs (e.g., sends native ETH from address(this).balance), this is a DISPLAY ISSUE, NOT CRITICAL",
+        "reasons": [
+          "The user chose the token ID in their input parameters",
+          "The amount is still correct",
+          "The display is showing what the user specified in their input, not a fundamentally different token",
+          "Flag this in the detailed 'Display Issues' section instead"
+        ],
+        "critical_if": "The displayed token is completely unrelated to any user input (e.g., hardcoded wrong address or pointing to wrong parameter)"
+      },
+      "severity": "critical"
+    },
+    {
+      "id": 5,
+      "title": "Missing RECIPIENT parameter",
+      "cases": [
+        {
+          "case": "A",
+          "condition": "If recipient IS an INPUT parameter that receives funds and is NOT shown",
+          "severity": "critical"
+        },
+        {
+          "case": "B",
+          "condition": "If recipient is NOT in ABI inputs (because it's always msg.sender) BUT is important to show",
+          "checks": [
+            "Check if function always sends tokens/ETH to the sender (e.g., withdraw(), claimRewards(), unwrap())",
+            "If YES and NO recipient field exists → Recommend using {\"path\": \"@.from\", \"label\": \"Beneficiary\", \"format\": \"addressName\"}",
+            "This shows the user they're receiving funds to their own address"
+          ],
+          "severity": "recommendation"
+        },
+        {
+          "case": "C",
+          "condition": "If recipient IS an INPUT parameter BUT code shows conditional fallback to msg.sender",
+          "pattern": "(param == address(0)) ? msg.sender : param",
+          "checks": [
+            "Check source code for pattern: (param == address(0)) or similar zero-check",
+            "If recipient field exists WITHOUT senderAddress param → Add WARNING in detailed report",
+            "Should recommend adding \"senderAddress\": [\"0x0000000000000000000000000000000000000000\"]",
+            "This allows wallet to display @.from when user passes zero address"
+          ],
+          "note": "Special transaction fields: @.from = sender address, @.value = native currency value sent with tx",
+          "severity": "warning"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "title": "Broken $ref references",
+      "description": "Format references non-existent definitions/constants (display will fail)",
+      "severity": "critical"
+    },
+    {
+      "id": 7,
+      "title": "Input parameter path mismatch",
+      "description": "ERC-7730 references a parameter path that doesn't exist in the ABI OR uses wrong path/name",
+      "valid_path_syntax": {
+        "note": "Both '#.paramName' and 'paramName' are VALID - relative paths are equivalent to '#.' root",
+        "valid_examples": [
+          "#._minimumRepriceTime - VALID (explicit root)",
+          "_minimumRepriceTime - VALID (relative, equivalent to #._minimumRepriceTime)",
+          "params.amount - VALID (relative)",
+          "#.params.amount - VALID (explicit root)"
+        ],
+        "root_nodes": {
+          "#": "ABI parameters (structured data schema)",
+          "$": "ERC-7730 file references (definitions, constants, enums)",
+          "@": "Transaction container (value, to, from)"
+        }
+      },
+      "examples": [
+        "format shows '_receiver' but ABI has 'receiver'",
+        "shows '_tokens[0]' but should be '_swapData[0].token'"
+      ],
+      "not_critical": [
+        "DO NOT flag '#._paramName' as invalid - this is correct syntax for ABI parameters",
+        "DO NOT flag relative paths like '_paramName' as invalid - they are equivalent to '#._paramName'"
+      ],
+      "severity": "critical"
+    },
+    {
+      "id": "7b",
+      "title": "Format validation failures",
+      "validations": [
+        {
+          "type": "tokenAmount without token specification",
+          "condition": "Field has \"format\": \"tokenAmount\" but missing BOTH \"tokenPath\" AND \"token\" in params",
+          "token_specification_options": [
+            "Dynamic (from parameter): \"tokenPath\": \"paramName\" - token address comes from function input",
+            "Fixed (hardcoded): \"token\": \"0x...\" - for migration contracts or functions operating on single specific token"
+          ],
+          "critical_if": "NEITHER is present UNLESS one of these exceptions applies",
+          "exceptions": [
+            "Function ONLY supports native ETH (check source code: no ERC20 support, hardcoded ETH) AND has nativeCurrencyAddress",
+            "Token address is NOT in function inputs (computed from pool/DEX, encoded in bytes, determined on-chain) AND has nativeCurrencyAddress"
+          ],
+          "spec_limitation": "If exception 2 applies (token determined by pool): This is a SPEC LIMITATION - Add to 'Parameters that cannot be clear signed' section, NOT to critical issues. Example: 'Output token cannot be clear signed because it is determined by the pool/DEX and not an explicit function input'",
+          "severity": "critical_with_exceptions"
+        },
+        {
+          "type": "nftName without collectionPath",
+          "condition": "Field has \"format\": \"nftName\" but missing \"collectionPath\" in params",
+          "severity": "critical"
+        },
+        {
+          "type": "enum without reference",
+          "condition": "Field has \"format\": \"enum\" but missing $ref to metadata.constants OR metadata.enums",
+          "severity": "critical"
+        },
+        {
+          "type": "Wrong format type",
+          "description": "Using wrong format (e.g., 'amount' for ERC20 token, or 'tokenAmount' without tokenPath)",
+          "exceptions": [
+            {
+              "type": "Type casting uint256/bytes32 ↔ address",
+              "description": "Using \"addressName\" format on uint256, bytes32, or bytes20 ABI type is VALID (casting is supported by taking 20 bytes). Similarly, using \"raw\" or numeric formats on address type is valid. These are NOT critical type mismatches."
+            },
+            {
+              "type": "Token amount as raw when token cannot be determined",
+              "description": "If a field displays a token amount (e.g., amountOut, minReceive) but uses \"format\": \"raw\" instead of \"tokenAmount\", this is ACCEPTABLE if the token address cannot be determined from function inputs (e.g., output token is computed from pool addresses/routes). This is NOT critical - it's a known concession.",
+              "action": "Only mention in recommendations: 'User will see raw amount without token symbol/decimals because output token cannot be determined from inputs.'"
+            }
+          ],
+          "note": "Check BOTH the field params AND any $ref definition params for these requirements",
+          "severity": "critical_with_exceptions"
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "title": "Native ETH handling in payable functions",
+      "description": "For what the user sends and all functions even non payable for what he receives (this is critical and nuanced)",
+      "pre_check": {
+        "title": "CRITICAL PRE-CHECK - Function payability",
+        "description": "Check if the MAIN function (the one being clear signed) is marked payable in the ABI",
+        "rules": [
+          "If the main function is NOT payable → msg.value is ALWAYS 0, even if it calls internal payable functions",
+          "Example: uniswapV3SwapToWithPermit() is NOT payable but calls uniswapV3SwapTo() which is payable",
+          "In this case, the internal function's payable logic will NEVER execute because msg.value == 0",
+          "Do NOT flag missing @.value if the main function is not payable"
+        ]
+      },
+      "non_payable_with_eth_option": {
+        "condition": "If a function is NOT payable but the descriptor includes nativeCurrencyAddress (showing ETH as possible input)",
+        "severity": "NOT CRITICAL - UX improvement recommendation only",
+        "reasons": [
+          "The transaction will revert if user tries to send ETH to a non-payable function (no funds lost)",
+          "The UI/frontend likely prevents this anyway"
+        ],
+        "action": "Add to RECOMMENDATIONS: 'Function is not payable but descriptor shows ETH as possible input. Consider removing nativeCurrencyAddress for better UX to prevent users from selecting ETH which would cause transaction to revert.'",
+        "note": "Do NOT add to critical issues"
+      },
+      "scope": "These rules apply to BOTH what the user SENDS and what the user RECEIVES",
+      "how_to_check": "For EACH field that displays a token amount, check if that field OR its $ref definition has native ETH support",
+      "format_types": {
+        "tokenAmount": "Can display ANY ERC20 token + native ETH (if nativeCurrencyAddress specified)",
+        "amount_with_at_value": "Shows msg.value (native ETH sent with tx)"
+      },
+      "cases": [
+        {
+          "case": 1,
+          "title": "Field with format tokenAmount and tokenPath to potential native ETH sentinel",
+          "steps": [
+            "Step 1: Look at the field showing the amount",
+            "Step 2a: If field has $ref, look up that definition in display.definitions",
+            "Step 2b: Check if the DEFINITION has nativeCurrencyAddress in its params",
+            "Step 3: If no $ref, check if the FIELD itself has nativeCurrencyAddress in its params"
+          ],
+          "critical_if": "If NEITHER the field NOR its referenced definition has nativeCurrencyAddress, native ETH won't display correctly",
+          "examples": {
+            "correct_via_ref": {
+              "field": "{\"path\": \"_amount\", \"$ref\": \"$.display.definitions.tokenAmount\", \"params\": {\"tokenPath\": \"_token\"}}",
+              "definition": "{\"tokenAmount\": {\"format\": \"tokenAmount\", \"params\": {\"nativeCurrencyAddress\": [\"$.metadata.constants.addressAsEth\"]}}}"
+            },
+            "correct_direct": "{\"path\": \"_amount\", \"format\": \"tokenAmount\", \"params\": {\"tokenPath\": \"_token\", \"nativeCurrencyAddress\": [\"$.metadata.constants.addressAsEth\"]}}",
+            "wrong": "{\"path\": \"_amount\", \"format\": \"tokenAmount\", \"params\": {\"tokenPath\": \"_token\"}} (no nativeCurrencyAddress anywhere)"
+          }
+        },
+        {
+          "case": 2,
+          "title": "Field with path @.value",
+          "description": "This directly shows msg.value (ETH sent with transaction)",
+          "format": "Typically 'amount', not 'tokenAmount'",
+          "example": "{\"path\": \"@.value\", \"label\": \"Amount\", \"format\": \"amount\"}"
+        },
+        {
+          "case": 3,
+          "title": "Payable function that accepts native ETH (especially WETH deposit or similar)",
+          "critical_check": "Does the ERC-7730 display the ETH amount being sent?",
+          "critical_conditions": [
+            "If fields array is EMPTY or has NO amount fields → CRITICAL (nothing is shown to user)",
+            "If function ONLY accepts native ETH (no token parameter) and no @.value field exists → CRITICAL",
+            "If function accepts both tokens and ETH: Only NOT critical if another amount field displays the same value (e.g., deposit(uint256 amount) where amount must equal msg.value)"
+          ],
+          "fix_example": "{\"path\": \"@.value\", \"label\": \"Amount\", \"format\": \"amount\"}"
+        },
+        {
+          "case": 4,
+          "title": "WRAPPER/FORWARDING PATTERN (INFORMATIONAL, not CRITICAL)",
+          "pattern_detection": "If a payable function meets ALL these conditions",
+          "conditions": [
+            "Function body does NOT manipulate msg.value in its own logic (no validation, no splitting, no storing)",
+            "Function forwards the ENTIRE value via: delegatecall(...), .call{value: msg.value}(...), or .call{value: address(this).balance}(...)",
+            "Function does NOT display @.value in ERC-7730"
+          ],
+          "why_not_critical": [
+            "The value is forwarded entirely to a nested call",
+            "The nested call (typically decoded from a bytes calldata parameter like action, data, or calls) will have its own ERC-7730 descriptor",
+            "That nested descriptor SHOULD display @.value",
+            "Users see multiple clear signing screens: one for the wrapper, one for the nested call",
+            "The value is shown on the nested call's screen, not the wrapper's screen",
+            "Wallet UI also shows total transaction value regardless"
+          ],
+          "wrapper_patterns": [
+            "delegatecall(...) - automatically forwards msg.value",
+            ".call{value: msg.value}(...) - explicitly forwards full msg.value",
+            ".call{value: address(this).balance}(...) - forwards all received ETH"
+          ],
+          "counter_example": {
+            "description": "If function validates or manipulates msg.value",
+            "code": "require(msg.value == desc.amount); // ❌ Uses msg.value in logic",
+            "result": "This IS critical because function validates msg.value"
+          },
+          "action": "Mark as INFORMATIONAL (not CRITICAL) with note: 'This appears to be a wrapper function that forwards execution and value entirely. Verify that nested call descriptors display @.value.'",
+          "severity": "informational"
+        }
+      ],
+      "additional_checks": [
+        "Check source code and receipt_logs (if available) to determine which case applies",
+        "Sometimes even if sentinels exist, the code does not allow native transfer even if the function is payable",
+        "KEY: When checking for nativeCurrencyAddress, follow $ref references to definitions - it can be in either place",
+        "Only flag as critical if native ETH is actually being transferred AND display cannot show it"
+      ]
+    },
+    {
+      "id": 9,
+      "title": "Amounts are displayed twice",
+      "severity": "critical"
+    },
+    {
+      "id": 10,
+      "title": "Spelling/grammar errors in labels or intent",
+      "severity": "critical"
+    },
+    {
+      "id": 11,
+      "title": "Labels and intents must not be longer than 20 characters",
+      "severity": "critical"
+    },
+    {
+      "id": 12,
+      "title": "msg.value representation",
+      "subtitle": "WHEN to use each approach",
+      "approaches": [
+        {
+          "approach": "Use @.value",
+          "when": "When function ONLY accepts native ETH"
+        },
+        {
+          "approach": "Use input parameter",
+          "when": "When function has an amount parameter that EQUALS msg.value and can be also used for other tokens"
+        }
+      ],
+      "critical_case": "If payable function has no parameters AND no @.value field → user can't see amount being sent",
+      "severity": "critical"
+    }
+  ],
+
+  "additional_requirements": {
+    "array_indexing_validation": {
+      "description": "When ERC-7730 uses array indexing, verify the index points to actual data relevant to the user (not sentinel values)",
+      "common_issue": "Fixed-size arrays where unused slots contain 0x0000... or other sentinels",
+      "how_to_check": "Look at source code and decoded transaction parameters and verify array indices reference real data, not empty/sentinel slots",
+      "critical_if": "The indexed element is a sentinel (0x00) while real data exists elsewhere in the array"
+    },
+    "can_it_be_fixed": {
+      "description": "ONLY flag as CRITICAL if the issue EXISTS in function inputs AND can be displayed with ERC-7730 spec AND can be shown in human-readable format",
+      "examples": {
+        "critical": "ERC-7730 doesn't show recipient but recipient is an input parameter → CRITICAL (can be fixed)",
+        "not_critical": "Showing max/min amount not actual amounts (computed on-chain, not in inputs) → NOT CRITICAL (that's how the function works)"
+      },
+      "rule": "If the information cannot be obtained from input parameters OR cannot be displayed with ERC-7730 spec OR cannot be shown in human-readable format, it's NOT a critical issue - it's a SPEC LIMITATION"
+    },
+    "human_readability": {
+      "description": "Parameters that can ONLY be shown as incomprehensible raw data (packed bits, liquidity numbers, technical params) are NOT critical to hide",
+      "readable_format": "Can be clear signed in READABLE format (address, token amount, date) → If missing, this IS critical",
+      "incomprehensible_format": "Can only be shown as RAW/incomprehensible data (packed bits, raw bytes32, complex flags, large computed values like liquidity) → If missing, this is NOT critical",
+      "key_question": "Would displaying this as 'raw' format help the user understand what they're signing?",
+      "answers": {
+        "yes": "Critical if missing (e.g., address as hex, token amount as number)",
+        "no": "NOT critical (e.g., 0x000000000000001a4 for packed traits, 1582938471982347 for liquidity)"
+      }
+    }
+  }
+}

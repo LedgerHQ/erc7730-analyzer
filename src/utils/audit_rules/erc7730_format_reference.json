@@ -1,0 +1,519 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "ERC-7730 Format Types Specification",
+  "description": "Comprehensive ERC-7730 format type specifications, parameters, constraints, and validation rules. This replaces the format specification section in prompts.py to improve maintainability.",
+  "version": "1.0.1",
+
+  "path_syntax": {
+    "description": "ERC-7730 uses a limited JSON path notation with three root node identifiers",
+    "root_nodes": {
+      "#": {
+        "description": "Path applies to the structured data schema (ABI path for contracts, message types for EIP-712)",
+        "value_location": "Values can be found in the serialized representation of the structured data",
+        "examples": [
+          "#.params.amountIn - refers to parameter 'amountIn' in the ABI",
+          "#._minimumRepriceTime - refers to parameter '_minimumRepriceTime' in the ABI",
+          "#.data.path.[0] - refers to first element of 'path' array"
+        ],
+        "note": "This is the default root for function parameters"
+      },
+      "$": {
+        "description": "Path applies to the current ERC-7730 file (after merging with includes)",
+        "value_location": "Values can be found in the merged ERC-7730 file itself",
+        "examples": [
+          "$.metadata.enums.interestRateMode - refers to enum definition",
+          "$.metadata.constants.addressAsEth - refers to constant definition",
+          "$.display.definitions.tokenAmount - refers to field definition"
+        ],
+        "note": "Used for $ref references to definitions, constants, and enums"
+      },
+      "@": {
+        "description": "Path applies to the container of the structured data to be signed (the transaction)",
+        "value_location": "Values can be found in the serialized transaction container",
+        "examples": [
+          "@.value - refers to msg.value (native ETH amount sent with transaction)",
+          "@.to - refers to transaction destination address",
+          "@.from - refers to transaction sender address"
+        ],
+        "note": "Used for transaction-level metadata not in function parameters"
+      },
+      "relative": {
+        "description": "Root nodes and separator can be OMITTED for relative paths",
+        "rule": "Relative paths refer to the top-level structure and are EQUIVALENT to '#.' root node",
+        "examples": [
+          "_minimumRepriceTime is EQUIVALENT to #._minimumRepriceTime",
+          "params.amountIn is EQUIVALENT to #.params.amountIn",
+          "data.path.[0] is EQUIVALENT to #.data.path.[0]"
+        ],
+        "note": "Both forms are VALID and CORRECT - do NOT flag relative paths as errors"
+      }
+    },
+    "array_notation": {
+      "description": "Arrays use bracket notation",
+      "examples": [
+        "path.[0] - first element",
+        "path.[-1] - last element",
+        "path.[:5] - first 5 elements (slice)",
+        "path.[5:] - from 5th element to end (slice)",
+        "path.[] - entire array"
+      ]
+    },
+    "common_mistakes_to_avoid": [
+      "DO NOT flag '#._paramName' as invalid - '#.' is a valid root for ABI parameters",
+      "DO NOT flag relative paths like '_paramName' as invalid - they are equivalent to '#._paramName'",
+      "DO NOT require '$.' for ABI parameters - use '#.' or relative paths instead",
+      "DO NOT confuse '@.' (transaction metadata) with '#.' (ABI parameters)"
+    ]
+  },
+
+  "format_types": {
+    "raw": {
+      "description": "Raw UINT parameter that cannot be linked to any specific type",
+      "use_case": "When value is just a number with no special meaning",
+      "required_params": [],
+      "optional_params": [],
+      "example": {
+        "path": "value",
+        "format": "raw"
+      }
+    },
+
+    "amount": {
+      "description": "Amount in native currency (ETH)",
+      "use_case": "ONLY when you are CERTAIN the currency is Native ETH. Commonly used with '@.value' to show msg.value",
+      "required_params": [],
+      "optional_params": [],
+      "example": {
+        "path": "@.value",
+        "format": "amount"
+      }
+    },
+
+    "tokenAmount": {
+      "description": "Amount in ERC20 Token",
+      "use_case": "Display token amounts with proper decimals and symbol",
+      "required_params": [
+        {
+          "constraint": "XOR",
+          "options": ["token", "tokenPath"],
+          "explanation": "Must have EITHER 'token' (fixed address) XOR 'tokenPath' (dynamic from parameter)"
+        }
+      ],
+      "optional_params": [
+        {
+          "name": "nativeCurrencyAddress",
+          "type": "string | string[]",
+          "description": "Address(es) interpreted as native currency (ETH)"
+        },
+        {
+          "name": "threshold",
+          "type": "string",
+          "description": "Amount threshold above which 'message' is displayed instead of actual amount"
+        },
+        {
+          "name": "message",
+          "type": "string",
+          "description": "Message to display for amounts above threshold (e.g., 'Unlimited' for max allowances)"
+        }
+      ],
+      "exceptions": [
+        "Function ONLY supports native ETH (no ERC20 support) AND has nativeCurrencyAddress",
+        "Token address is NOT in function inputs (computed from pool/DEX) AND has nativeCurrencyAddress"
+      ],
+      "examples": [
+        {
+          "description": "Dynamic token from parameter",
+          "code": {
+            "path": "amount",
+            "format": "tokenAmount",
+            "params": {
+              "tokenPath": "token"
+            }
+          }
+        },
+        {
+          "description": "Fixed token (hardcoded address)",
+          "code": {
+            "path": "amount",
+            "format": "tokenAmount",
+            "params": {
+              "token": "0x1234..."
+            }
+          }
+        },
+        {
+          "description": "With unlimited threshold",
+          "code": {
+            "path": "amount",
+            "format": "tokenAmount",
+            "params": {
+              "tokenPath": "token",
+              "threshold": "115792089237316195423570985008687907853269984665640564039457584007913129639935",
+              "message": "Unlimited"
+            }
+          }
+        }
+      ]
+    },
+
+    "nftName": {
+      "description": "ID of the NFT in the collection",
+      "use_case": "Display NFT token ID with collection context",
+      "required_params": [
+        {
+          "constraint": "XOR",
+          "options": ["collection", "collectionPath"],
+          "explanation": "Must have EITHER 'collection' (fixed address) XOR 'collectionPath' (dynamic from parameter)"
+        }
+      ],
+      "optional_params": [],
+      "example": {
+        "path": "_tokenId",
+        "format": "nftName",
+        "params": {
+          "collectionPath": "_collection"
+        }
+      }
+    },
+
+    "addressName": {
+      "description": "Address parameter with ENS/name resolution",
+      "use_case": "Use this format for ALL address parameters",
+      "required_params": [],
+      "optional_params": [
+        {
+          "name": "senderAddress",
+          "type": "string | string[]",
+          "description": "For conditional fallback to sender (@.from). If the address value equals one of the addresses in senderAddress array (typically ['0x0000000000000000000000000000000000000000']), the wallet displays @.from (msg.sender) instead. Common pattern: dstReceiver = (param == address(0)) ? msg.sender : param"
+        },
+        {
+          "name": "types",
+          "type": "string[]",
+          "enum": ["wallet", "eoa", "contract", "token", "collection"],
+          "description": "Array restricting address types - restricts name sources and may trigger additional wallet checks"
+        },
+        {
+          "name": "sources",
+          "type": "string[]",
+          "description": "Array of trusted name sources in order of preference (wallet manufacturer specific, e.g., ['local', 'ens'])"
+        }
+      ],
+      "examples": [
+        {
+          "description": "Simple address",
+          "code": {
+            "path": "_recipient",
+            "format": "addressName"
+          }
+        },
+        {
+          "description": "With zero-address fallback to msg.sender",
+          "code": {
+            "path": "_recipient",
+            "format": "addressName",
+            "params": {
+              "senderAddress": ["0x0000000000000000000000000000000000000000"]
+            }
+          }
+        }
+      ]
+    },
+
+    "date": {
+      "description": "UINT representing a timestamp/date",
+      "use_case": "When parameter is a Unix timestamp or block height",
+      "required_params": [
+        {
+          "name": "encoding",
+          "type": "string",
+          "enum": ["timestamp", "blockheight"],
+          "explanation": "Must specify how the date is encoded"
+        }
+      ],
+      "optional_params": [],
+      "example": {
+        "path": "_deadline",
+        "format": "date",
+        "params": {
+          "encoding": "timestamp"
+        }
+      }
+    },
+
+    "duration": {
+      "description": "UINT representing a time duration",
+      "use_case": "When parameter represents a time period (seconds, days, etc.)",
+      "required_params": [],
+      "optional_params": [],
+      "notes": "Value interpreted as seconds, displayed as HH:MM:ss",
+      "example": {
+        "path": "_lockPeriod",
+        "format": "duration"
+      }
+    },
+
+    "unit": {
+      "description": "UINT representing a value with custom unit",
+      "use_case": "Display numeric values with custom units (%, bps, SI units)",
+      "required_params": [
+        {
+          "name": "base",
+          "type": "string",
+          "description": "Unit symbol (SI unit, '%', 'bps', etc.)"
+        }
+      ],
+      "optional_params": [
+        {
+          "name": "decimals",
+          "type": "number",
+          "default": 0,
+          "description": "Number of decimal places"
+        },
+        {
+          "name": "prefix",
+          "type": "boolean",
+          "description": "Enable SI prefix like k, M, G"
+        }
+      ],
+      "examples": [
+        {
+          "description": "Percentage with 2 decimals",
+          "code": {
+            "path": "_fee",
+            "format": "unit",
+            "params": {
+              "base": "%",
+              "decimals": 2
+            }
+          }
+        },
+        {
+          "description": "Time in hours",
+          "code": {
+            "path": "_time",
+            "format": "unit",
+            "params": {
+              "base": "h"
+            }
+          }
+        }
+      ]
+    },
+
+    "enum": {
+      "description": "Value converted using referenced enumeration",
+      "use_case": "Map numeric values to human-readable labels",
+      "required_params": [
+        {
+          "name": "$ref",
+          "type": "string",
+          "pattern": "^\\$\\.(metadata\\.constants|metadata\\.enums)\\.",
+          "explanation": "Must have $ref path to enumeration in metadata.constants OR metadata.enums. Path starts with root node '$.'",
+          "valid_paths": [
+            "$.metadata.constants.*",
+            "$.metadata.enums.*"
+          ]
+        }
+      ],
+      "optional_params": [],
+      "notes": "Enums can be static (object with key-value pairs) OR dynamic (URL string returning JSON)",
+      "examples": [
+        {
+          "description": "Reference to constants",
+          "code": {
+            "path": "_swapType",
+            "format": "enum",
+            "params": {
+              "$ref": "$.metadata.constants.swapTypes"
+            }
+          }
+        },
+        {
+          "description": "Reference to enums",
+          "code": {
+            "path": "_rateMode",
+            "format": "enum",
+            "params": {
+              "$ref": "$.metadata.enums.interestRateMode"
+            }
+          }
+        }
+      ]
+    },
+
+    "calldata": {
+      "description": "Embedded calldata for nested/recursive calls",
+      "use_case": "Enable multi-screen clear signing for wrapper functions like permitAndCall, multicall, execute",
+      "required_params": [
+        {
+          "constraint": "XOR",
+          "options": ["callee", "calleePath"],
+          "explanation": "Must have EITHER 'callee' (fixed address) XOR 'calleePath' (dynamic path)"
+        }
+      ],
+      "optional_params": [
+        {
+          "name": "selector",
+          "type": "string",
+          "xor_with": "selectorPath",
+          "description": "Fixed function selector if not in calldata"
+        },
+        {
+          "name": "selectorPath",
+          "type": "string",
+          "xor_with": "selector",
+          "description": "Dynamic path to function selector"
+        },
+        {
+          "name": "amount",
+          "type": "string",
+          "xor_with": "amountPath",
+          "description": "Fixed associated native currency amount"
+        },
+        {
+          "name": "amountPath",
+          "type": "string",
+          "xor_with": "amount",
+          "description": "Dynamic path to associated native currency amount"
+        },
+        {
+          "name": "spender",
+          "type": "string",
+          "xor_with": "spenderPath",
+          "description": "Fixed associated spender address"
+        },
+        {
+          "name": "spenderPath",
+          "type": "string",
+          "xor_with": "spender",
+          "description": "Dynamic path to associated spender address"
+        }
+      ],
+      "notes": "The nested calldata is decoded using another ERC-7730 descriptor and shown on SUBSEQUENT screens. If no descriptor available, wallet MAY display hash of calldata instead.",
+      "example": {
+        "path": "action",
+        "label": "Action",
+        "format": "calldata",
+        "params": {
+          "calleePath": "@.to"
+        }
+      }
+    }
+  },
+
+  "xor_constraints": {
+    "description": "Parameter pairs that CANNOT both be present - you must use exactly one",
+    "constraints": [
+      {
+        "context": "Field",
+        "options": ["path", "value"],
+        "explanation": "Either extract from data OR use literal value"
+      },
+      {
+        "context": "addressName",
+        "options": ["senderAddress (string)", "senderAddress (array)"],
+        "explanation": "Can be string OR array, not both (but can omit)"
+      },
+      {
+        "context": "tokenAmount",
+        "options": ["token", "tokenPath"],
+        "explanation": "Fixed address OR dynamic path",
+        "severity": "critical"
+      },
+      {
+        "context": "tokenAmount",
+        "options": ["nativeCurrencyAddress (string)", "nativeCurrencyAddress (array)"],
+        "explanation": "Can be string OR array"
+      },
+      {
+        "context": "nftName",
+        "options": ["collection", "collectionPath"],
+        "explanation": "Fixed address OR dynamic path",
+        "severity": "critical"
+      },
+      {
+        "context": "calldata",
+        "options": ["callee", "calleePath"],
+        "explanation": "Fixed address OR dynamic path",
+        "severity": "critical"
+      },
+      {
+        "context": "calldata",
+        "options": ["selector", "selectorPath"],
+        "explanation": "Fixed selector OR dynamic path"
+      },
+      {
+        "context": "calldata",
+        "options": ["amount", "amountPath"],
+        "explanation": "Fixed amount OR dynamic path"
+      },
+      {
+        "context": "calldata",
+        "options": ["spender", "spenderPath"],
+        "explanation": "Fixed spender OR dynamic path"
+      }
+    ]
+  },
+
+  "special_paths": {
+    "description": "Container structure values that reference the enclosing transaction/message, not function parameters",
+    "paths": {
+      "@.from": {
+        "description": "The sender/signer address (who is calling the function)",
+        "example_uses": [
+          "Show sender as beneficiary in withdraw/claim functions",
+          "Fallback recipient when parameter is zero address"
+        ]
+      },
+      "@.to": {
+        "description": "The destination contract address (where the transaction is sent)",
+        "example_uses": [
+          "Reference contract's own address as token",
+          "Show target contract for nested calls"
+        ]
+      },
+      "@.value": {
+        "description": "The native currency amount sent with the transaction (msg.value in Solidity)",
+        "example_uses": [
+          "Show ETH/native currency being sent in payable functions",
+          "Display transaction value"
+        ]
+      }
+    }
+  },
+
+  "alternative_field_value": {
+    "description": "Instead of 'path' (extract from data), you can use 'value' (literal)",
+    "notes": "path and value are mutually exclusive - cannot have both",
+    "example": {
+      "value": "Swap",
+      "label": "Action",
+      "format": "raw"
+    }
+  },
+
+  "array_indexing": {
+    "description": "Array index notation in ERC-7730",
+    "notation": {
+      "[0]": "First element in an array",
+      "[-1]": "Last element in an array (negative indices are VALID and standard in ERC-7730)"
+    },
+    "notes": "Negative array indices are part of the ERC-7730 spec and are REQUIRED to work"
+  },
+
+  "type_casting": {
+    "description": "Valid type conversions between ABI types and format types",
+    "valid_casts": [
+      {
+        "from": ["uint256", "bytes32", "bytes20"],
+        "to": "addressName",
+        "explanation": "Casting is supported by taking 20 bytes - NOT a critical type mismatch"
+      },
+      {
+        "from": "address",
+        "to": ["raw", "numeric formats"],
+        "explanation": "Address can be displayed as numeric value - NOT a critical type mismatch"
+      }
+    ]
+  }
+}

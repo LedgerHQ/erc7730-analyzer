@@ -1,0 +1,131 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "ERC-7730 Recommendations Format",
+  "description": "Guidelines for writing recommendations in ERC-7730 clear signing audit reports",
+  "version": "1.0.0",
+
+  "always_include": "Even if no critical issues found, ALWAYS include recommendations section",
+
+  "formatting_requirements": {
+    "bullet_format": "USE BULLET POINTS with dashes (-), NOT numbered lists",
+    "complete_sentences": "Each recommendation must be a COMPLETE, STANDALONE sentence",
+    "end_with_period": "Each bullet point must END with a period (.)",
+    "no_colons": "DO NOT use colons (:) at the end of recommendations",
+    "no_numbers": "DO NOT start with numbers like '1.', '2.', '3.'",
+    "be_specific": "DO NOT write generic recommendations that just repeat the rules. Be SPECIFIC to this descriptor. If you say 'Ensure nested calldata descriptor(s) are available', you are being too generic. Instead, say which specific selector needs a nested descriptor or don't mention it at all.",
+    "no_generic_advice": "AVOID generic phrases like 'Ensure...', 'Make sure...', 'Verify...', 'Recommend wallets...'. Only include actionable, specific recommendations for THIS descriptor."
+  },
+
+  "recommendation_types": [
+    {
+      "type": "Fixes for critical issues",
+      "description": "For each critical issue from 'Issues Found' section, write ONE bullet point",
+      "requirements": [
+        "States the fix clearly",
+        "Includes the specific code/field to add or change",
+        "Is a complete sentence ending with a period"
+      ],
+      "examples": [
+        "**Add msg.value display:** Include a field with `\"path\": \"@.value\"`, `\"label\": \"Fee Amount\"`, and `\"format\": \"amount\"` in the fields array to show the native ETH fee being sent.",
+        "**Fix inverted token addresses:** Swap the tokenPath values so `fromAmount` references `#.tokenIn` and `toAmount` references `#.tokenOut`.",
+        "**Show recipient address:** Add a field with `\"path\": \"#.recipient\"`, `\"label\": \"Recipient\"`, and `\"format\": \"addressName\"` to display where tokens are sent."
+      ]
+    },
+    {
+      "type": "Spec limitations",
+      "description": "For parameters that CANNOT be clear signed due to ERC-7730 limitations",
+      "rules": [
+        "These do NOT go in 'Issues Found' section",
+        "List them here in Recommendations with full explanation",
+        "Follow the 'ERC-7730 SPEC LIMITATIONS' format",
+        "ALWAYS include these even when no critical issues exist"
+      ],
+      "examples": [
+        "**Output token cannot be clear signed:** The `minReturn` field displays the minimum amount to receive, but the output token is determined by the pool/DEX address and not available as a function input, so ERC-7730 cannot reliably map this to a specific ERC20 address with tokenPath."
+      ]
+    },
+    {
+      "type": "Optional improvements",
+      "description": "Even when descriptor is correct, suggest UX enhancements",
+      "suggestions": [
+        "Adding senderAddress parameter for zero-check fallbacks",
+        "Better label wording",
+        "Additional helpful fields",
+        "Include these even when no critical issues exist"
+      ],
+      "format": "Still use bullet points (-), Mark them as '(Optional)' at the start, Keep them complete sentences",
+      "examples": [
+        "**(Optional) Add senderAddress parameter:** Consider adding `\"senderAddress\": [\"0x0000000000000000000000000000000000000000\"]` to the recipient field to handle the zero-address fallback pattern detected in the source code where `recipient == address(0) ? msg.sender : recipient`.",
+        "**(Optional) Improve label clarity:** Consider changing the label from \"To\" to \"Recipient Address\" for better user clarity."
+      ]
+    }
+  ],
+
+  "bad_examples": [
+    "1. Add an explicit field showing msg.value:",
+    "2. Example snippet to include in fields:",
+    "3. (Optional) If maintainers want...",
+    "4. ---"
+  ],
+
+  "spec_limitations": {
+    "title": "ERC-7730 SPEC LIMITATIONS",
+    "rule": "If a critical parameter CANNOT be clear signed using the current ERC-7730 specification, you MUST explicitly state this with a complete explanation",
+    "common_limitations": [
+      {
+        "limitation": "Bitmask flags",
+        "description": "Parameter used with bitwise AND operations (e.g., flags & _SHOULD_CLAIM != 0)",
+        "source_code_pattern": "if (param & CONSTANT != 0) or param & MASK",
+        "why_unsupported": "ERC-7730's enum format only supports simple 1:1 value→label mappings. Cannot test individual bits or display multiple flag combinations",
+        "example": "flags = 0x06 = REQUIRES_EXTRA_ETH + SHOULD_CLAIM cannot be shown as 'REQUIRES_EXTRA_ETH, SHOULD_CLAIM'"
+      },
+      {
+        "limitation": "Deeply nested arrays",
+        "description": "Arrays of structs containing arrays",
+        "example": "path[].orders[].amounts[]"
+      },
+      {
+        "limitation": "Dynamic data structures",
+        "description": "Data computed on-chain, not in inputs"
+      },
+      {
+        "limitation": "Complex tuples",
+        "description": "Multi-level struct nesting beyond ERC-7730 path capabilities"
+      },
+      {
+        "limitation": "Output token from pool/DEX",
+        "description": "Token determined by pool address, not explicit in inputs",
+        "example": "minReturn in Uniswap where pool determines output token"
+      }
+    ],
+    "required_format": [
+      "**[Parameter name] cannot be clear signed:** This parameter cannot be displayed with current ERC-7730 spec because [explain the specific limitation].",
+      "**Why this matters:** [Explain what information the user is missing and the security implications]",
+      "**Detected pattern:** [If applicable, show the code pattern that proves it's a limitation]"
+    ],
+    "example": {
+      "parameter": "flags",
+      "recommendation": "**flags cannot be clear signed:** This parameter cannot be displayed with current ERC-7730 spec because it is a bitmask with bitwise operations, and ERC-7730's enum format only supports simple value→label mappings without bitwise AND support.",
+      "why_matters": "**Why this matters:** Users cannot see which behavior flags are enabled (SHOULD_CLAIM, REQUIRES_EXTRA_ETH, PARTIAL_FILL), affecting token routing and ETH requirements",
+      "detected_pattern": "**Detected pattern:** Source code shows: `if (flags & _SHOULD_CLAIM != 0)` and `if (flags & _REQUIRES_EXTRA_ETH != 0)`"
+    }
+  },
+
+  "always_provide_recommendations": {
+    "rule": "Even if there are NO critical issues, you MUST still provide recommendations",
+    "include": [
+      "Spec limitations: Parameters that cannot be clear signed (bitmask flags, output tokens from pools, packed data, etc.)",
+      "Optional improvements: Better labels, adding senderAddress parameter, display enhancements, etc.",
+      "Best practices: Suggestions that improve UX even if not critical"
+    ],
+    "if_truly_no_recommendations": "**No additional recommendations - descriptor is comprehensive.**",
+    "avoid_generic_recommendations": [
+      "DO NOT say: 'Ensure nested calldata descriptor(s) are available' - this is too generic",
+      "DO NOT say: 'Recommend wallets verify...' - this is out of scope for descriptor audit",
+      "DO NOT say: 'Document as a spec limitation...' - just state the limitation directly",
+      "DO NOT say: 'Make sure all labels remain ≤20 characters' - only mention if there's an actual label >20 chars",
+      "DO NOT repeat rules from the audit guidelines - be specific to THIS descriptor"
+    ],
+    "when_descriptor_is_perfect": "If the descriptor has no issues, no spec limitations, and no meaningful improvements to suggest, simply write: '**No additional recommendations - descriptor is comprehensive.**'"
+  }
+}

@@ -646,7 +646,7 @@ def generate_summary_file(results: Dict, summary_file: Path):
             if source_code:
                 formatted_code = format_source_code_section(source_code)
                 if formatted_code:
-                    report += "<details>\n<summary><b>📝 Source Code (Sent to AI)</b></summary>\n\n"
+                    report += "<details>\n<summary><b>📝 Source Code</b></summary>\n\n"
                     report += "```solidity\n"
                     report += formatted_code
                     report += "```\n\n</details>\n\n"

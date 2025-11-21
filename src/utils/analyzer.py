@@ -760,27 +760,46 @@ class ERC7730Analyzer:
                     if function_source.get('function_docstring'):
                         code_block += f"// Docstring:\n{function_source['function_docstring']}\n\n"
 
+                    # 1. Custom types (highest priority)
+                    if function_source.get('custom_types'):
+                        code_block += "// Custom types:\n"
+                        for custom_type in function_source['custom_types']:
+                            code_block += f"{custom_type}\n"
+                        code_block += "\n"
+
+                    # 2. Using statements
+                    if function_source.get('using_statements'):
+                        code_block += "// Using statements:\n"
+                        for using_stmt in function_source['using_statements']:
+                            code_block += f"{using_stmt}\n"
+                        code_block += "\n"
+
+                    # 3. Constants
                     if function_source.get('constants'):
                         code_block += "// Constants:\n"
                         for constant in function_source['constants']:
                             code_block += f"{constant}\n"
                         code_block += "\n"
 
+                    # 4. Structs
                     if function_source['structs']:
                         code_block += "// Structs:\n"
                         for struct in function_source['structs']:
                             code_block += f"{struct}\n"
                         code_block += "\n"
 
+                    # 5. Enums
                     if function_source['enums']:
                         code_block += "// Enums:\n"
                         for enum in function_source['enums']:
                             code_block += f"{enum}\n"
                         code_block += "\n"
 
+                    # 6. Main function
                     code_block += "// Main function:\n"
                     code_block += function_source['function']
 
+                    # 7. Internal functions called
                     if function_source['internal_functions']:
                         code_block += "\n\n// Internal functions called:\n"
                         for internal_func in function_source['internal_functions']:
@@ -788,6 +807,12 @@ class ERC7730Analyzer:
                             if internal_func.get('docstring'):
                                 code_block += f"{internal_func['docstring']}\n"
                             code_block += f"{internal_func['body']}\n\n"
+
+                    # 8. Libraries (lowest priority)
+                    if function_source.get('libraries'):
+                        code_block += "\n// Libraries:\n"
+                        for library in function_source['libraries']:
+                            code_block += f"{library}\n\n"
 
                     code_block += f"\n{'='*60}\n"
 

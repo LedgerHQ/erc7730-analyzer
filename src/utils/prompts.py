@@ -47,6 +47,16 @@ def generate_clear_signing_audit(
             if source_code.get('function_docstring'):
                 source_code_section += f"```\n{source_code['function_docstring']}\n```\n\n"
 
+            if source_code.get('custom_types'):
+                source_code_section += "**Custom Types:**\n```\n"
+                source_code_section += "\n".join(source_code['custom_types'])
+                source_code_section += "\n```\n\n"
+
+            if source_code.get('using_statements'):
+                source_code_section += "**Using Statements:**\n```\n"
+                source_code_section += "\n".join(source_code['using_statements'])
+                source_code_section += "\n```\n\n"
+
             if source_code.get('structs'):
                 source_code_section += "**Structs used:**\n```\n"
                 source_code_section += "\n\n".join(source_code['structs'])
@@ -75,8 +85,23 @@ def generate_clear_signing_audit(
                     # Add function body
                     source_code_section += f"```\n{internal_func_data['body']}\n```\n\n"
 
+            if source_code.get('libraries'):
+                source_code_section += "**Libraries used:**\n"
+                for library in source_code['libraries']:
+                    source_code_section += f"```\n{library}\n```\n\n"
+
             if source_code.get('truncated'):
                 source_code_section += "⚠️ **Note:** Source code was truncated to fit within limits. Focus on the main function.\n\n"
+
+        # Extract enums from ERC-7730 descriptor for context
+        erc7730_enums_section = ""
+        if erc7730_format.get('metadata', {}).get('enums'):
+            erc7730_enums_section = "\n\n**ERC-7730 Enum Definitions (from descriptor):**\n\n"
+            erc7730_enums_section += "The descriptor defines these enum mappings for displaying parameters:\n\n"
+            for enum_name, enum_values in erc7730_format['metadata']['enums'].items():
+                erc7730_enums_section += f"**{enum_name}:**\n```json\n"
+                erc7730_enums_section += json.dumps(enum_values, indent=2)
+                erc7730_enums_section += "\n```\n\n"
 
         # Prepare the prompt
         prompt = f"""You are a clear signing security auditor for ERC-7730 clear signing metadata. Your job is to ensure users see all CRITICAL information they need BEFORE signing.
@@ -100,7 +125,7 @@ INPUTS:
 **ERC-7730 Format Definition:**
 ```json
 {json.dumps(erc7730_format, indent=2)}
-```
+```{erc7730_enums_section}
 
 **Decoded Transaction Samples (may be empty):**
 
@@ -160,7 +185,7 @@ All "format" fields in ERC-7730 MUST use one of these values:
    - Commonly used with `"path": "@.value"` to show msg.value
 
 3. **"tokenAmount"** - Amount in ERC20 Token
-   - **TWO WAYS to specify the token**:
+   - **REQUIRED PARAM** (choose one): MUST have `token` XOR `tokenPath`
      * **Option A - Dynamic token (from input parameter)**: Use `"tokenPath"` pointing to the parameter name
        - Example: `{{"path": "amount", "format": "tokenAmount", "params": {{"tokenPath": "token"}}}}`
      * **Option B - Fixed token (hardcoded address)**: Use `"token"` with the hardcoded address
@@ -169,7 +194,11 @@ All "format" fields in ERC-7730 MUST use one of these values:
    - **CRITICAL if NEITHER tokenPath NOR token is present** UNLESS one of these exceptions applies:
      * Exception 1: Function ONLY supports native ETH (no other token possible) AND has `nativeCurrencyAddress`
      * Exception 2: Token address is NOT available in function inputs (e.g. computed on-chain from pool/DEX) AND has `nativeCurrencyAddress` for native transfers only
-   - For native ETH support: MUST also have `"nativeCurrencyAddress"` in params (can be in field or $ref definition)
+   - **OPTIONAL PARAMS**:
+     * `nativeCurrencyAddress`: Address(es) interpreted as native currency (ETH) - can be string OR array
+     * `threshold`: Amount threshold above which `message` is displayed instead of actual amount
+     * `message`: Message to display for amounts above threshold (e.g., "Unlimited" for max allowances)
+   - Example with threshold: `{{"path": "amount", "format": "tokenAmount", "params": {{"tokenPath": "token", "threshold": "115792089237316195423570985008687907853269984665640564039457584007913129639935", "message": "Unlimited"}}}}`
 
 4. **"nftName"** - ID of the NFT in the collection
    - **REQUIRED PARAM**: MUST have `"collectionPath"` in params pointing to the NFT collection address
@@ -177,10 +206,13 @@ All "format" fields in ERC-7730 MUST use one of these values:
 
 5. **"addressName"** - Address parameter
    - Use this format for ALL address parameters
-   - **OPTIONAL PARAM - `senderAddress`**: For conditional fallback to sender (@.from)
-     * If the address value equals one of the addresses in `senderAddress` array (typically `["0x0000000000000000000000000000000000000000"]`), the wallet displays `@.from` (msg.sender) instead
-     * Common pattern: `dstReceiver = (param == address(0)) ? msg.sender : param`
-     * Example: `{{"path": "_recipient", "format": "addressName", "params": {{"senderAddress": ["0x0000000000000000000000000000000000000000"]}}}}`
+   - **OPTIONAL PARAMS**:
+     * `senderAddress`: For conditional fallback to sender (@.from)
+       - If the address value equals one of the addresses in `senderAddress` array (typically `["0x0000000000000000000000000000000000000000"]`), the wallet displays `@.from` (msg.sender) instead
+       - Common pattern: `dstReceiver = (param == address(0)) ? msg.sender : param`
+       - Example: `{{"path": "_recipient", "format": "addressName", "params": {{"senderAddress": ["0x0000000000000000000000000000000000000000"]}}}}`
+     * `types`: Array restricting address types - `["wallet", "eoa", "contract", "token", "collection"]` - This restricts name sources and may trigger additional wallet checks
+     * `sources`: Array of trusted name sources in order of preference (wallet manufacturer specific, e.g., `["local", "ens"]`)
    - Example: `{{"path": "_recipient", "format": "addressName"}}`
 
 6. **"date"** - UINT representing a timestamp/date
@@ -203,18 +235,63 @@ All "format" fields in ERC-7730 MUST use one of these values:
    - **REQUIRED PARAM**: MUST have `$ref` path to enumeration in metadata.constants OR metadata.enums
    - Both `$.metadata.constants.*` and `$.metadata.enums.*` are valid
    - Path starts with root node `$.`
+   - Enums can be static (object with key-value pairs) OR dynamic (URL string returning JSON)
    - Example (constants): `{{"path": "_swapType", "format": "enum", "params": {{"$ref": "$.metadata.constants.swapTypes"}}}}`
    - Example (enums): `{{"path": "_rateMode", "format": "enum", "params": {{"$ref": "$.metadata.enums.interestRateMode"}}}}`
 
+10. **"calldata"** - Embedded calldata for nested/recursive calls
+   - **REQUIRED PARAM**: MUST have `callee` OR `calleePath` (exactly one, mutually exclusive)
+     * `callee`: Fixed address string (e.g., `"0x123..."`)
+     * `calleePath`: JSON path to address in structured data (e.g., `"@.to"`, `"target"`)
+   - **OPTIONAL PARAMS**:
+     * `selector` OR `selectorPath`: Function selector if not in calldata (mutually exclusive)
+     * `amount` OR `amountPath`: Associated native currency amount (mutually exclusive)
+     * `spender` OR `spenderPath`: Associated spender address (mutually exclusive)
+   - The nested calldata is decoded using another ERC-7730 descriptor and shown on SUBSEQUENT screens
+   - If no descriptor available, wallet MAY display hash of calldata instead
+   - Example: `{{"path": "action", "label": "Action", "format": "calldata", "params": {{"calleePath": "@.to"}}}}`
+   - This enables multi-screen clear signing for wrapper functions like `permitAndCall`, `multicall`, `execute`
+
+**MUTUALLY EXCLUSIVE CONSTRAINTS (XOR):**
+These parameter pairs CANNOT both be present - you must use exactly one:
+- Field: `path` XOR `value` (either extract from data OR use literal value)
+- addressName: `senderAddress` can be string OR array (not both, but can omit)
+- tokenAmount: `token` XOR `tokenPath` (fixed address OR dynamic path)
+- tokenAmount: `nativeCurrencyAddress` can be string OR array
+- nftName: `collection` XOR `collectionPath` (fixed address OR dynamic path)
+- calldata: `callee` XOR `calleePath` (fixed address OR dynamic path)
+- calldata: `selector` XOR `selectorPath` (fixed selector OR dynamic path)
+- calldata: `amount` XOR `amountPath` (fixed amount OR dynamic path)
+- calldata: `spender` XOR `spenderPath` (fixed spender OR dynamic path)
+
+**ALTERNATIVE FIELD VALUE:**
+- Instead of `"path": "fieldName"`, you can use `"value": "literal"` to display a fixed string/number
+- Example: `{{"value": "Swap", "label": "Action", "format": "raw"}}` - displays literal "Swap" text
+- `path` and `value` are mutually exclusive - cannot have both
+
 **CRITICAL VALIDATION RULES:**
-- If format is "tokenAmount" → MUST have "tokenPath" in params
-  * **EXCEPTION**: If function ONLY supports native ETH (check source code) OR token is not in inputs (encoded/computed) OR cannot be determined from inputs AND has nativeCurrencyAddress → NOT CRITICAL, add WARNING in detailed report
-- If format is "nftName" → MUST have "collectionPath" in params
-- If format is "date" → MUST have "encoding" parameter ("timestamp" or "blockheight")
-- If format is "unit" → MUST have "base" parameter (unit symbol)
-- If format is "enum" → MUST reference a valid path in metadata.constants
-- Token addresses should be excluded from display when amount is shown with tokenPath reference
-- Always check both field params AND $ref definition params for required fields like nativeCurrencyAddress
+1. **Format-specific requirements:**
+   - If format is "tokenAmount" → MUST have "token" XOR "tokenPath" in params
+     * **EXCEPTION**: If function ONLY supports native ETH (check source code) OR token is not in inputs (encoded/computed) OR cannot be determined from inputs AND has nativeCurrencyAddress → NOT CRITICAL, add WARNING in detailed report
+   - If format is "nftName" → MUST have "collection" XOR "collectionPath" in params
+   - If format is "date" → MUST have "encoding" parameter ("timestamp" or "blockheight")
+   - If format is "unit" → MUST have "base" parameter (unit symbol)
+   - If format is "enum" → MUST have "$ref" in params pointing to $.metadata.constants.* or $.metadata.enums.*
+   - If format is "calldata" → MUST have "callee" XOR "calleePath" in params
+
+2. **XOR (Mutually Exclusive) violations:**
+   - Field has BOTH "path" and "value" → CRITICAL ERROR (must have exactly one)
+   - tokenAmount has BOTH "token" and "tokenPath" → CRITICAL ERROR
+   - nftName has BOTH "collection" and "collectionPath" → CRITICAL ERROR
+   - calldata has BOTH "callee" and "calleePath" → CRITICAL ERROR
+   - calldata has BOTH "selector" and "selectorPath" → CRITICAL ERROR
+   - calldata has BOTH "amount" and "amountPath" → CRITICAL ERROR
+   - calldata has BOTH "spender" and "spenderPath" → CRITICAL ERROR
+
+3. **Other validations:**
+   - Token addresses should be excluded from display when amount is shown with tokenPath reference
+   - Always check both field params AND $ref definition params for required fields like nativeCurrencyAddress
+   - If a field references `$ref` but overrides params, the override takes precedence
 
 **CONTAINER STRUCTURE VALUES (Transaction Fields):**
 These special paths reference the enclosing transaction/message, not the function parameters:
@@ -319,6 +396,44 @@ You MUST be EXTREMELY conservative. Only flag if a normal user would be shocked 
       → **If function ONLY accepts native ETH (no token parameter) and no @.value field exists** → CRITICAL
       → **If function accepts both tokens and ETH**: Only NOT critical if another amount field displays the same value (e.g., deposit(uint256 amount) where amount must equal msg.value)
       → Example FIX for payable functions with no inputs: `{{"path": "@.value", "label": "Amount", "format": "amount"}}`
+    * **Case 4 - WRAPPER/FORWARDING PATTERN (INFORMATIONAL, not CRITICAL)**:
+      → **Pattern detection**: If a payable function meets ALL these conditions:
+        1. Function body does NOT manipulate `msg.value` in its own logic (no validation, no splitting, no storing)
+        2. Function forwards the ENTIRE value via one of these patterns:
+           - `delegatecall(...)` - automatically forwards msg.value
+           - `.call{{value: msg.value}}(...)` - explicitly forwards full msg.value
+           - `.call{{value: address(this).balance}}(...)` - forwards all received ETH
+        3. Function does NOT display `@.value` in ERC-7730
+      → **Why this is NOT critical**:
+        * The value is forwarded entirely to a nested call
+        * The nested call (typically decoded from a `bytes calldata` parameter like `action`, `data`, or `calls`) will have its own ERC-7730 descriptor
+        * That nested descriptor SHOULD display `@.value`
+        * Users see multiple clear signing screens: one for the wrapper, one for the nested call
+        * The value is shown on the nested call's screen, not the wrapper's screen
+        * Wallet UI also shows total transaction value regardless
+      → **Example wrapper patterns**:
+        ```solidity
+        // Pattern A: delegatecall (auto-forwards value)
+        function permitAndCall(bytes calldata action) external payable {{
+            doPermit();
+            assembly {{ delegatecall(gas(), address(), ...) }}  // ✓ Auto-forwards
+        }}
+
+        // Pattern B: explicit value forwarding
+        function executeWithValue(bytes calldata data) external payable {{
+            target.call{{value: msg.value}}(data);  // ✓ Explicitly forwards
+        }}
+        ```
+      → **Counter-example (CRITICAL)**:
+        ```solidity
+        function swapWithFee(SwapData calldata desc) external payable {{
+            require(msg.value == desc.amount);  // ❌ Uses msg.value in logic
+            executor.call{{value: msg.value}}(data);
+        }}
+        // This IS critical because function validates msg.value
+        ```
+      → **Action to take**: Mark as INFORMATIONAL (not CRITICAL) with note: "This appears to be a wrapper function that forwards execution and value entirely. Verify that nested call descriptors display @.value."
+      → **DO NOT flag as critical** if this pattern is detected
   - Check source code and receipt_logs (if available) to determine which case applies. Sometimes even if sentinels exist, the code does not allow native transfer even if the function is payable.
   - **KEY**: When checking for nativeCurrencyAddress, follow $ref references to definitions - it can be in either place
   - Only flag as critical if native ETH is actually being transferred AND display cannot show it
@@ -337,21 +452,152 @@ You MUST be EXTREMELY conservative. Only flag if a normal user would be shocked 
 - **CRITICAL if**: The indexed element is a sentinel (0x00) while real data exists elsewhere in the array
 
 **CRITICAL REQUIREMENT - Can it be fixed with available input parameters?**
-- ONLY flag as CRITICAL if the missing/wrong information EXISTS in the function's input parameters AND can be displayed with current ERC-7730 spec
+- ONLY flag as CRITICAL if the missing/wrong information EXISTS in the function's input parameters AND can be displayed with current ERC-7730 spec AND can be shown in a HUMAN-READABLE format
 - Example CRITICAL: ERC-7730 doesn't show recipient but recipient is an input parameter → CRITICAL (can be fixed)
 - Example NOT CRITICAL: Showing max/min amount not actual amounts (computed on-chain, not in inputs) → NOT CRITICAL (that's how the function works)
-- **Rule: If the information cannot be obtained from input parameters OR cannot be displayed with ERC-7730 spec, it's NOT a critical issue - it's a SPEC LIMITATION (add to section 6️⃣, not section 2)**
+- **Rule: If the information cannot be obtained from input parameters OR cannot be displayed with ERC-7730 spec OR cannot be shown in human-readable format, it's NOT a critical issue - it's a SPEC LIMITATION (add to section 6️⃣, not section 2)**
+
+**CRITICAL DISTINCTION - Human Readability:**
+- **Can be clear signed in READABLE format** (address, token amount, date) → If missing, this IS critical
+- **Can only be shown as RAW/incomprehensible data** (packed bits, raw bytes32, complex flags, large computed values like liquidity) → If missing, this is NOT critical
+- **Key question**: "Would displaying this as 'raw' format help the user understand what they're signing?"
+  - YES (e.g., address as hex, token amount as number) → Critical if missing
+  - NO (e.g., `0x000000000000001a4` for packed traits, arbitrary bytes, `1582938471982347` for liquidity) → NOT critical
+- **Example NOT CRITICAL #1**: Bitpacked parameter (e.g., `traits`, `flags`, `options`) controlling operation mode but can only display as `0x1a2b3c4d...` (incomprehensible)
+  - AI might recommend: "Add {{"path": "traits", "format": "raw"}}"
+  - Reality: Raw hex like `0x00000000000000000000000000000000000000000000000000000000000001a4` tells user NOTHING
+  - Conclusion: NOT critical to hide - users cannot understand it anyway
+- **Example NOT CRITICAL #2**: `liquidity` or `sqrtPriceX96` parameter with large computed value
+  - AI might recommend: "Add {{"path": "liquidity", "format": "raw"}}"
+  - Reality: Raw number like `1582938471982347` is meaningless without formula/context
+  - Users cannot interpret: Is this good? Is this the right amount? What does it mean?
+  - Similar examples: `sqrtPriceX96`, `tick`, `feeGrowthGlobal0X128` - all require mathematical context
+  - Conclusion: NOT critical to hide - displaying raw value doesn't help users verify correctness
+- **Example CRITICAL**: `recipient` address hidden
+  - Can display as: `0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb` (readable address)
+  - Users understand: "My tokens go to this address"
+  - Conclusion: CRITICAL to hide
+- **Rule**: Do NOT recommend displaying parameters as "raw" format unless the raw value is meaningful to users. If the only way to show something is incomprehensible, it's acceptable to hide it.
 
 **Examples of SPEC LIMITATIONS (NOT critical issues):**
-1. **Packed/bitflag parameters** - `makerTraits` with packed nonce/epoch/flags requiring bitwise operations → Cannot display with ERC-7730
-2. **Output token from pool** - `minReturn` where output token determined by pool/DEX address → Cannot reliably map to specific ERC20
-3. **Arbitrary calldata** - Multicall/delegatecall functions with arbitrary actions → Not necessary to decode, users understand these are generic execution
-4. **Values computed on-chain** - Actual swap amounts, slippage-adjusted amounts → Only max/min available in inputs
+1. **Packed/bitflag parameters** - Bitpacked uint256 parameters (e.g., `traits`, `flags`, `options`, `config`) with packed data requiring bitwise operations → Cannot display with ERC-7730
+2. **Parameters only displayable as incomprehensible raw hex/numbers** - Even if technically possible to show as "raw" format, if the value is meaningless to users, it's NOT critical to hide:
+   - Example: Bitpacked parameter as `0x00000000000000000000000000000000000000000000000000000000000001a4` (packed bits)
+   - Example: `liquidity` as `1582938471982347` (large computed value requiring mathematical context)
+   - Example: `sqrtPriceX96`, `tick`, `feeGrowthGlobal0X128` (Uniswap V3 technical parameters)
+   - Users cannot verify correctness from raw values without deep protocol knowledge
+3. **Output token from pool** - `minReturn` where output token determined by pool/DEX address → Cannot reliably map to specific ERC20
+4. **Arbitrary calldata** - Multicall/delegatecall functions with arbitrary actions → Not necessary to decode, users understand these are generic execution
+5. **Values computed on-chain** - Actual swap amounts, slippage-adjusted amounts → Only max/min available in inputs
 
 **DO NOT FLAG (these are NOT critical):**
 - ✅ Sentinel values like CONTRACT_BALANCE, ADDRESS_THIS - implementation details users don't see
 - ✅ "Payer" logic or who sources tokens - as long as user gets right tokens/amounts
 - ✅ Missing parameters like sqrtPriceLimit, deadline, slippage - technical stuff
+- ✅ **Amount capped to user's available balance/debt (repay/withdraw functions)** - If a function:
+  1. Takes an amount parameter from user
+  2. Caps the actual transferred amount to user's balance/debt/limit (using min() or similar)
+  3. Code shows patterns like `amount = min(amount, userBalance)` or `if (amount > debt) amount = debt`
+  4. User CANNOT lose more than they have/owe - the cap protects them
+  → This is NOT CRITICAL - showing raw input amount is acceptable
+  → The cap is a PROTECTIVE mechanism, not a risk
+  → User cannot be charged more than they owe or lose more than they have
+  → **Common patterns**: `repay()` (capped to debt), `withdraw()` (capped to balance), `redeem()` (capped to shares)
+  → **How to detect**: Look in source code for:
+    * `paybackAmount = amount < debt ? amount : debt` or `min(amount, debt)`
+    * `actualAmount = min(amount, userBalance)`
+    * Amount compared to user's state and capped
+    * Final transfer uses the capped amount, not raw input
+  → **Example**:
+    ```solidity
+    function repay(uint256 amount) external {{
+        uint256 debt = getUserDebt(msg.sender);
+        uint256 paybackAmount = amount < debt ? amount : debt;  // ✓ Capped
+        token.safeTransferFrom(msg.sender, address(this), paybackAmount);
+    }}
+    // NOT critical - user cannot pay more than they owe
+    ```
+  → **Action**: Mark as NOT CRITICAL but add to RECOMMENDATIONS:
+    * "Amount may be capped to user's outstanding debt/balance. This protects user from overpaying."
+    * "Consider updating label: {{"label": "Amount to repay (max, capped to debt)"}}"
+    * "Or add description: {{"description": "Final amount capped to outstanding balance"}}"
+    * This improves clarity but is not security-critical (cap protects user)
+  → **Counter-example (CRITICAL)**: If user can be charged MORE than they specify (amount multiplied/increased) → CRITICAL
+- ✅ **Funds always sent to msg.sender (withdraw/claim/redeem functions)** - If a function:
+  1. Has no recipient parameter OR recipient parameter defaults to msg.sender
+  2. Transfers tokens/ETH exclusively to msg.sender (the transaction signer)
+  3. Code shows patterns like `transfer(msg.sender, amount)` or `recipient = msg.sender`
+  → This is NOT CRITICAL to hide the recipient - user ALWAYS receives funds themselves
+  → There is no risk of funds going to wrong address - hardcoded to caller
+  → **Common patterns**: `withdraw()`, `claim()`, `claimRewards()`, `redeem()`, `unwrap()`, `unstake()`
+  → **How to detect**: Look in source code for:
+    * `transfer(msg.sender, ...)` or `safeTransfer(msg.sender, ...)`
+    * `recipient = msg.sender` or `to = msg.sender`
+    * No recipient parameter in function signature
+    * Recipient parameter exists but code always uses msg.sender
+  → **Example**:
+    ```solidity
+    function withdraw(uint256 amount) external {{
+        balances[msg.sender] -= amount;
+        token.transfer(msg.sender, amount);  // ✓ Always to caller
+    }}
+    // NOT critical - user always receives their own funds
+    ```
+  → **Action**: Mark as NOT CRITICAL but add to RECOMMENDATIONS:
+    * "Function sends funds to msg.sender (caller). No recipient risk."
+    * "Consider adding field: {{"path": "@.from", "label": "Beneficiary", "format": "addressName"}} for clarity"
+    * This shows user they will receive funds to their own address (good UX)
+  → **Counter-example (CRITICAL)**: If recipient CAN be different from msg.sender (user-supplied parameter) → CRITICAL to show
+- ✅ **Cryptographically protected parameters (signed orders/meta-transactions)** - If a parameter:
+  1. Is part of a struct that is hashed and signature-verified (e.g., EIP-712 signed orders)
+  2. Cannot be changed by an attacker without making the signature validation fail and reverting the transaction
+  3. Is validated via `ECDSA.recover()`, `isValidSignature()`, or similar cryptographic check
+  → This is NOT CRITICAL to hide - the parameter is tamper-proof
+  → An attacker cannot modify it without the private key that created the signature
+  → **Common patterns**: Limit orders (0x, 1inch, CoW), meta-transactions, signed permits
+  → **How to detect**: Look for signature validation in the code:
+    * `orderHash = order.hash()` or similar EIP-712 hashing
+    * `isValidSignature(signer, hash, signature)` or `ECDSA.recover(hash, signature) == signer`
+    * If validation fails, transaction reverts with signature error
+  → **Example**:
+    ```solidity
+    struct Order {{
+        address maker;      // ✓ Protected by signature
+        address receiver;   // ✓ Protected by signature
+        uint256 amount;     // ✓ Protected by signature
+        // ...
+    }}
+
+    function fillOrder(Order calldata order, bytes calldata signature) external {{
+        bytes32 orderHash = order.hash();
+        if (!isValidSignature(order.maker, orderHash, signature)) revert BadSignature();
+        // If attacker changes order.receiver, hash changes → signature invalid → reverts
+    }}
+    // NOT critical to hide order.maker or order.receiver - they're signed
+    ```
+  → **Action**: Mark as NOT CRITICAL but add to RECOMMENDATIONS:
+    * "Parameter is cryptographically protected by signature validation and cannot be tampered with"
+    * "Consider adding informational field showing this is a signed order for better UX"
+  → **Counter-example (CRITICAL)**: If the parameter is NOT signature-verified OR can be modified after signature check → CRITICAL
+- ✅ **Bundled permit/approval parameters** - If a function:
+  1. Has a `permit` or `approval` parameter that is excluded from display
+  2. Executes permit/approval logic (e.g., `tryPermit()`, `permit()`, `approve()`)
+  3. Performs OTHER actions beyond just approval (swap, deposit, stake, etc.)
+  4. The approval is consumed atomically in the SAME transaction
+  → This is NOT critical - the permit is an implementation detail for the main action
+  → Users care about the MAIN ACTION (swap, deposit), not the approval mechanism
+  → The approval scope is limited to this transaction and consumed immediately
+  → Common patterns: `permitAndCall()`, `swapWithPermit()`, `depositWithPermit()`
+  → **Example**:
+    ```solidity
+    function permitAndCall(bytes calldata permit, bytes calldata action) external {{
+        IERC20(address(bytes20(permit))).tryPermit(permit[20:]);  // ✓ Hidden permit
+        // ... then execute main action (swap, deposit, etc.)
+    }}
+    // NOT critical - permit is bundled with main action
+    ```
+  → **Counter-example (CRITICAL)**: Standalone `approve()` or `permit()` function with no other action → MUST show token/spender/amount
+  → Only flag as critical if permit/approval is the SOLE purpose of the function
 - ✅ **Bitmask flags parameters** - If source code shows bitwise AND operations (e.g., `flags & _SHOULD_CLAIM != 0`), ERC-7730 spec CANNOT display these (enum format doesn't support bitwise operations or multi-flag combinations). This is a SPEC LIMITATION, NOT critical. Add to "Parameters that cannot be clear signed" section with explanation and detected pattern.
 - ✅ **ETH/WETH wrapping scenarios** - When transaction `value` is non-zero (user sends ETH) but `tokenIn` parameter is WETH, this is VALID if the function automatically wraps ETH→WETH. Common in DEX functions like swapExactETHForTokens. The user KNOWS they're sending ETH (shown in wallet UI), and seeing WETH in the clear signing is correct because that's what the contract receives after wrapping
 - ✅ Internal approvals/transfers done BY the protocol during execution (if not triggered by user params)
@@ -373,18 +619,23 @@ You MUST be EXTREMELY conservative. Only flag if a normal user would be shocked 
 - "amountIn uses sentinel CONTRACT_BALANCE" → NOT CRITICAL (implementation detail)
 - "Payer not exposed" → NOT CRITICAL (users don't care about payer logic)
 - "Recipient may be sentinel" → NOT CRITICAL (they still get tokens)
+- "Amount parameter may exceed actual transfer (capped to user's debt/balance)" → NOT CRITICAL. Example: Aave `repay(amount)` where `paybackAmount = min(amount, userDebt)` and transfer uses `paybackAmount`. User signs 1000 USDC repay but only owes 500 USDC - contract caps to 500 USDC. This PROTECTS user from overpaying. User cannot lose MORE than they owe/have. The cap is beneficial. Add to RECOMMENDATIONS: "Amount may be capped to outstanding debt/balance. Consider updating label to {{"label": "Amount to repay (max, capped to debt)"}} for clarity." NOT in critical issues. Similar for: capped `withdraw()`, capped `redeem()`, any max-based amount.
+- "No beneficiary field but function sends to msg.sender" → NOT CRITICAL. Example: `migrate()` function that burns user's CHSB tokens and mints BORG tokens to msg.sender. Code shows `token.mint(msg.sender, amount)` - user ALWAYS receives funds to their own address, no recipient parameter exists or needed. No risk of funds going elsewhere. Add to RECOMMENDATIONS: "Function sends output to msg.sender (caller). Consider adding {{"path": "@.from", "label": "Beneficiary", "format": "addressName"}} for clarity." NOT in critical issues. Similar for: `withdraw()`, `claim()`, `unwrap()`, `redeem()`, `unstake()`.
+- "order.maker or order.receiver hidden but validated by signature" → NOT CRITICAL. Example: `fillOrder(Order calldata order, bytes signature)` where order struct is EIP-712 hashed and signature validated. If attacker modifies order.maker or order.receiver, the hash changes and signature validation fails, reverting the transaction. These parameters are cryptographically tamper-proof. Add to RECOMMENDATIONS: "Parameters are signature-protected and cannot be tampered with. Consider adding informational field for UX." NOT in critical issues.
 - "Missing sqrtPriceLimit parameter" → NOT CRITICAL (technical)
+- "Missing liquidity parameter" → NOT CRITICAL if can only be shown as incomprehensible large number. Example: displaying `liquidity` as `1582938471982347` is meaningless - users cannot verify if this is correct without knowing the formula, pool state, and price ranges. Similar for `sqrtPriceX96`, `tick`, `feeGrowthGlobal0X128` - these are COMPREHENSION LIMITATIONS, add to spec limitations section.
 - "Showing a max or min amount rather than exact ones" → NOT CRITICAL (actual amount is computed on-chain, not available in inputs)
 - "Missing actual spend amount for max-based swaps" → NOT CRITICAL (that's how max-based swaps work - you specify max, actual is computed)
+- "Bitpacked/flags parameters excluded but control behavior" → NOT CRITICAL if can only be shown as incomprehensible raw hex. **General pattern**: Any parameter that uses bitpacking (bit shifts, bit masks, flags) to control multiple behaviors in a single uint256 cannot be meaningfully displayed to users. **Example**: `cancelOrders(traits[], orderHashes[])` where `traits` parameter controls operation mode (e.g., single item vs batch/mass operation, using bit flags like `useBitInvalidator()`). AI might say: "traits excluded but controls whether X or Y mode is used - critical behavior difference". BUT: displaying as `{{"path": "traits.[]", "format": "raw"}}` would show `0x00000000000000000000000000000000000000000000000000000000000001a4` - users CANNOT understand what this hex means or determine operation mode from it. Showing raw value does NOT help users verify the behavior. This applies to ANY bitpacked parameter. This is a COMPREHENSION LIMITATION - add to spec limitations section with explanation: "[Parameter name] bitpacked parameter controls [behavior description] but cannot be meaningfully displayed. Users cannot determine [specific modes/options] from raw hex." NOT in critical issues.
 - "tokenAmount uses 'token' parameter instead of 'tokenPath'" → NOT CRITICAL. Using `"token": "0x..."` is valid for hardcoded token addresses (e.g., migration contracts that only operate on one specific token like CHSB). This is an alternative to `"tokenPath"` for fixed-token functions.
 - "tokenAmount without tokenPath when token address cannot be determined from inputs" → NOT CRITICAL if function ONLY supports native ETH OR destination token is not in inputs (computed on-chain) OR the tokena ddress cannot be determined from the inputs dur to a 7730 limitation AND has nativeCurrencyAddress (add WARNING in detailed report explaining the limitation)
 - "Token amount displayed as raw format instead of tokenAmount" → NOT CRITICAL if the token address cannot be determined from function inputs (e.g., output token computed from pools/routes). This is an acceptable concession. Only mention in recommendations: "User will see raw amount without token symbol/decimals because output token cannot be determined from inputs."
 - "Type mismatch: uint256 displayed as addressName" → NOT CRITICAL (valid casting, e.g., pools.[-1] as uint256 can be cast to address by taking 20 bytes)
 - "Type mismatch: bytes32 displayed as addressName" → NOT CRITICAL (valid casting, bytes32 can be interpreted as address)
 - "Bitmask flags parameter not displayed" → NOT CRITICAL if source code shows bitwise AND operations (e.g., `flags & _SHOULD_CLAIM`) because ERC-7730 spec cannot display bitmasks (add to "Parameters that cannot be clear signed" section with explanation)
-- "Packed parameter like makerTraits with nonce/epoch/flags not decoded" → NOT CRITICAL (SPEC LIMITATION). ERC-7730 cannot perform bitwise shifts/masks to extract packed values. Add to spec limitations section.
 - "Output token determined by pool/DEX not shown" → NOT CRITICAL (SPEC LIMITATION). Example: `minReturn` in `ethUnoswap` where DEX/pool determines output token. Cannot reliably map to specific ERC20 address. Add to spec limitations section.
 - "Arbitrary low-level call details not shown" → NOT CRITICAL. Multicall/delegatecall to self with arbitrary actions - users understand these are generic execution functions, no need to decode arbitrary calldata.
+- "Nested calldata parameter excluded or shown as raw" → NOT CRITICAL. **MULTI-SCREEN CLEAR SIGNING**: When a function contains nested calldata (e.g., `action` bytes passed to delegatecall/call), the nested call gets decoded on SUBSEQUENT screens using its own ERC-7730 descriptor. Example: `permitAndCall(permit, action)` shows "Execute with permit" on screen 1, then the decoded swap/transfer from action bytes on screens 2-3. Whether the outer descriptor uses `{{"format": "calldata", "calleePath": "@.to"}}` or excludes the calldata parameter entirely is fine - users WILL see the nested call details on later screens. DO NOT flag as critical. The outer function only needs to show what's relevant at its level.
 - "Recipient field without senderAddress param when source code has zero-check fallback" → NOT CRITICAL but add WARNING in detailed report recommending `"senderAddress": ["0x0000000000000000000000000000000000000000"]` to handle zero address fallback to msg.sender (e.g., when code shows `recipient = (param == address(0)) ? msg.sender : param`)
 - "Non-payable function shows ETH as possible input (nativeCurrencyAddress present)" → NOT CRITICAL (UX improvement only). Transaction will revert if user tries to send ETH to non-payable function - no funds lost. UI/frontend likely prevents this. Add to RECOMMENDATIONS: "Consider removing nativeCurrencyAddress for better UX" but do NOT flag as critical.
 - "Enum references $.metadata.enums instead of $.metadata.constants" → NOT CRITICAL. Both `$.metadata.enums.*` and `$.metadata.constants.*` are valid paths for enum $ref. Example: `"$ref": "$.metadata.enums.interestRateMode"` is correct.
@@ -617,6 +868,44 @@ IMPORTANT: Keep the `>` blockquote format above.
       → **If function ONLY accepts native ETH (no token parameter) and no @.value field exists** → CRITICAL
       → **If function accepts both tokens and ETH**: Only NOT critical if another amount field displays the same value (e.g., deposit(uint256 amount) where amount must equal msg.value)
       → Example FIX for payable functions with no inputs: `{{"path": "@.value", "label": "Amount", "format": "amount"}}`
+    * **Case 4 - WRAPPER/FORWARDING PATTERN (INFORMATIONAL, not CRITICAL)**:
+      → **Pattern detection**: If a payable function meets ALL these conditions:
+        1. Function body does NOT manipulate `msg.value` in its own logic (no validation, no splitting, no storing)
+        2. Function forwards the ENTIRE value via one of these patterns:
+           - `delegatecall(...)` - automatically forwards msg.value
+           - `.call{{value: msg.value}}(...)` - explicitly forwards full msg.value
+           - `.call{{value: address(this).balance}}(...)` - forwards all received ETH
+        3. Function does NOT display `@.value` in ERC-7730
+      → **Why this is NOT critical**:
+        * The value is forwarded entirely to a nested call
+        * The nested call (typically decoded from a `bytes calldata` parameter like `action`, `data`, or `calls`) will have its own ERC-7730 descriptor
+        * That nested descriptor SHOULD display `@.value`
+        * Users see multiple clear signing screens: one for the wrapper, one for the nested call
+        * The value is shown on the nested call's screen, not the wrapper's screen
+        * Wallet UI also shows total transaction value regardless
+      → **Example wrapper patterns**:
+        ```solidity
+        // Pattern A: delegatecall (auto-forwards value)
+        function permitAndCall(bytes calldata action) external payable {{
+            doPermit();
+            assembly {{ delegatecall(gas(), address(), ...) }}  // ✓ Auto-forwards
+        }}
+
+        // Pattern B: explicit value forwarding
+        function executeWithValue(bytes calldata data) external payable {{
+            target.call{{value: msg.value}}(data);  // ✓ Explicitly forwards
+        }}
+        ```
+      → **Counter-example (CRITICAL)**:
+        ```solidity
+        function swapWithFee(SwapData calldata desc) external payable {{
+            require(msg.value == desc.amount);  // ❌ Uses msg.value in logic
+            executor.call{{value: msg.value}}(data);
+        }}
+        // This IS critical because function validates msg.value
+        ```
+      → **Action to take**: Mark as INFORMATIONAL (not CRITICAL) with note: "This appears to be a wrapper function that forwards execution and value entirely. Verify that nested call descriptors display @.value."
+      → **DO NOT flag as critical** if this pattern is detected
   - Check source code and receipt_logs (if available) to determine which case applies. Sometimes even if sentinels exist, the code does not allow native transfer even if the function is payable.
   - **KEY**: When checking for nativeCurrencyAddress, follow $ref references to definitions - it can be in either place
   - Only flag as critical if native ETH is actually being transferred AND display cannot show it
@@ -728,7 +1017,7 @@ If any parameter CANNOT be clear signed using the current ERC-7730 specification
 - **Detected pattern:** [Code evidence, e.g., "Source code shows bitwise operations: `if (flags & _SHOULD_CLAIM != 0)`"]
 
 **Common spec limitations to detect:**
-1. **Bitmask flags / Packed data** - Source code shows `param & CONSTANT` operations or bitwise shifts → ERC-7730 enum cannot display multiple flag combinations or extract packed values. Example: `makerTraits` with packed nonce/epoch/flags
+1. **Bitmask flags / Packed data** - Source code shows `param & CONSTANT` operations or bitwise shifts → ERC-7730 enum cannot display multiple flag combinations or extract packed values. Example: Bitpacked parameters like `traits`, `flags`, `options` with packed nonce/epoch/flags data
 2. **Output token determined by pool/DEX** - Output token computed from pool address, not explicit in inputs → Cannot reliably map to specific ERC20 address. Example: `minReturn` in Uniswap pool swaps where pool determines output token
 3. **Deeply nested arrays** - Path like `orders[].amounts[]` beyond spec capabilities
 4. **Dynamic/computed data** - Values calculated on-chain, not in function inputs

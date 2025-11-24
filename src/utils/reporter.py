@@ -181,10 +181,6 @@ def parse_first_report(audit_report: str) -> tuple:
     critical = []
     recommendations = []
 
-    # Check if it says "No critical issues found"
-    if '✅ No critical issues found' in audit_report or '✅ no critical issues found' in audit_report.lower():
-        return [], []
-
     def _extract_issue_bullets(section_text: str) -> List[str]:
         """Helper to pull bullet lines from a section."""
         issues = []

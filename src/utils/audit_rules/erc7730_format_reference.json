@@ -2,7 +2,69 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "ERC-7730 Format Types Specification",
   "description": "Comprehensive ERC-7730 format type specifications, parameters, constraints, and validation rules. This replaces the format specification section in prompts.py to improve maintainability.",
-  "version": "1.0.0",
+  "version": "1.0.1",
+
+  "path_syntax": {
+    "description": "ERC-7730 uses a limited JSON path notation with three root node identifiers",
+    "root_nodes": {
+      "#": {
+        "description": "Path applies to the structured data schema (ABI path for contracts, message types for EIP-712)",
+        "value_location": "Values can be found in the serialized representation of the structured data",
+        "examples": [
+          "#.params.amountIn - refers to parameter 'amountIn' in the ABI",
+          "#._minimumRepriceTime - refers to parameter '_minimumRepriceTime' in the ABI",
+          "#.data.path.[0] - refers to first element of 'path' array"
+        ],
+        "note": "This is the default root for function parameters"
+      },
+      "$": {
+        "description": "Path applies to the current ERC-7730 file (after merging with includes)",
+        "value_location": "Values can be found in the merged ERC-7730 file itself",
+        "examples": [
+          "$.metadata.enums.interestRateMode - refers to enum definition",
+          "$.metadata.constants.addressAsEth - refers to constant definition",
+          "$.display.definitions.tokenAmount - refers to field definition"
+        ],
+        "note": "Used for $ref references to definitions, constants, and enums"
+      },
+      "@": {
+        "description": "Path applies to the container of the structured data to be signed (the transaction)",
+        "value_location": "Values can be found in the serialized transaction container",
+        "examples": [
+          "@.value - refers to msg.value (native ETH amount sent with transaction)",
+          "@.to - refers to transaction destination address",
+          "@.from - refers to transaction sender address"
+        ],
+        "note": "Used for transaction-level metadata not in function parameters"
+      },
+      "relative": {
+        "description": "Root nodes and separator can be OMITTED for relative paths",
+        "rule": "Relative paths refer to the top-level structure and are EQUIVALENT to '#.' root node",
+        "examples": [
+          "_minimumRepriceTime is EQUIVALENT to #._minimumRepriceTime",
+          "params.amountIn is EQUIVALENT to #.params.amountIn",
+          "data.path.[0] is EQUIVALENT to #.data.path.[0]"
+        ],
+        "note": "Both forms are VALID and CORRECT - do NOT flag relative paths as errors"
+      }
+    },
+    "array_notation": {
+      "description": "Arrays use bracket notation",
+      "examples": [
+        "path.[0] - first element",
+        "path.[-1] - last element",
+        "path.[:5] - first 5 elements (slice)",
+        "path.[5:] - from 5th element to end (slice)",
+        "path.[] - entire array"
+      ]
+    },
+    "common_mistakes_to_avoid": [
+      "DO NOT flag '#._paramName' as invalid - '#.' is a valid root for ABI parameters",
+      "DO NOT flag relative paths like '_paramName' as invalid - they are equivalent to '#._paramName'",
+      "DO NOT require '$.' for ABI parameters - use '#.' or relative paths instead",
+      "DO NOT confuse '@.' (transaction metadata) with '#.' (ABI parameters)"
+    ]
+  },
 
   "format_types": {
     "raw": {

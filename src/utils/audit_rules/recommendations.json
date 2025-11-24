@@ -11,7 +11,9 @@
     "complete_sentences": "Each recommendation must be a COMPLETE, STANDALONE sentence",
     "end_with_period": "Each bullet point must END with a period (.)",
     "no_colons": "DO NOT use colons (:) at the end of recommendations",
-    "no_numbers": "DO NOT start with numbers like '1.', '2.', '3.'"
+    "no_numbers": "DO NOT start with numbers like '1.', '2.', '3.'",
+    "be_specific": "DO NOT write generic recommendations that just repeat the rules. Be SPECIFIC to this descriptor. If you say 'Ensure nested calldata descriptor(s) are available', you are being too generic. Instead, say which specific selector needs a nested descriptor or don't mention it at all.",
+    "no_generic_advice": "AVOID generic phrases like 'Ensure...', 'Make sure...', 'Verify...', 'Recommend wallets...'. Only include actionable, specific recommendations for THIS descriptor."
   },
 
   "recommendation_types": [
@@ -116,6 +118,14 @@
       "Optional improvements: Better labels, adding senderAddress parameter, display enhancements, etc.",
       "Best practices: Suggestions that improve UX even if not critical"
     ],
-    "if_truly_no_recommendations": "**No additional recommendations - descriptor is comprehensive.**"
+    "if_truly_no_recommendations": "**No additional recommendations - descriptor is comprehensive.**",
+    "avoid_generic_recommendations": [
+      "DO NOT say: 'Ensure nested calldata descriptor(s) are available' - this is too generic",
+      "DO NOT say: 'Recommend wallets verify...' - this is out of scope for descriptor audit",
+      "DO NOT say: 'Document as a spec limitation...' - just state the limitation directly",
+      "DO NOT say: 'Make sure all labels remain ≤20 characters' - only mention if there's an actual label >20 chars",
+      "DO NOT repeat rules from the audit guidelines - be specific to THIS descriptor"
+    ],
+    "when_descriptor_is_perfect": "If the descriptor has no issues, no spec limitations, and no meaningful improvements to suggest, simply write: '**No additional recommendations - descriptor is comprehensive.**'"
   }
 }

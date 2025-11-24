@@ -122,6 +122,7 @@
       ],
       "severity": "medium",
       "why_matters": "Mismatch between what contract does vs what display shows based on user input",
+      "action": "Recommend hardcoding tokenPath to native sentinel constant OR using @.value instead of trusting user input parameter",
       "solution": "tokenPath should be hardcoded to a native sentinel constant OR use @.value, not trust user input",
       "example": {
         "function_name": "swapERC20ToNative(address sendingAssetId, uint256 amount, uint256 minReceive)",

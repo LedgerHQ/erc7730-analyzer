@@ -345,8 +345,17 @@ This is the complete ERC-7730 metadata for this selector, including all referenc
 
 ### **Issues Found:**
 
-List critical issues directly as bullet points below. Be specific and concise. Do NOT use question format.
-Use the exact criteria from the "ONLY flag as CRITICAL if:" section above.
+List critical issues directly as bullet points below. Be specific and concise.
+
+**FORMATTING:**
+- DO NOT use question format
+- DO NOT add titles/labels like "AMOUNT TOKEN/TYPE MAY BE DISPLAYED INCORRECTLY (CRITICAL):" before each issue
+- DO NOT add "(CRITICAL)" tags to each bullet point
+- Just write the issue description as a clean bullet point starting with "-"
+
+**Example:**
+❌ BAD: "- MISSING RECIPIENT SHOWN (CRITICAL): The ABI contains order.receiver but..."
+✅ GOOD: "- The ABI contains order.receiver but the descriptor explicitly excludes it..."
 
 **IMPORTANT - DO NOT include spec limitations here:**
 - Parameters that CANNOT be clear signed due to ERC-7730 spec limitations (e.g., bitmask flags) should NOT be listed as critical issues
@@ -414,6 +423,11 @@ Use the same critical issues criteria as defined in the first report (see critic
 - This section is ONLY for issues that CAN be fixed by updating the ERC-7730 descriptor
 
 {f"⚠️ **NO HISTORICAL TRANSACTIONS FOUND** - This selector has no transaction history. Analysis is based on source code and function signature only. Validation of actual on-chain behavior is not possible without transaction data.\n\n" if not decoded_transactions else ""}
+
+**FORMATTING:**
+- DO NOT add titles/labels like "MISSING RECIPIENT (CRITICAL):" before each issue
+- DO NOT add "(CRITICAL)" tags to bullet points
+- Just write clean bullet point descriptions starting with "-"
 
 List critical issues as bullet points. If none: **✅ No critical issues found**
 

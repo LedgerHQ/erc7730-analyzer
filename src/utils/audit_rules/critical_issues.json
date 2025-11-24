@@ -87,9 +87,27 @@
       "id": 7,
       "title": "Input parameter path mismatch",
       "description": "ERC-7730 references a parameter path that doesn't exist in the ABI OR uses wrong path/name",
+      "valid_path_syntax": {
+        "note": "Both '#.paramName' and 'paramName' are VALID - relative paths are equivalent to '#.' root",
+        "valid_examples": [
+          "#._minimumRepriceTime - VALID (explicit root)",
+          "_minimumRepriceTime - VALID (relative, equivalent to #._minimumRepriceTime)",
+          "params.amount - VALID (relative)",
+          "#.params.amount - VALID (explicit root)"
+        ],
+        "root_nodes": {
+          "#": "ABI parameters (structured data schema)",
+          "$": "ERC-7730 file references (definitions, constants, enums)",
+          "@": "Transaction container (value, to, from)"
+        }
+      },
       "examples": [
         "format shows '_receiver' but ABI has 'receiver'",
         "shows '_tokens[0]' but should be '_swapData[0].token'"
+      ],
+      "not_critical": [
+        "DO NOT flag '#._paramName' as invalid - this is correct syntax for ABI parameters",
+        "DO NOT flag relative paths like '_paramName' as invalid - they are equivalent to '#._paramName'"
       ],
       "severity": "critical"
     },

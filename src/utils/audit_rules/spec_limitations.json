@@ -115,8 +115,21 @@
   },
 
   "when_to_include": {
-    "rule": "ALWAYS include spec limitations in recommendations, even when there are no critical issues",
+    "rule": "ONLY include spec limitations when they ACTUALLY APPLY to this specific descriptor",
     "location": "In the Recommendations section, NOT in Critical Issues section",
-    "reasoning": "These are not bugs in the descriptor - they are inherent limitations of what ERC-7730 can express"
+    "reasoning": "These are not bugs in the descriptor - they are inherent limitations of what ERC-7730 can express",
+    "critical_rules": [
+      "DO NOT write generic template-style limitations like 'Spec limitation — Bitmask/packed flags cannot be clear signed: parameters encoded as bitmasks...'",
+      "DO NOT list all possible limitation types as if explaining the spec",
+      "ONLY mention a limitation if you detect it applies to THIS specific function/descriptor",
+      "When you mention a limitation, be SPECIFIC: which parameter, what pattern you detected, why it matters for THIS function",
+      "If there are NO spec limitations for this function, do NOT mention spec limitations at all"
+    ],
+    "good_example": "**The makerTraits parameter cannot be clear signed:** This parameter is a bitpacked uint256 that encodes the maker's nonce (bits 0-79), deadline (bits 80-159), and useBitInvalidator flag (bit 255). ERC-7730 cannot extract or display individual flags from bitpacked data. Users will not see whether per-order cancellation or mass invalidation is being used.",
+    "bad_examples": [
+      "Spec limitation — Bitmask/packed flags cannot be clear signed: parameters encoded as bitmasks cannot be meaningfully expanded...",
+      "Spec limitation — Output token determined by pool/DEX cannot be clear signed: when the output token is computed...",
+      "Spec limitation: There are no ERC-7730 spec limitations relevant to this function..."
+    ]
   }
 }

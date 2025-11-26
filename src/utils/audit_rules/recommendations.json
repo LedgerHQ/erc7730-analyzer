@@ -124,6 +124,11 @@
       "DO NOT say: 'Recommend wallets verify...' - this is out of scope for descriptor audit",
       "DO NOT say: 'Document as a spec limitation...' - just state the limitation directly",
       "DO NOT say: 'Make sure all labels remain ≤20 characters' - only mention if there's an actual label >20 chars",
+      "DO NOT say: 'Spec limitation — Bitmask/packed flags cannot be clear signed:' followed by generic explanation",
+      "DO NOT say: 'Spec limitation — Output token determined by pool/DEX cannot be clear signed:' followed by generic explanation",
+      "DO NOT say: 'Spec limitation — Dynamic/computed data cannot be clear signed:' followed by generic explanation",
+      "DO NOT say: 'Spec limitation: There are no ERC-7730 spec limitations relevant to this function...'",
+      "DO NOT list spec limitations as templates - either there IS a specific limitation to mention, or don't mention limitations at all",
       "DO NOT repeat rules from the audit guidelines - be specific to THIS descriptor"
     ],
     "when_descriptor_is_perfect": "If the descriptor has no issues, no spec limitations, and no meaningful improvements to suggest, simply write: '**No additional recommendations - descriptor is comprehensive.**'"

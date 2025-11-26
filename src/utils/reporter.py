@@ -667,6 +667,9 @@ def generate_summary_file(results: Dict, summary_file: Path):
                     report += "<details>\n<summary><b>📝 Source Code</b></summary>\n\n"
                     report += "```solidity\n"
                     report += formatted_code
+                    # Ensure there's a newline before closing the code fence
+                    if not formatted_code.endswith('\n'):
+                        report += "\n"
                     report += "```\n\n</details>\n\n"
 
         # Add side-by-side comparison (collapsible)
@@ -891,6 +894,9 @@ def generate_criticals_report(results: Dict, criticals_file: Path):
                 report += "<details>\n<summary><b>📝 Source Code</b></summary>\n\n"
                 report += "```solidity\n"
                 report += formatted_code
+                # Ensure there's a newline before closing the code fence
+                if not formatted_code.endswith('\n'):
+                    report += "\n"
                 report += "```\n\n</details>\n\n"
 
         if func.get('has_critical'):

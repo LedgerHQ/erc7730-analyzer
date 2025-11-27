@@ -116,10 +116,10 @@ jobs:
             # Look for lines with 🔴 in the summary table
             while IFS='|' read -r col1 col2 col3 col4 col5; do
               if [[ "$col4" == *"🔴"* ]]; then
-                # Extract function name and selector
-                FUNCTION=$(echo "$col1" | sed 's/`//g' | xargs)
-                SELECTOR=$(echo "$col2" | sed 's/`//g' | xargs)
-                ISSUE=$(echo "$col4" | sed 's/🔴 Critical//g' | xargs)
+                # Extract function name and selector (using sed for trimming instead of xargs)
+                FUNCTION=$(echo "$col1" | sed 's/`//g' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+                SELECTOR=$(echo "$col2" | sed 's/`//g' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+                ISSUE=$(echo "$col4" | sed 's/🔴 Critical//g' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
 
                 if [ -n "$FUNCTION" ] && [ "$FUNCTION" != "Function" ]; then
                   # Create error annotation

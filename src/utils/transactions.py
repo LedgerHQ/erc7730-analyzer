@@ -1072,8 +1072,13 @@ class TransactionFetcher:
             data = response.json()
 
             if data.get('result'):
-                logger.debug(f"Successfully fetched receipt for {tx_hash}")
-                return data['result']
+                result = data['result']
+                if isinstance(result, dict):  # Validate it's actually a dict
+                    logger.debug(f"Successfully fetched receipt for {tx_hash}")
+                    return result
+                else:
+                    logger.warning(f"Etherscan returned non-dict result for {tx_hash}: {result}")
+                    return None
             else:
                 logger.warning(f"No receipt found for {tx_hash}")
                 return None

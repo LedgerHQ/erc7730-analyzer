@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 class ERC7730Analyzer:
     """Analyzer for ERC-7730 clear signing files with Etherscan integration."""
 
-    def __init__(self, etherscan_api_key: Optional[str] = None, lookback_days: int = 20, enable_source_code: bool = True):
+    def __init__(self, etherscan_api_key: Optional[str] = None, lookback_days: int = 20, enable_source_code: bool = True, use_smart_referencing: bool = True):
         """
         Initialize the analyzer.
 
@@ -35,10 +35,12 @@ class ERC7730Analyzer:
             etherscan_api_key: Etherscan API key for fetching transaction data
             lookback_days: Number of days to look back for transaction history (default: 20)
             enable_source_code: Whether to extract and include source code in analysis (default: True)
+            use_smart_referencing: Whether to use smart rule referencing to reduce token usage (default: True)
         """
         self.etherscan_api_key = etherscan_api_key
         self.lookback_days = lookback_days
         self.enable_source_code = enable_source_code
+        self.use_smart_referencing = use_smart_referencing
         self.w3 = Web3()
         self.abi_helper = None
         self.tx_fetcher = TransactionFetcher(etherscan_api_key, lookback_days)
@@ -720,7 +722,7 @@ class ERC7730Analyzer:
             # Extract source code for this specific function (search across all chains)
             function_source = None
             if self.extracted_codes:
-                logger.info(f"Searching for function '{function_name}' across {len(self.extracted_codes)} chain(s)...")
+                logger.info(f"Searching for function '{function_name}' ({function_data['signature']}) across {len(self.extracted_codes)} chain(s)...")
 
                 # Try each chain until we find the function
                 for chain_id, extracted_code in self.extracted_codes.items():
@@ -731,6 +733,7 @@ class ERC7730Analyzer:
                     function_source = self.source_extractor.get_function_with_dependencies(
                         function_name,
                         extracted_code,
+                        function_signature=function_data['signature'],
                         max_lines=300
                     )
 
@@ -832,43 +835,18 @@ class ERC7730Analyzer:
                     logger.info(f"Generating AI audit report for {selector}...")
                 logger.info(f"{'='*60}")
 
-                critical_report, detailed_report = generate_clear_signing_audit(
+                critical_report, detailed_report, report_json = generate_clear_signing_audit(
                     selector,
                     decoded_txs,  # Will be empty list if no transactions
                     erc7730_format_expanded,  # Use expanded format with metadata and display.definitions
                     function_data['signature'],
-                    source_code=function_source
+                    source_code=function_source,
+                    use_smart_referencing=self.use_smart_referencing
                 )
-
-                # If no transactions, prepend a critical warning to BOTH reports
-                if has_no_transactions:
-                    no_tx_warning = """🔴 **CRITICAL WARNING: No Historical Transactions Found**
-
-⚠️ This analysis is based ONLY on static source code review without real transaction data.
-
-**Issue:** No transactions were found for this selector within the configured lookback period.
-
-**Impact:** The analysis cannot verify:
-- Actual on-chain behavior and token flows
-- Real-world parameter values and edge cases
-- Event emissions and receipt logs
-- Integration with other contracts
-
-**Recommendations:**
-1. Increase the `LOOKBACK_DAYS` environment variable to search a longer time period
-2. Provide manual sample transactions for this selector to enable dynamic analysis
-3. Verify this function is actually being used in production
-4. If this is a new/unused function, consider removing it from the ERC-7730 file until it's actively used
-
----
-
-"""
-                    # Prepend warning to BOTH reports
-                    critical_report = no_tx_warning + critical_report
-                    detailed_report = no_tx_warning + detailed_report
 
                 audit_report_critical = critical_report
                 audit_report_detailed = detailed_report
+                audit_report_json = report_json
 
                 logger.info(f"\nCritical Report:\n{critical_report}\n")
                 logger.info(f"\nDetailed Report:\n{detailed_report}\n")
@@ -882,6 +860,7 @@ class ERC7730Analyzer:
                 'erc7730_format': erc7730_format,
                 'audit_report_critical': audit_report_critical,
                 'audit_report_detailed': audit_report_detailed,
+                'audit_report_json': audit_report_json,
                 'source_code': function_source  # Store source code for reports
             }
 

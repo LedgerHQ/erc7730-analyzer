@@ -6,6 +6,13 @@
 
   "always_include": "Even if no critical issues found, ALWAYS include recommendations section",
 
+  "key_points": [
+    "Always provide recommendations even if no critical issues found",
+    "Include spec limitations (parameters that CANNOT be clear signed)",
+    "For each fix recommendation, include a CLEAR CORRECTION showing exactly what to add or change in the descriptor",
+    "Use concrete examples with actual field definitions, not generic descriptions"
+  ],
+
   "formatting_requirements": {
     "bullet_format": "USE BULLET POINTS with dashes (-), NOT numbered lists",
     "complete_sentences": "Each recommendation must be a COMPLETE, STANDALONE sentence",
@@ -13,7 +20,25 @@
     "no_colons": "DO NOT use colons (:) at the end of recommendations",
     "no_numbers": "DO NOT start with numbers like '1.', '2.', '3.'",
     "be_specific": "DO NOT write generic recommendations that just repeat the rules. Be SPECIFIC to this descriptor. If you say 'Ensure nested calldata descriptor(s) are available', you are being too generic. Instead, say which specific selector needs a nested descriptor or don't mention it at all.",
-    "no_generic_advice": "AVOID generic phrases like 'Ensure...', 'Make sure...', 'Verify...', 'Recommend wallets...'. Only include actionable, specific recommendations for THIS descriptor."
+    "no_generic_advice": "AVOID generic phrases like 'Ensure...', 'Make sure...', 'Verify...', 'Recommend wallets...'. Only include actionable, specific recommendations for THIS descriptor.",
+    "CHARACTER_LIMIT_CRITICAL": {
+      "rule": "ANY proposed intent MUST be ≤20 characters. ANY proposed label MUST be ≤20 characters.",
+      "when_to_check": "Check character count for EVERY intent and label you recommend, regardless of what issue you're fixing",
+      "examples": {
+        "WRONG": {
+          "recommendation": "Change intent to 'Authorize Validator Signer'",
+          "character_count": 28,
+          "problem": "Exceeds 20-character hardware wallet limit"
+        },
+        "CORRECT": {
+          "recommendation": "Change intent to 'Authorize Signer'",
+          "character_count": 16,
+          "reason": "Under 20 characters and still clear"
+        }
+      },
+      "validation_process": "Before recommending any intent or label: (1) COUNT the characters, (2) If >20, shorten it, (3) Verify shortened version is ≤20 chars",
+      "applies_to_all_issues": "This applies when fixing misleading labels, unclear intents, or ANY issue where you propose a new intent/label"
+    }
   },
 
   "recommendation_types": [
@@ -21,15 +46,52 @@
       "type": "Fixes for critical issues",
       "description": "For each critical issue from 'Issues Found' section, write ONE bullet point",
       "requirements": [
-        "States the fix clearly",
-        "Includes the specific code/field to add or change",
-        "Is a complete sentence ending with a period"
+        "States the fix clearly in human-readable language",
+        "Separates explanation (description) from code (code_snippet)",
+        "Description is concise (1-2 sentences), explains WHAT and WHY",
+        "Code snippet contains the actual JSON to add/modify, properly formatted",
+        "DO NOT embed JSON in description text - use code_snippet field instead",
+        "When recommending enum mappings: Use ACTUAL values from source code if available. If values are not visible in the provided source code, use clear placeholders like 'ROLE_VALIDATOR' or '0xROLE_VALUE_FROM_CONTRACT' and explicitly state 'populate with actual role constants from the contract source code'",
+        "NEVER use made-up hex values like 0x1111...1111 or 0x2222...2222 that appear to be real constants but are actually placeholders"
       ],
+      "json_structure": {
+        "title": "Brief, clear title of the fix",
+        "description": "Human-readable explanation (1-2 sentences) - NO JSON HERE",
+        "code_snippet": "Actual descriptor JSON to add or modify"
+      },
       "examples": [
-        "**Add msg.value display:** Include a field with `\"path\": \"@.value\"`, `\"label\": \"Fee Amount\"`, and `\"format\": \"amount\"` in the fields array to show the native ETH fee being sent.",
-        "**Fix inverted token addresses:** Swap the tokenPath values so `fromAmount` references `#.tokenIn` and `toAmount` references `#.tokenOut`.",
-        "**Show recipient address:** Add a field with `\"path\": \"#.recipient\"`, `\"label\": \"Recipient\"`, and `\"format\": \"addressName\"` to display where tokens are sent."
-      ]
+        {
+          "title": "Add msg.value display",
+          "description": "Include a field to show the native ETH fee being sent with the transaction.",
+          "code_snippet": {"path": "@.value", "label": "Fee Amount", "format": "amount"}
+        },
+        {
+          "title": "Fix inverted token addresses",
+          "description": "Swap the tokenPath references so fromAmount points to the correct input token and toAmount points to the output token.",
+          "code_snippet": {"fromAmount_tokenPath": "#.tokenIn", "toAmount_tokenPath": "#.tokenOut"}
+        },
+        {
+          "title": "Show recipient address",
+          "description": "Add a field to display where the tokens are being sent.",
+          "code_snippet": {"path": "#.recipient", "label": "Recipient", "format": "addressName"}
+        }
+      ],
+      "enum_mapping_examples": {
+        "good_when_values_known": {
+          "description": "When role constants are visible in source code",
+          "example": "Add enum mapping: {\"path\": \"role\", \"format\": \"enum\", \"params\": {\"$ref\": \"$.metadata.enums.roleNames\"}} with metadata.enums.roleNames: {\"0x8f5b8b1f9f7b6e0f3b4a0a6f7b5e8c9d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b\": \"Validator\", \"0xc2a8ba48e60e8d2bf0b0e3f1c3a4e5f6e7d8c9a0b1c2d3e4f5a6b7c8d9e0f1a2\": \"Attestation\"}"
+        },
+        "good_when_values_unknown": {
+          "description": "When role constants are NOT visible in provided source code",
+          "example": "Add enum mapping for role: {\"path\": \"role\", \"format\": \"enum\", \"params\": {\"$ref\": \"$.metadata.enums.roleNames\"}}. Populate metadata.enums.roleNames with actual role constant values from the contract source code (e.g., keccak256('VALIDATOR_SIGNER_ROLE'), keccak256('ATTESTATION_SIGNER_ROLE'), etc.).",
+          "note": "Clearly state that values need to be populated from source code"
+        },
+        "bad_placeholder_values": {
+          "description": "NEVER use fake-looking hex values that appear real",
+          "bad_example": "DO NOT: {\"0x1111111111111111111111111111111111111111111111111111111111111111\": \"Execute\", \"0x2222222222222222222222222222222222222222222222222222222222222222\": \"Transfer\"}",
+          "why_bad": "These look like real constants but are made up, which is misleading"
+        }
+      }
     },
     {
       "type": "Spec limitations",
@@ -96,6 +158,14 @@
         "limitation": "Output token from pool/DEX",
         "description": "Token determined by pool address, not explicit in inputs",
         "example": "minReturn in Uniswap where pool determines output token"
+      },
+      {
+        "limitation": "Concatenated bytes with separate length array",
+        "description": "Bytes parameter that contains concatenated calldata/data for multiple operations, sliced using a separate lengths array",
+        "source_code_pattern": "data.slice(position, lengths[i]) or similar pattern where data is split dynamically",
+        "why_unsupported": "ERC-7730 cannot dynamically slice a concatenated bytes blob based on another array. The calldata format expects discrete per-transaction data, not a blob that needs parsing.",
+        "example": "executeHotfix(values[], destinations[], data, dataLengths[]) where data contains all calldatas concatenated and must be split using dataLengths[i]",
+        "what_to_recommend": "State this as a spec limitation, NOT a critical issue. Do not propose format: calldata on the concatenated blob."
       }
     ],
     "required_format": [

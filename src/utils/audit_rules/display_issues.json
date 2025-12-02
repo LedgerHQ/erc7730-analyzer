@@ -6,6 +6,15 @@
 
   "section_description": "Issues with how information is presented to users (non-critical UX improvements)",
 
+  "common_issues_to_check": [
+    "Unclear or confusing labels",
+    "Missing context for displayed values",
+    "Incorrect format types",
+    "Spelling and grammar errors",
+    "Broken references to definitions/constants",
+    "Missing senderAddress for zero-check fallbacks"
+  ],
+
   "common_display_issues": [
     {
       "id": 1,

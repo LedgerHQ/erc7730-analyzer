@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 class ERC7730Analyzer:
     """Analyzer for ERC-7730 clear signing files with Etherscan integration."""
 
-    def __init__(self, etherscan_api_key: Optional[str] = None, lookback_days: int = 20, enable_source_code: bool = True):
+    def __init__(self, etherscan_api_key: Optional[str] = None, lookback_days: int = 20, enable_source_code: bool = True, use_smart_referencing: bool = True):
         """
         Initialize the analyzer.
 
@@ -35,10 +35,12 @@ class ERC7730Analyzer:
             etherscan_api_key: Etherscan API key for fetching transaction data
             lookback_days: Number of days to look back for transaction history (default: 20)
             enable_source_code: Whether to extract and include source code in analysis (default: True)
+            use_smart_referencing: Whether to use smart rule referencing to reduce token usage (default: True)
         """
         self.etherscan_api_key = etherscan_api_key
         self.lookback_days = lookback_days
         self.enable_source_code = enable_source_code
+        self.use_smart_referencing = use_smart_referencing
         self.w3 = Web3()
         self.abi_helper = None
         self.tx_fetcher = TransactionFetcher(etherscan_api_key, lookback_days)
@@ -720,7 +722,7 @@ class ERC7730Analyzer:
             # Extract source code for this specific function (search across all chains)
             function_source = None
             if self.extracted_codes:
-                logger.info(f"Searching for function '{function_name}' across {len(self.extracted_codes)} chain(s)...")
+                logger.info(f"Searching for function '{function_name}' ({function_data['signature']}) across {len(self.extracted_codes)} chain(s)...")
 
                 # Try each chain until we find the function
                 for chain_id, extracted_code in self.extracted_codes.items():
@@ -731,6 +733,7 @@ class ERC7730Analyzer:
                     function_source = self.source_extractor.get_function_with_dependencies(
                         function_name,
                         extracted_code,
+                        function_signature=function_data['signature'],
                         max_lines=300
                     )
 
@@ -837,7 +840,8 @@ class ERC7730Analyzer:
                     decoded_txs,  # Will be empty list if no transactions
                     erc7730_format_expanded,  # Use expanded format with metadata and display.definitions
                     function_data['signature'],
-                    source_code=function_source
+                    source_code=function_source,
+                    use_smart_referencing=self.use_smart_referencing
                 )
 
                 # If no transactions, prepend a critical warning to BOTH reports

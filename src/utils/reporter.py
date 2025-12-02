@@ -672,77 +672,28 @@ def generate_summary_file(results: Dict, summary_file: Path):
                         report += "\n"
                     report += "```\n\n</details>\n\n"
 
-        # Add side-by-side comparison (collapsible)
-        transactions = selector_data.get('transactions', [])
-        if transactions:
-            report += "<details>\n<summary><b>🔍 Side-by-Side Comparison (ABI vs ERC-7730)</b></summary>\n\n"
+        # Add decoded transaction parameters (collapsible sections per transaction)
+        # transactions = selector_data.get('transactions', [])
+        # if transactions:
+        #     for i, tx in enumerate(transactions, 1):
+        #         report += f"#### 📝 Transaction {i}\n\n"
+        #         report += "**User Intent (from ERC-7730):**\n\n"
+        #         report += "| Field | ✅ User Sees | ❌ Hidden/Missing |\n"
+        #         report += "|-------|-------------|-------------------|\n"
+        #         report += "| **Label from ERC-7730** | *Formatted value* | *What's not shown* |\n\n"
 
-            for i, tx in enumerate(transactions, 1):
-                report += f"### Transaction {i}: `{tx['hash']}`\n\n"
-                report += f"**Block:** {tx['block']} | **From:** {tx['from']} | **Value:** {tx['value']}\n\n"
+        #         # Add decoded parameters in collapsible section
+        #         decoded_input = tx.get('decoded_input', {})
+        #         if decoded_input:
+        #             report += "<details>\n"
+        #             report += "<summary><strong>📋 View Decoded Transaction Parameters</strong> (click to expand)</summary>\n\n"
+        #             report += "```python\n"
 
-                # Create comparison table
-                report += "| Parameter | ABI-Decoded (Raw) | ERC-7730 (User Sees) |\n"
-                report += "|-----------|-------------------|----------------------|\n"
+        #             for param_name, param_value in decoded_input.items():
+        #                 report += f"{param_name}: {param_value}\n"
 
-                decoded_input = tx.get('decoded_input', {})
-                erc7730_format = selector_data.get('erc7730_format', {})
-                erc7730_fields = {field.get('path', '').replace('params.', ''): field
-                                 for field in (erc7730_format.get('fields') or [])}
-                required_fields = [r.replace('params.', '') for r in (erc7730_format.get('required') or [])]
-                excluded_fields = [e.replace('params.', '') for e in (erc7730_format.get('excluded') or [])]
-
-                for param_name, param_value in decoded_input.items():
-                    # Format ABI value
-                    if isinstance(param_value, str) and len(param_value) > 66:
-                        abi_display = f"`{param_value[:32]}...{param_value[-32:]}`"
-                    else:
-                        abi_display = f"`{param_value}`"
-
-                    # Format ERC-7730 value
-                    if param_name in erc7730_fields:
-                        field_def = erc7730_fields[param_name]
-                        label = field_def.get('label', param_name)
-                        format_type = field_def.get('format', 'raw')
-                        erc7730_display = f"**{label}**<br/>Format: `{format_type}`"
-                    elif param_name in excluded_fields:
-                        erc7730_display = "❌ Hidden"
-                    else:
-                        erc7730_display = "⚠️ Not shown"
-
-                    report += f"| `{param_name}` | {abi_display} | {erc7730_display} |\n"
-
-                report += "\n"
-
-                # Add receipt logs if available
-                receipt_logs = tx.get('receipt_logs', [])
-                if receipt_logs:
-                    report += "#### 📋 Transaction Events (from receipt)\n\n"
-                    report += "| Event | Token | Details | Amount |\n"
-                    report += "|-------|-------|---------|--------|\n"
-
-                    for log in receipt_logs:
-                        event_type = log.get('event', 'Unknown')
-                        if event_type == 'Transfer':
-                            token = log.get('token', 'unknown')[:10] + '...'
-                            from_addr = log.get('from', 'unknown')[:10] + '...'
-                            to_addr = log.get('to', 'unknown')[:10] + '...'
-                            amount = log.get('value_formatted', 'N/A')
-                            report += f"| 🔄 Transfer | `{token}` | From: `{from_addr}`<br/>To: `{to_addr}` | {amount} |\n"
-                        elif event_type == 'Approval':
-                            token = log.get('token', 'unknown')[:10] + '...'
-                            owner = log.get('owner', 'unknown')[:10] + '...'
-                            spender = log.get('spender', 'unknown')[:10] + '...'
-                            amount = log.get('value_formatted', 'N/A')
-                            report += f"| ✅ Approval | `{token}` | Owner: `{owner}`<br/>Spender: `{spender}` | {amount} |\n"
-                        else:
-                            address = log.get('address', 'unknown')[:10] + '...'
-                            signature = log.get('signature', 'N/A')[:18] + '...'
-                            report += f"| ❓ {event_type} | `{address}` | Signature: `{signature}` | - |\n"
-
-                    report += "\n"
-
-            report += "</details>\n\n"
+        #             report += "```\n\n"
+        #             report += "</details>\n\n"
 
         # Add AI audit report (use detailed report directly)
         audit_report_detailed = selector_data.get('audit_report_detailed', '')

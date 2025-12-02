@@ -105,7 +105,8 @@ def generate_clear_signing_audit(
     decoded_transactions: List[Dict],
     erc7730_format: Dict,
     function_signature: str,
-    source_code: Dict = None
+    source_code: Dict = None,
+    use_smart_referencing: bool = True
 ) -> Tuple[str, str]:
     """
     Use AI to generate a clear signing audit report comparing decoded transactions
@@ -192,13 +193,22 @@ def generate_clear_signing_audit(
         else:
             erc7730_enums_section += "⚠️ **No enum definitions found in descriptor.** If any fields use `\"format\": \"enum\"`, the $ref will be broken.\n\n"
 
-        # Load all JSON specifications
-        format_spec = get_format_spec()
-        validation_rules = get_validation_rules()
-        critical_issues = get_critical_issues()
-        recommendations = get_recommendations()
-        spec_limitations = get_spec_limitations()
-        display_issues = get_display_issues()
+        # Load audit rules (smart or full)
+        from .smart_rules import analyze_descriptor_features, load_relevant_rules, format_smart_rules_note
+
+        descriptor_features = analyze_descriptor_features(erc7730_format)
+        rules_dict, metadata = load_relevant_rules(descriptor_features, use_smart_referencing)
+
+        # Extract individual rule sets
+        format_spec = rules_dict.get('erc7730_format_reference.json', {})
+        validation_rules = rules_dict.get('validation_rules.json', {})
+        critical_issues = rules_dict.get('critical_issues.json', {})
+        recommendations = rules_dict.get('recommendations.json', {})
+        spec_limitations = rules_dict.get('spec_limitations.json', {})
+        display_issues = rules_dict.get('display_issues.json', {})
+
+        # Format smart rules note for prompt
+        smart_rules_note = format_smart_rules_note(metadata)
 
         # Prepare the prompt
         prompt = f"""You are a clear signing security auditor for ERC-7730 clear signing metadata. Your job is to ensure users see all CRITICAL information they need BEFORE signing.
@@ -283,6 +293,10 @@ Use this specification to validate all format types, required/optional parameter
 
 ---
 
+{smart_rules_note}
+
+---
+
 FIRST REPORT: CRITICALS ONLY - BE ULTRA STRICT
 
 The complete criteria for CRITICAL issues are provided below in JSON format:
@@ -307,8 +321,8 @@ The complete validation rules are provided below in JSON format. These define wh
 ```
 
 **Key Points:**
-- **CRITICAL DEFINITION**: {validation_rules['critical_definition']}
-- **KEY QUESTION**: {validation_rules['key_question']}
+- **CRITICAL DEFINITION**: {validation_rules['critical_validation']['critical_definition']}
+- **KEY QUESTION**: {validation_rules['critical_validation']['key_question']}
 - Review all `not_critical_patterns` - these are common false positives to avoid
 - Review all `spec_limitations` - parameters that cannot be clear signed due to ERC-7730 limitations
 - When in doubt, DO NOT flag as critical
@@ -317,250 +331,142 @@ The complete validation rules are provided below in JSON format. These define wh
 1. **Array indexing validation**: When ERC-7730 uses array indexing, verify the index points to actual data relevant to the user (not sentinel values)
 2. **Can it be fixed?**: ONLY flag as CRITICAL if the issue EXISTS in function inputs AND can be displayed with ERC-7730 spec AND can be shown in human-readable format
 3. **Human readability**: Parameters that can ONLY be shown as incomprehensible raw data (packed bits, liquidity numbers, technical params) are NOT critical to hide
+4. **Slicing uint256 values**: When field paths use slice syntax (e.g., `[-20:]`, `[0:16]`):
+   - CRITICAL if slicing **financial amounts** (tokenAmount format, or names like: min*, max*, balance, price, amount, value, fee, debt) → values can exceed slice size, showing incorrect amounts
+   - NOT CRITICAL if slicing **packed address types** where source code shows custom types (`type X is uint256`) with flags/metadata in high bits → intentional extraction
+   - **Be consistent**: similar patterns across different functions must receive the same assessment unless there's material contextual difference
 
 ---
 
-**FORMAT FOR FIRST REPORT:**
+**OUTPUT FORMAT:**
 
-Output the EXACT markdown structure shown below. Start with the ## header.
-
-## Critical Issues for `{function_signature}`
-
-**Selector:** `{selector}`
-
----
-
-<details>
-<summary><strong>📋 ERC-7730 Format Definition</strong> (click to expand)</summary>
-
-This is the complete ERC-7730 metadata for this selector, including all referenced definitions and constants:
+You MUST output a SINGLE JSON object (no markdown, no extra text before or after). The JSON will be formatted into markdown reports by Python code.
 
 ```json
-{json.dumps(erc7730_format, indent=2)}
+{{
+  "function_signature": "{function_signature}",
+  "selector": "{selector}",
+  "erc7730_format": <the erc7730_format object provided above>,
+
+  "critical_issues": [
+    {{
+      "issue": "Description of critical issue (concise, no 'CRITICAL:' prefix)"
+    }}
+  ],
+
+  "recommendations": {{
+    "fixes": [
+      {{
+        "title": "Brief title",
+        "description": "Actionable fix description"
+      }}
+    ],
+    "spec_limitations": [
+      {{
+        "parameter": "Parameter name",
+        "explanation": "Why it cannot be clear signed",
+        "impact": "Why this matters to users",
+        "detected_pattern": "Code pattern detected"
+      }}
+    ],
+    "optional_improvements": [
+      {{
+        "title": "Brief title",
+        "description": "Optional improvement description"
+      }}
+    ]
+  }},
+
+  "intent_analysis": {{
+    "declared_intent": "{erc7730_format.get('format', {}).get('intent', 'N/A')}",
+    "assessment": "One sentence assessing if intent is accurate and clear",
+    "spelling_errors": ["List any spelling/grammar errors found"]
+  }},
+
+  "missing_parameters": [
+    {{
+      "parameter": "parameter_name",
+      "importance": "Why it's important",
+      "risk_level": "high|medium|low"
+    }}
+  ],
+
+  "display_issues": [
+    {{
+      "type": "issue_type",
+      "description": "Issue description",
+      "severity": "high|medium|low"
+    }}
+  ],
+
+  "transaction_samples": [
+    {{
+      "transaction_hash": "0xabc123...",
+      "user_intent": [
+        {{
+          "field_label": "Label from ERC-7730",
+          "value_shown": "Actual formatted value from this transaction",
+          "hidden_missing": "What's hidden or not shown"
+        }}
+      ],
+      "decoded_parameters": {{
+        "param1": "value1",
+        "param2": "value2"
+      }}
+    }}
+  ],
+
+  "overall_assessment": {{
+    "coverage_score": {{
+      "score": 7,
+      "explanation": "Brief reasoning"
+    }},
+    "security_risk": {{
+      "level": "high|medium|low",
+      "reasoning": "One sentence why"
+    }}
+  }}
+}}
 ```
 
-</details>
-
----
-
-### **Issues Found:**
-
-List critical issues directly as bullet points below. Be specific and concise.
-
-**FORMATTING:**
-- DO NOT use question format
-- DO NOT add titles/labels like "AMOUNT TOKEN/TYPE MAY BE DISPLAYED INCORRECTLY (CRITICAL):" before each issue
-- DO NOT add "(CRITICAL)" tags to each bullet point
-- Just write the issue description as a clean bullet point starting with "-"
-
-**Example:**
-❌ BAD: "- MISSING RECIPIENT SHOWN (CRITICAL): The ABI contains order.receiver but..."
-✅ GOOD: "- The ABI contains order.receiver but the descriptor explicitly excludes it..."
-
-**IMPORTANT - DO NOT include spec limitations here:**
-- Parameters that CANNOT be clear signed due to ERC-7730 spec limitations (e.g., bitmask flags) should NOT be listed as critical issues
-- Spec limitations go ONLY in the Recommendations section with explanation
-- This section is ONLY for issues that CAN be fixed by updating the ERC-7730 descriptor
-
-If NO critical issues exist, write only: "✅ No critical issues found"
-
-**Your analysis:**
-
-[Write your bullet points here]
-
----
-
-### **Recommendations:**
-
-**Recommendation guidelines are provided in recommendations.json. Key points:**
-
-- **⚠️ ALWAYS INCLUDE THIS SECTION** - Even if no critical issues found!
-- **Formatting**: {recommendations['formatting_requirements']['bullet_format']}, {recommendations['formatting_requirements']['complete_sentences']}, {recommendations['formatting_requirements']['end_with_period']}
-- **Three types**: Fixes for critical issues, Spec limitations (ALWAYS include), Optional improvements
-- **Spec limitations format**: See {len(recommendations['spec_limitations']['common_limitations'])} common limitations in JSON
-- **If truly no recommendations**: {recommendations['always_provide_recommendations']['if_truly_no_recommendations']}
-
-Refer to recommendations.json for examples and full formatting requirements.
-
----
-
-SECOND REPORT: FULL DETAILED ANALYSIS
-
-## 🔍 Clear Signing Audit Report
-
-### 📋 Function: `{function_signature}`
-
-**Selector:** `{selector}`
-
----
-
-### 1️⃣ Intent Analysis
-
-> **Declared Intent:** *"{erc7730_format.get('intent', 'N/A')}"*
-
-IMPORTANT: Keep the `>` blockquote format above. Then write one sentence assessing if this intent is accurate and clear. Also check for spelling/grammar errors.
-
----
-
-### 2️⃣ Critical Issues
-
-> 🔴 **CRITICAL** - Issues that could lead to users being deceived or losing funds
-
-IMPORTANT: Keep the `>` blockquote format above.
-
-**CRITICAL ISSUE CRITERIA:**
-
-Use the same critical issues criteria as defined in the first report (see critical_issues.json). The criteria include:
-- {len(critical_issues['critical_criteria'])} critical issue types
-- Native ETH handling (4 cases)
-- Format validation failures
-- Missing recipient parameter (3 cases)
-- And all other criteria from the critical_issues.json
-
-**DO NOT include spec limitations here:**
-- Parameters that CANNOT be clear signed due to ERC-7730 spec limitations (e.g., bitmask flags) should NOT be listed as critical issues
-- Spec limitations go in the "Key Recommendations" section under "Overall Assessment" (section 6)
-- This section is ONLY for issues that CAN be fixed by updating the ERC-7730 descriptor
-
-{f"⚠️ **NO HISTORICAL TRANSACTIONS FOUND** - This selector has no transaction history. Analysis is based on source code and function signature only. Validation of actual on-chain behavior is not possible without transaction data.\n\n" if not decoded_transactions else ""}
-
-**FORMATTING:**
-- DO NOT add titles/labels like "MISSING RECIPIENT (CRITICAL):" before each issue
-- DO NOT add "(CRITICAL)" tags to bullet points
-- Just write clean bullet point descriptions starting with "-"
-
-List critical issues as bullet points. If none: **✅ No critical issues found**
-
----
-
-### 3️⃣ Missing Parameters
-
-> ⚠️ *Parameters present in ABI but NOT shown to users in ERC-7730*
-
-| Parameter | Why It's Important | Risk Level |
-|-----------|-------------------|:----------:|
-| `parameter_name` | Brief explanation | 🔴 High / 🟡 Medium / 🟢 Low |
-
-If no parameters are missing, write: **✅ All parameters are covered**
-
----
-
-### 4️⃣ Display Issues
-
-> 🟡 **{display_issues['section_description']}**
-
-**Common display/formatting issues to check:**
-
-{json.dumps([{
-    'type': issue['type'],
-    'description': issue['description'],
-    'severity': issue['severity'],
-    'examples': issue.get('examples', []),
-    'action': issue['action']
-} for issue in display_issues['common_display_issues']], indent=2)}
-
-If none: {display_issues['when_none_found']}
-
----
-
-### 5️⃣ Transaction Samples - What Users See vs What Actually Happens
-
-Analyze up to 3 transactions (not all 5).
-
-**IMPORTANT:** Do NOT include transaction hash, block, from, or value in your analysis - these are already displayed in the Side-by-Side Comparison section above.
-
-#### 📝 Transaction 1
-
-**User Intent (from ERC-7730):**
-
-| Field | ✅ User Sees | ❌ Hidden/Missing |
-|-------|-------------|-------------------|
-| **Label from ERC-7730** | *Formatted value* | *What's not shown* |
-
-Add 2-3 rows showing the most important fields.
-
-**Actual Effects (from receipt_logs):**
-
-| Event | Details | Disclosed? |
-|-------|---------|:----------:|
-| Transfer/Approval | Token, From, To, Amount | ✅ Yes / ❌ No |
-
-Add 2-3 rows showing the most important events.
-
-Repeat for 2-3 more transactions with the same format.
-
----
-
-### 6️⃣ Overall Assessment
-
-| Metric | Score/Rating | Explanation |
-|--------|--------------|-------------|
-| **Coverage Score** | X/10 | Brief reasoning |
-| **Security Risk** | 🔴 High / 🟡 Medium / 🟢 Low | One sentence why |
-
-#### 💡 Key Recommendations
-
-**Include two types of recommendations:**
-1. **Fixes for critical issues** - Specific actionable fixes for issues listed in section 2
-2. **Spec limitations** - Parameters that CANNOT be clear signed (DO NOT list these in section 2)
-
-- Recommendation 1 (be specific about how to fix critical issues)
-- Recommendation 2 (be specific about parameter additions/corrections)
-- Recommendation 3 (if needed)
-
-**IMPORTANT - SPEC LIMITATIONS SECTION:**
-
-{spec_limitations['when_to_include']['rule']}
-
-**Format for spec-limited parameters (always include these 3 parts):**
-{json.dumps(spec_limitations['formatting_requirements']['always_include_three_parts'], indent=2)}
-
-**Common spec limitations to detect:**
-{json.dumps([{
-    'type': lim['type'],
-    'description': lim['description'],
-    'why_limitation': lim['why_limitation'],
-    'examples': lim.get('examples', [])
-} for lim in spec_limitations['common_spec_limitations']], indent=2)}
-
-**Example output:**
-{spec_limitations['common_spec_limitations'][0]['example_output']}
-
----
-
-**Use bold, italic, emojis, tables, blockquotes, and horizontal rules to make it visually appealing and easy to scan.**"""
+**IMPORTANT RULES:**
+1. Output ONLY the JSON (no markdown formatting, no extra text)
+2. Critical issues: DO NOT include spec limitations here - only fixable issues
+3. Spec limitations: Always include in recommendations.spec_limitations with all 3 parts (parameter, explanation, impact)
+4. Missing parameters: Only list if risk is medium/high AND not in excluded array
+5. Transaction samples: {f"Empty array (no transactions available)" if not decoded_transactions else f"Analyze up to 3 transactions"}
+6. Use actual values from the descriptor and transactions provided above
+
+**VALIDATION:**
+- critical_issues array: Each issue is a plain description, no "CRITICAL:" prefix
+- recommendations.spec_limitations: Must include detected_pattern when found in source code
+- transaction_samples: Must include transaction_hash from the input transaction data, and decoded_parameters should match the actual decoded_input from transactions
+- Be consistent: Same patterns across functions get same assessment
+
+{f"⚠️ **NO HISTORICAL TRANSACTIONS FOUND** - This selector has no transaction history. Set transaction_samples to empty array and add display issue noting this." if not decoded_transactions else ""}"""
 
         response = client.chat.completions.create(
             model="gpt-5-mini-2025-08-07",
-            messages=[{"role": "user", "content": prompt}]
+            messages=[{"role": "user", "content": prompt}],
+            response_format={"type": "json_object"}
         )
 
-        full_report = response.choices[0].message.content
-        logger.info(f"Successfully generated audit report for {selector}")
+        json_response = response.choices[0].message.content
+        logger.info(f"Successfully received JSON response for {selector}")
 
-        # Split the report based on section headers
-        critical_report = ""
-        detailed_report = ""
+        # Parse JSON response
+        try:
+            report_data = json.loads(json_response)
+        except json.JSONDecodeError as e:
+            logger.error(f"Failed to parse JSON response: {e}")
+            logger.error(f"Response content: {json_response[:500]}...")
+            raise Exception(f"Invalid JSON from AI: {e}")
 
-        # Look for the two distinct section markers
-        critical_marker = "## Critical Issues for"
-        detailed_marker = "## 🔍 Clear Signing Audit Report"
+        # Format using markdown_formatter
+        from .markdown_formatter import format_audit_reports
 
-        # Check if AI generated the expected markers
-        has_critical_marker = critical_marker in full_report
-        has_detailed_marker = detailed_marker in full_report
-
-        if has_critical_marker and has_detailed_marker:
-            # Both markers present - normal case
-            parts = full_report.split(detailed_marker, 1)
-            critical_report = parts[0].strip()
-            detailed_report = detailed_marker + "\n\n" + parts[1].strip()
-            logger.info(f"Successfully split report: Critical ({len(critical_report)} chars), Detailed ({len(detailed_report)} chars)")
-        else:
-            # Fallback - return full report in both
-            logger.warning("Could not find expected section markers in AI response")
-            critical_report = full_report
-            detailed_report = full_report
+        critical_report, detailed_report = format_audit_reports(report_data)
+        logger.info(f"Successfully formatted reports: Critical ({len(critical_report)} chars), Detailed ({len(detailed_report)} chars)")
 
         return critical_report, detailed_report
 

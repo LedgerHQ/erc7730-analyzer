@@ -3,7 +3,6 @@
   "title": "ERC-7730 Format Types Specification",
   "description": "Comprehensive ERC-7730 format type specifications, parameters, constraints, and validation rules. This replaces the format specification section in prompts.py to improve maintainability.",
   "version": "1.0.1",
-
   "path_syntax": {
     "description": "ERC-7730 uses a limited JSON path notation with three root node identifiers",
     "root_nodes": {
@@ -65,7 +64,6 @@
       "DO NOT confuse '@.' (transaction metadata) with '#.' (ABI parameters)"
     ]
   },
-
   "format_types": {
     "raw": {
       "description": "Raw UINT parameter that cannot be linked to any specific type",
@@ -77,7 +75,6 @@
         "format": "raw"
       }
     },
-
     "amount": {
       "description": "Amount in native currency (ETH)",
       "use_case": "ONLY when you are CERTAIN the currency is Native ETH. Commonly used with '@.value' to show msg.value",
@@ -88,14 +85,16 @@
         "format": "amount"
       }
     },
-
     "tokenAmount": {
       "description": "Amount in ERC20 Token",
       "use_case": "Display token amounts with proper decimals and symbol",
       "required_params": [
         {
           "constraint": "XOR",
-          "options": ["token", "tokenPath"],
+          "options": [
+            "token",
+            "tokenPath"
+          ],
           "explanation": "Must have EITHER 'token' (fixed address) XOR 'tokenPath' (dynamic from parameter)"
         }
       ],
@@ -155,14 +154,16 @@
         }
       ]
     },
-
     "nftName": {
       "description": "ID of the NFT in the collection",
       "use_case": "Display NFT token ID with collection context",
       "required_params": [
         {
           "constraint": "XOR",
-          "options": ["collection", "collectionPath"],
+          "options": [
+            "collection",
+            "collectionPath"
+          ],
           "explanation": "Must have EITHER 'collection' (fixed address) XOR 'collectionPath' (dynamic from parameter)"
         }
       ],
@@ -175,7 +176,6 @@
         }
       }
     },
-
     "addressName": {
       "description": "Address parameter with ENS/name resolution",
       "use_case": "Use this format for ALL address parameters",
@@ -189,7 +189,13 @@
         {
           "name": "types",
           "type": "string[]",
-          "enum": ["wallet", "eoa", "contract", "token", "collection"],
+          "enum": [
+            "wallet",
+            "eoa",
+            "contract",
+            "token",
+            "collection"
+          ],
           "description": "Array restricting address types - restricts name sources and may trigger additional wallet checks"
         },
         {
@@ -212,13 +218,14 @@
             "path": "_recipient",
             "format": "addressName",
             "params": {
-              "senderAddress": ["0x0000000000000000000000000000000000000000"]
+              "senderAddress": [
+                "0x0000000000000000000000000000000000000000"
+              ]
             }
           }
         }
       ]
     },
-
     "date": {
       "description": "UINT representing a timestamp/date",
       "use_case": "When parameter is a Unix timestamp or block height",
@@ -226,7 +233,10 @@
         {
           "name": "encoding",
           "type": "string",
-          "enum": ["timestamp", "blockheight"],
+          "enum": [
+            "timestamp",
+            "blockheight"
+          ],
           "explanation": "Must specify how the date is encoded"
         }
       ],
@@ -239,7 +249,6 @@
         }
       }
     },
-
     "duration": {
       "description": "UINT representing a time duration",
       "use_case": "When parameter represents a time period (seconds, days, etc.)",
@@ -251,7 +260,6 @@
         "format": "duration"
       }
     },
-
     "unit": {
       "description": "UINT representing a value with custom unit",
       "use_case": "Display numeric values with custom units (%, bps, SI units)",
@@ -299,7 +307,6 @@
         }
       ]
     },
-
     "enum": {
       "description": "Value converted using referenced enumeration",
       "use_case": "Map numeric values to human-readable labels",
@@ -340,15 +347,17 @@
         }
       ]
     },
-
     "calldata": {
-      "description": "Embedded calldata for nested/recursive calls",
-      "use_case": "Enable multi-screen clear signing for wrapper functions like permitAndCall, multicall, execute",
+      "description": "Embedded calldata for nested/recursive calls. Used when a parameter contains the calldata of another function call to a smart contract. Common in wrapper functions like permitAndCall, multicall, execute.",
+      "use_case": "Enable multi-screen clear signing for wrapper functions. The nested calldata is decoded using another ERC-7730 descriptor and shown on SUBSEQUENT screens.",
       "required_params": [
         {
           "constraint": "XOR",
-          "options": ["callee", "calleePath"],
-          "explanation": "Must have EITHER 'callee' (fixed address) XOR 'calleePath' (dynamic path)"
+          "options": [
+            "callee",
+            "calleePath"
+          ],
+          "explanation": "Must have EITHER 'callee' (fixed address) XOR 'calleePath' (dynamic path to contract being called)"
         }
       ],
       "optional_params": [
@@ -356,7 +365,7 @@
           "name": "selector",
           "type": "string",
           "xor_with": "selectorPath",
-          "description": "Fixed function selector if not in calldata"
+          "description": "Fixed function selector (4 bytes). If omitted, first 4 bytes of calldata are interpreted as selector."
         },
         {
           "name": "selectorPath",
@@ -365,123 +374,360 @@
           "description": "Dynamic path to function selector"
         },
         {
+          "name": "chainId",
+          "type": "string",
+          "xor_with": "chainIdPath",
+          "description": "Fixed chain ID if nested call is on different chain"
+        },
+        {
+          "name": "chainIdPath",
+          "type": "string",
+          "xor_with": "chainId",
+          "description": "Dynamic path to chain ID"
+        },
+        {
           "name": "amount",
           "type": "string",
           "xor_with": "amountPath",
-          "description": "Fixed associated native currency amount"
+          "description": "Fixed associated native currency amount. If set, the nested ERC-7730 descriptor can reference this value using @.value"
         },
         {
           "name": "amountPath",
           "type": "string",
           "xor_with": "amount",
-          "description": "Dynamic path to associated native currency amount"
+          "description": "Dynamic path to associated native currency amount (e.g., '@.value'). If set, the nested descriptor can reference this using @.value. Common when parent transaction's msg.value is passed to nested call."
         },
         {
           "name": "spender",
           "type": "string",
           "xor_with": "spenderPath",
-          "description": "Fixed associated spender address"
+          "description": "Fixed associated spender address. If set, the nested ERC-7730 descriptor can reference this value using @.from"
         },
         {
           "name": "spenderPath",
           "type": "string",
           "xor_with": "spender",
-          "description": "Dynamic path to associated spender address"
+          "description": "Dynamic path to associated spender address (e.g., '@.to'). If set, the nested descriptor can reference this using @.from. Used when spender context needs to be passed to nested call."
         }
       ],
-      "notes": "The nested calldata is decoded using another ERC-7730 descriptor and shown on SUBSEQUENT screens. If no descriptor available, wallet MAY display hash of calldata instead.",
-      "example": {
-        "path": "action",
-        "label": "Action",
-        "format": "calldata",
-        "params": {
-          "calleePath": "@.to"
+      "important_notes": [
+        "The nested calldata is decoded using another ERC-7730 descriptor and shown on SUBSEQUENT screens",
+        "If no ERC-7730 descriptor is found for the nested call, wallet MAY display hash of calldata instead",
+        "amountPath and spenderPath enable the nested descriptor to access parent transaction context via @.value and @.from",
+        "Common pattern: permitAndCall where permit is excluded and action bytes are decoded as calldata on next screen"
+      ],
+      "examples": [
+        {
+          "description": "Simple nested call to same contract",
+          "code": {
+            "path": "action",
+            "label": "Action",
+            "format": "calldata",
+            "params": {
+              "calleePath": "@.to"
+            }
+          }
+        },
+        {
+          "description": "Nested call with different target and value forwarding",
+          "code": {
+            "path": "action",
+            "label": "Swap",
+            "format": "calldata",
+            "params": {
+              "calleePath": "target",
+              "amountPath": "@.value",
+              "spenderPath": "@.to"
+            }
+          }
+        }
+      ],
+      "wallet_behavior": {
+        "lookup_process": [
+          "1. Extract callee address from calleePath parameter",
+          "2. Extract selector from calldata (first 4 bytes or selectorPath)",
+          "3. Search for ERC-7730 descriptor matching (callee, selector, chainId)",
+          "4. If found: Display nested descriptor with forwarded values",
+          "5. If not found: Display hash of calldata with callee name if known"
+        ],
+        "value_forwarding": {
+          "amountPath": "Maps to @.value in nested descriptor",
+          "spenderPath": "Maps to @.from in nested descriptor"
+        },
+        "fallback_display": {
+          "if_no_descriptor": "Hash of calldata + callee address name",
+          "example": "Call to Uniswap V3 Router: 0x3b6d..."
+        }
+      },
+      "detection_patterns": {
+        "function_names": [
+          "permitAndCall",
+          "execute",
+          "executeWithPermit",
+          "call",
+          "invoke",
+          "batch",
+          "multicall",
+          "aggregate"
+        ],
+        "parameter_names": [
+          "data",
+          "calldata",
+          "action",
+          "calls",
+          "operations",
+          "commands"
+        ],
+        "parameter_type": "bytes",
+        "additional_indicators": [
+          "Function is payable (might forward value)",
+          "Has target/to address parameter",
+          "Has permit/signature parameter (likely wrapper)"
+        ]
+      },
+      "common_mistakes": {
+        "mistake_1": {
+          "mistake": "Not excluding permit/signature parameters",
+          "wrong": {
+            "fields": [
+              {
+                "path": "permit",
+                "label": "Permit",
+                "format": "raw"
+              },
+              {
+                "path": "action",
+                "label": "Action",
+                "format": "calldata"
+              }
+            ]
+          },
+          "correct": {
+            "fields": [
+              {
+                "path": "action",
+                "label": "Action",
+                "format": "calldata"
+              }
+            ],
+            "excluded": [
+              "permit"
+            ]
+          },
+          "reason": "Permit signatures are cryptographic data - not user-verifiable"
+        },
+        "mistake_2": {
+          "mistake": "Not forwarding msg.value to embedded calldata",
+          "wrong": {
+            "path": "action",
+            "format": "calldata",
+            "params": {
+              "calleePath": "target"
+            }
+          },
+          "correct": {
+            "path": "action",
+            "format": "calldata",
+            "params": {
+              "calleePath": "target",
+              "amountPath": "@.value"
+            }
+          },
+          "when": "Parent function is payable and forwards value to embedded call",
+          "reason": "Embedded descriptor needs to know the value being used"
+        },
+        "mistake_3": {
+          "mistake": "Using wrong calleePath",
+          "examples": {
+            "self_call": {
+              "function": "permitAndCall(bytes permit, bytes action)",
+              "correct_calleePath": "@.to",
+              "reason": "Action executes on same contract"
+            },
+            "external_call": {
+              "function": "execute(address target, bytes data)",
+              "correct_calleePath": "target",
+              "reason": "Data executes on external contract"
+            }
+          }
+        },
+        "mistake_4": {
+          "mistake": "Forgetting to mark calldata field as required",
+          "correct": {
+            "fields": [
+              {
+                "path": "action",
+                "format": "calldata"
+              }
+            ],
+            "required": [
+              "action"
+            ]
+          },
+          "reason": "Calldata is security-critical - user must verify what's being executed"
+        }
+      },
+      "best_practices": {
+        "always": [
+          "Use format: 'calldata' for embedded contract calls",
+          "Specify calleePath to indicate which contract is called",
+          "Exclude permit/signature parameters",
+          "Mark calldata field as required"
+        ],
+        "conditional": [
+          "Add amountPath if parent function forwards msg.value",
+          "Add spenderPath if embedded call needs to know the spender",
+          "Add chainIdPath for cross-chain executions",
+          "Add selectorPath if selector is not first 4 bytes"
+        ],
+        "labels": {
+          "generic": "Action, Execute, Call",
+          "specific": "Swap, Stake, Bridge (if known from context)"
         }
       }
     }
   },
-
   "xor_constraints": {
     "description": "Parameter pairs that CANNOT both be present - you must use exactly one",
     "constraints": [
       {
         "context": "Field",
-        "options": ["path", "value"],
+        "options": [
+          "path",
+          "value"
+        ],
         "explanation": "Either extract from data OR use literal value"
       },
       {
         "context": "addressName",
-        "options": ["senderAddress (string)", "senderAddress (array)"],
+        "options": [
+          "senderAddress (string)",
+          "senderAddress (array)"
+        ],
         "explanation": "Can be string OR array, not both (but can omit)"
       },
       {
         "context": "tokenAmount",
-        "options": ["token", "tokenPath"],
+        "options": [
+          "token",
+          "tokenPath"
+        ],
         "explanation": "Fixed address OR dynamic path",
         "severity": "critical"
       },
       {
         "context": "tokenAmount",
-        "options": ["nativeCurrencyAddress (string)", "nativeCurrencyAddress (array)"],
+        "options": [
+          "nativeCurrencyAddress (string)",
+          "nativeCurrencyAddress (array)"
+        ],
         "explanation": "Can be string OR array"
       },
       {
         "context": "nftName",
-        "options": ["collection", "collectionPath"],
+        "options": [
+          "collection",
+          "collectionPath"
+        ],
         "explanation": "Fixed address OR dynamic path",
         "severity": "critical"
       },
       {
         "context": "calldata",
-        "options": ["callee", "calleePath"],
+        "options": [
+          "callee",
+          "calleePath"
+        ],
         "explanation": "Fixed address OR dynamic path",
         "severity": "critical"
       },
       {
         "context": "calldata",
-        "options": ["selector", "selectorPath"],
+        "options": [
+          "selector",
+          "selectorPath"
+        ],
         "explanation": "Fixed selector OR dynamic path"
       },
       {
         "context": "calldata",
-        "options": ["amount", "amountPath"],
+        "options": [
+          "chainId",
+          "chainIdPath"
+        ],
+        "explanation": "Fixed chain ID OR dynamic path"
+      },
+      {
+        "context": "calldata",
+        "options": [
+          "amount",
+          "amountPath"
+        ],
         "explanation": "Fixed amount OR dynamic path"
       },
       {
         "context": "calldata",
-        "options": ["spender", "spenderPath"],
+        "options": [
+          "spender",
+          "spenderPath"
+        ],
         "explanation": "Fixed spender OR dynamic path"
       }
     ]
   },
-
   "special_paths": {
     "description": "Container structure values that reference the enclosing transaction/message, not function parameters",
-    "paths": {
-      "@.from": {
-        "description": "The sender/signer address (who is calling the function)",
-        "example_uses": [
-          "Show sender as beneficiary in withdraw/claim functions",
-          "Fallback recipient when parameter is zero address"
-        ]
+    "container_types": {
+      "EVM_transaction": {
+        "description": "Standard EVM transaction container",
+        "values": {
+          "@.from": {
+            "description": "The address of the sender of the transaction (msg.sender in Solidity)",
+            "example_uses": [
+              "Show sender as beneficiary in withdraw/claim functions",
+              "Fallback recipient when parameter is zero address (via senderAddress param)",
+              "In nested calldata: can be overridden by parent's spenderPath"
+            ]
+          },
+          "@.to": {
+            "description": "The destination address of the containing transaction (target smart contract address)",
+            "example_uses": [
+              "Reference contract's own address",
+              "Show target contract for nested calls (common in calleePath)",
+              "In nested calldata: refers to parent transaction's destination"
+            ]
+          },
+          "@.value": {
+            "description": "The native currency value of the transaction (msg.value in Solidity)",
+            "example_uses": [
+              "Show ETH/native currency being sent in payable functions",
+              "Display transaction value in amount format",
+              "In nested calldata: can be overridden by parent's amountPath"
+            ]
+          }
+        }
       },
-      "@.to": {
-        "description": "The destination contract address (where the transaction is sent)",
-        "example_uses": [
-          "Reference contract's own address as token",
-          "Show target contract for nested calls"
-        ]
-      },
-      "@.value": {
-        "description": "The native currency amount sent with the transaction (msg.value in Solidity)",
-        "example_uses": [
-          "Show ETH/native currency being sent in payable functions",
-          "Display transaction value"
-        ]
+      "EIP712_message": {
+        "description": "EIP-712 signed message container",
+        "values": {
+          "@.from": {
+            "description": "The address of the signer of the message"
+          },
+          "@.to": {
+            "description": "The verifying contract address, when known. If not known, wallet SHOULD reject using the ERC-7730 file to clear sign the message"
+          },
+          "@.value": {
+            "description": "EIP-712 has no underlying currency value transferred, so a wallet MAY interpret it as 0"
+          }
+        }
       }
-    }
+    },
+    "important_notes": [
+      "In nested calldata contexts, @.from, @.to, and @.value can be remapped using spenderPath, calleePath, and amountPath",
+      "Example: If parent descriptor sets amountPath: '@.value', the nested descriptor can use @.value to reference parent's msg.value",
+      "This enables proper value/spender context passing in multi-level call chains"
+    ]
   },
-
   "alternative_field_value": {
     "description": "Instead of 'path' (extract from data), you can use 'value' (literal)",
     "notes": "path and value are mutually exclusive - cannot have both",
@@ -491,7 +737,6 @@
       "format": "raw"
     }
   },
-
   "array_indexing": {
     "description": "Array index notation in ERC-7730",
     "notation": {
@@ -500,20 +745,409 @@
     },
     "notes": "Negative array indices are part of the ERC-7730 spec and are REQUIRED to work"
   },
-
   "type_casting": {
     "description": "Valid type conversions between ABI types and format types",
     "valid_casts": [
       {
-        "from": ["uint256", "bytes32", "bytes20"],
+        "from": [
+          "uint256",
+          "bytes32",
+          "bytes20"
+        ],
         "to": "addressName",
         "explanation": "Casting is supported by taking 20 bytes - NOT a critical type mismatch"
       },
       {
         "from": "address",
-        "to": ["raw", "numeric formats"],
+        "to": [
+          "raw",
+          "numeric formats"
+        ],
         "explanation": "Address can be displayed as numeric value - NOT a critical type mismatch"
       }
     ]
+  },
+  "integer_formats": {
+    "raw": {
+      "description": "Display the integer as a raw int in natural, localized representation",
+      "parameters": {},
+      "example": "Value 1000 displayed as '1000'"
+    },
+    "amount": {
+      "description": "Display as an amount in native currency, using best ticker/magnitude match",
+      "parameters": {},
+      "example": "Value 0x2c1c986f1c48000 displayed as '0.19866144 ETH'"
+    },
+    "tokenAmount": {
+      "description": "Convert value using token decimals and append token ticker name",
+      "parameters": {
+        "tokenPath": "Path reference to the address of the token contract",
+        "token": "Constant value for the address of the token contract",
+        "nativeCurrencyAddress": "String or array of strings - if tokenPath matches, interpret as native currency",
+        "threshold": "Integer value above which value is displayed as special message (optional)",
+        "message": "Message to display above threshold (optional, defaults to 'Unlimited')"
+      },
+      "examples": {
+        "basic": "1 DAI (tokenPath=0x6B17...1d0F, 6 decimals)",
+        "unlimited": "Unlimited DAI (value=0xFFFFFFFF, threshold=0xFFFFFFFF)",
+        "custom_message": "Max DAI (value=0xFFFFFFFF, threshold=0xFFFFFFFF, message='Max')",
+        "native_currency": "0.002 ETH (tokenPath=0xEeee...EeeE, nativeCurrencyAddress=['0xEeee...EeeE'])"
+      }
+    },
+    "nftName": {
+      "description": "Display value as a specific NFT in a collection, or fallback to raw int token ID",
+      "parameters": {
+        "collectionPath": "Path reference to the collection address",
+        "collection": "Constant value for the collection address"
+      },
+      "example": "Collection Name: BoredApeYachtClub, Token ID: 1036"
+    },
+    "date": {
+      "description": "Display int as a date using specified encoding (RECOMMENDED: RFC 3339)",
+      "parameters": {
+        "encoding": "Either 'timestamp' (unix timestamp) or 'blockheight' (converted to approximate unix timestamp)"
+      },
+      "examples": {
+        "timestamp": "2024-02-29T08:27:12 (value=1709191632, encoding='timestamp')",
+        "blockheight": "2024-02-29T09:00:35 (value=19332140, encoding='blockheight')"
+      },
+      "important": "Unix timestamp is expressed in seconds since epoch (not milliseconds)"
+    },
+    "duration": {
+      "description": "Display int as a duration interpreted in seconds, represented as HH:MM:ss",
+      "parameters": {},
+      "example": "02:17:30 (value=8250)"
+    },
+    "unit": {
+      "description": "Value converted to float using decimals, displayed with unit. Optional SI prefix for scientific representation",
+      "parameters": {
+        "base": "Symbol of the base unit (SI unit or symbols like '%', 'bps')",
+        "decimals": "Number of decimals in integer representation (defaults to 0)",
+        "prefix": "Boolean indicating whether SI prefix should be appended (defaults to false)"
+      },
+      "examples": {
+        "basic": "10h (value=10, base='h')",
+        "with_decimals": "1.5d (value=15, base='d', decimals=1)",
+        "with_prefix": "36ks (value=36000, base='s', prefix=true)"
+      }
+    },
+    "enum": {
+      "description": "Value converted using referenced constant enumeration values",
+      "parameters": {
+        "$ref": "Internal path (starting with '$.' root) to enumerations in metadata.constants"
+      },
+      "example": "$ref to $.metadata.constants.myEnum"
+    }
+  },
+  "string_formats": {
+    "raw": {
+      "description": "Display as an UTF-8 encoded string",
+      "parameters": {},
+      "example": "Ledger (value=['4c','65','64','67','65','72'])"
+    }
+  },
+  "bytes_formats": {
+    "raw": {
+      "description": "Display byte array as an hex-encoded string",
+      "parameters": {},
+      "example": "123456789A (value=['12','34','56','78','9a'])"
+    },
+    "calldata": {
+      "description": "Data contains a call to another smart contract or function. Wallet attempts to find ERC-7730 descriptor for embedded calldata",
+      "parameters": {
+        "calleePath": "Path reference to the contract being called",
+        "callee": "Constant value for the contract being called",
+        "selectorPath": "Optional path to selector (if not present, first 4 bytes used)",
+        "selector": "Optional constant selector value",
+        "chainIdPath": "Optional path to chain ID (if different from current)",
+        "chainId": "Optional constant chain ID value",
+        "amountPath": "Optional path to associated amount in native currency (makes @.value available to embedded calldata)",
+        "amount": "Optional constant amount value",
+        "spenderPath": "Optional path to associated spender (makes @.from available to embedded calldata)",
+        "spender": "Optional constant spender value"
+      },
+      "examples": {
+        "basic": "calleePath='@.to' (uses transaction destination)",
+        "with_value": "calleePath='target', amountPath='@.value', spenderPath='@.to'",
+        "explicit_selector": "calleePath='@.to', selector='0x12345678'"
+      },
+      "fallback": "If ERC-7730 not found or embedded calldata unsupported, MAY display hash with trusted name for callee"
+    }
+  },
+  "address_formats": {
+    "raw": {
+      "description": "Display address as EIP-55 formatted string (truncation device dependent)",
+      "parameters": {},
+      "example": "0x5aAe...eAed (full: 0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed)"
+    },
+    "addressName": {
+      "description": "Display address as trusted name if available, EIP-55 formatted otherwise",
+      "parameters": {
+        "types": "Array of expected address types (see address_types below). Wallet SHOULD verify type matches",
+        "sources": "Array of acceptable sources for names (see address_sources below). Wallet SHOULD restrict lookup to these",
+        "senderAddress": "String or array of strings. If address matches, interpret as sender (@.from)"
+      },
+      "examples": {
+        "ens": "vitalik.eth (address=0xd8dA...6045, types=['eoa'], sources=['ens'])",
+        "contract": "Uniswap V3: WBTC-USDC (address=0x99ac...Bc35, types=['contract'])",
+        "sender": "Sender (address=0x0000...0000, senderAddress=['0x0000...0000'], types=['eoa'])"
+      }
+    }
+  },
+  "validation_notes": {
+    "wallet_address_verification": "Wallet MAY verify that a 'wallet' type address is controlled by the wallet, and reject signing if not",
+    "type_verification": "If types parameter set, wallet SHOULD check address matches one of the provided types",
+    "source_restriction": "If sources parameter set, wallet SHOULD restrict name lookup to relevant sources only",
+    "fallback_behavior": "If trusted name not found, display EIP-55 formatted address with 'Unknown' warning where appropriate"
+  },
+  "address_sources": {
+    "description": "Wallet manufacturer specific. Example values:",
+    "examples": {
+      "local": "Address MAY be replaced with a local name trusted by user. Wallets MAY consider 'local' always valid",
+      "ens": "Address MAY be replaced with an associated ENS domain",
+      "ud": "Address MAY be replaced with Unstoppable Domains name",
+      "lens": "Address MAY be replaced with Lens Protocol handle"
+    },
+    "important": "When sources specified, wallet MUST only use those sources. When omitted, wallet MAY use any source"
+  },
+  "address_types": {
+    "wallet": "Address is an account controlled by the wallet",
+    "eoa": "Address is an Externally Owned Account",
+    "contract": "Address is a well known smart contract",
+    "token": "Address is a well known ERC-20 token",
+    "collection": "Address is a well known NFT collection"
+  },
+  "complete_examples": {
+    "embedded_calldata_basic": {
+      "description": "Simple embedded calldata without value forwarding",
+      "function": "permitAndCall(bytes permit, bytes action)",
+      "descriptor": {
+        "display": {
+          "formats": {
+            "permitAndCall(bytes permit, bytes action)": {
+              "intent": "Execute with permit",
+              "fields": [
+                {
+                  "path": "action",
+                  "label": "Swap",
+                  "format": "calldata",
+                  "params": {
+                    "calleePath": "@.to"
+                  }
+                }
+              ],
+              "required": [
+                "action"
+              ],
+              "excluded": [
+                "permit"
+              ]
+            }
+          }
+        }
+      },
+      "explanation": "The action parameter contains calldata for another function call. Wallet finds ERC-7730 descriptor using callee address (@.to) and selector from first 4 bytes of action"
+    },
+    "embedded_calldata_with_value": {
+      "description": "Embedded calldata with msg.value and spender forwarding",
+      "function": "permitAndCall(bytes permit, address target, bytes action)",
+      "descriptor": {
+        "display": {
+          "formats": {
+            "permitAndCall(bytes permit, address target, bytes action)": {
+              "intent": "Execute with permit",
+              "fields": [
+                {
+                  "path": "action",
+                  "label": "Swap",
+                  "format": "calldata",
+                  "params": {
+                    "calleePath": "target",
+                    "amountPath": "@.value",
+                    "spenderPath": "@.to"
+                  }
+                }
+              ],
+              "required": [
+                "action",
+                "target"
+              ],
+              "excluded": [
+                "permit"
+              ]
+            }
+          }
+        }
+      },
+      "explanation": "When embedded call needs parent's msg.value or spender: amountPath makes @.value available to embedded descriptor, spenderPath makes @.from available"
+    },
+    "tokenAmount_unlimited": {
+      "description": "Token amount with unlimited threshold",
+      "field": {
+        "path": "amount",
+        "label": "Amount",
+        "format": "tokenAmount",
+        "params": {
+          "tokenPath": "token",
+          "threshold": "0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF",
+          "message": "Unlimited"
+        }
+      },
+      "explanation": "When amount equals threshold, display message instead of number. Defaults to 'Unlimited' if message not provided"
+    },
+    "addressName_sender": {
+      "description": "Address that should be displayed as 'Sender' when it matches sender address",
+      "field": {
+        "path": "spender",
+        "label": "Spender",
+        "format": "addressName",
+        "params": {
+          "types": [
+            "eoa",
+            "contract"
+          ],
+          "senderAddress": [
+            "0x0000000000000000000000000000000000000000"
+          ]
+        }
+      },
+      "explanation": "If spender equals 0x0000...0000, display 'Sender'. Otherwise display trusted name or EIP-55 address"
+    },
+    "date_timestamp": {
+      "description": "Unix timestamp (in seconds) displayed as RFC 3339 date",
+      "field": {
+        "path": "deadline",
+        "label": "Deadline",
+        "format": "date",
+        "params": {
+          "encoding": "timestamp"
+        }
+      },
+      "explanation": "IMPORTANT: Unix timestamp is in SECONDS since epoch (not milliseconds). Value 1709191632 displays as 2024-02-29T08:27:12"
+    },
+    "tokenAmount_native_currency": {
+      "description": "Token amount that should be displayed as native currency (ETH, MATIC, etc.)",
+      "field": {
+        "path": "amount",
+        "label": "Amount",
+        "format": "tokenAmount",
+        "params": {
+          "tokenPath": "token",
+          "nativeCurrencyAddress": [
+            "0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE",
+            "0x0000000000000000000000000000000000000000"
+          ]
+        }
+      },
+      "explanation": "If token address matches one in nativeCurrencyAddress array, interpret as native currency (ETH on Ethereum, MATIC on Polygon, etc.)"
+    },
+    "simple_wrapper_function": {
+      "description": "Simple wrapper that executes arbitrary calldata",
+      "function": "execute(address target, bytes data)",
+      "descriptor": {
+        "$id": "execute",
+        "intent": "Execute",
+        "fields": [
+          {
+            "path": "data",
+            "label": "Action",
+            "format": "calldata",
+            "params": {
+              "calleePath": "target"
+            }
+          }
+        ],
+        "required": [
+          "target",
+          "data"
+        ]
+      }
+    },
+    "wrapper_with_value_forwarding": {
+      "description": "Wrapper that forwards msg.value to embedded call",
+      "function": "executeWithValue(address target, bytes data) payable",
+      "descriptor": {
+        "$id": "executeWithValue",
+        "intent": "Execute with Value",
+        "fields": [
+          {
+            "path": "data",
+            "label": "Action",
+            "format": "calldata",
+            "params": {
+              "calleePath": "target",
+              "amountPath": "@.value"
+            }
+          }
+        ],
+        "required": [
+          "target",
+          "data"
+        ]
+      },
+      "note": "Embedded descriptor can use @.value to show the forwarded amount"
+    },
+    "permit_and_call": {
+      "description": "Verify permit then execute calldata",
+      "function": "permitAndCall(Permit permit, bytes action)",
+      "descriptor": {
+        "$id": "permitAndCall",
+        "intent": "Execute with Permit",
+        "fields": [
+          {
+            "path": "action",
+            "label": "Action",
+            "format": "calldata",
+            "params": {
+              "calleePath": "@.to",
+              "spenderPath": "@.from"
+            }
+          }
+        ],
+        "required": [
+          "action"
+        ],
+        "excluded": [
+          "permit"
+        ]
+      },
+      "note": "Embedded descriptor can use @.from to reference the permit holder"
+    },
+    "cross_chain_execution": {
+      "description": "Execute calldata on different chain",
+      "function": "bridgeAndExecute(uint256 chainId, address target, bytes data)",
+      "descriptor": {
+        "$id": "bridgeAndExecute",
+        "intent": "Bridge and Execute",
+        "fields": [
+          {
+            "path": "data",
+            "label": "Action",
+            "format": "calldata",
+            "params": {
+              "calleePath": "target",
+              "chainIdPath": "chainId"
+            }
+          }
+        ],
+        "required": [
+          "chainId",
+          "target",
+          "data"
+        ]
+      }
+    }
+  },
+  "container_values": {
+    "evm_transaction": {
+      "@.from": "The address of the sender of the transaction",
+      "@.value": "The native currency value of the transaction",
+      "@.to": "The destination address of the containing transaction (target smart contract address)"
+    },
+    "eip712": {
+      "@.from": "The address of the signer of the message",
+      "@.value": "EIP-712 have no underlying currency value transferred, so a wallet MAY interpret it as 0",
+      "@.to": "The verifying contract address (when known). If not known, wallet SHOULD reject using ERC-7730 file"
+    }
   }
 }

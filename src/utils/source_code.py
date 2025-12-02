@@ -1101,10 +1101,55 @@ class SourceCodeExtractor:
 
         return result
 
+    @staticmethod
+    def _normalize_signature_for_matching(signature: str) -> str:
+        """
+        Normalize a function signature to just function name and parameter types for matching.
+
+        Converts:
+        - "approve(uint256 proposalId, uint256 index)" -> "approve(uint256,uint256)"
+        - "approve(uint256,uint256)" -> "approve(uint256,uint256)"
+        - "transfer(address memory to, uint256 amount)" -> "transfer(address,uint256)"
+
+        Args:
+            signature: Function signature with or without parameter names
+
+        Returns:
+            Normalized signature with only types
+        """
+        if '(' not in signature or ')' not in signature:
+            return signature
+
+        func_name = signature[:signature.index('(')]
+        params_str = signature[signature.index('(') + 1:signature.rindex(')')]
+
+        if not params_str.strip():
+            return f"{func_name}()"
+
+        # Split parameters and extract only the type (first token)
+        params = params_str.split(',')
+        types = []
+        for param in params:
+            param = param.strip()
+            if not param:
+                continue
+            # Remove storage location keywords and parameter names
+            # Split by whitespace and take the first token (the type)
+            tokens = param.split()
+            if tokens:
+                param_type = tokens[0]
+                # Handle array types: might be split like "uint256 [ ]" or "uint256[]"
+                if len(tokens) > 1 and tokens[1].startswith('['):
+                    param_type += tokens[1]
+                types.append(param_type)
+
+        return f"{func_name}({','.join(types)})"
+
     def get_function_with_dependencies(
         self,
         function_name: str,
         extracted_code: Dict[str, Any],
+        function_signature: Optional[str] = None,
         max_lines: int = 300
     ) -> Dict[str, Any]:
         """
@@ -1113,6 +1158,8 @@ class SourceCodeExtractor:
         Args:
             function_name: Name of the function
             extracted_code: Extracted code dictionary from extract_contract_code()
+            function_signature: Optional function signature with parameter types (e.g., "approve(uint256,uint256)")
+                                to disambiguate overloaded functions. If not provided, matches by name only.
             max_lines: Maximum number of lines to include (truncate if exceeded)
 
         Returns:
@@ -1131,10 +1178,30 @@ class SourceCodeExtractor:
         """
         # Find the function
         target_function = None
+
+        # If signature is provided, normalize it for comparison
+        normalized_target_sig = None
+        if function_signature:
+            normalized_target_sig = self._normalize_signature_for_matching(function_signature)
+            logger.info(f"  Looking for function with normalized signature: {normalized_target_sig}")
+
         for func_data in extracted_code['functions'].values():
             if func_data['name'] == function_name and func_data['visibility'] in ['public', 'external']:
-                target_function = func_data
-                break
+                # If signature is provided, match by signature; otherwise match by name only
+                if normalized_target_sig:
+                    # Normalize the extracted signature for comparison
+                    # The extracted signature has parameter names, so we need to normalize it
+                    extracted_sig = self._normalize_signature_for_matching(func_data['signature'])
+                    logger.debug(f"    Comparing: {extracted_sig} vs {normalized_target_sig}")
+                    if extracted_sig == normalized_target_sig:
+                        target_function = func_data
+                        logger.info(f"  ✓ Matched function by signature: {func_data['signature']} -> {extracted_sig}")
+                        break
+                else:
+                    # Fallback: match by name only (old behavior)
+                    target_function = func_data
+                    logger.info(f"  ✓ Matched function by name only: {func_data['signature']}")
+                    break
 
         if not target_function:
             logger.warning(f"Function {function_name} not found")

@@ -2,11 +2,61 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "ERC-7730 Critical Issues Criteria",
   "description": "Detailed criteria for what constitutes a CRITICAL issue in ERC-7730 clear signing security audits",
-  "version": "1.0.0",
+  "version": "2.0.0",
 
   "definition": "CRITICAL = USER LOSES MONEY OR GETS WRONG TOKENS/AMOUNTS IN FINAL OUTCOME. Only flag if a normal user would be shocked by what actually happens.",
 
   "rule": "You MUST be EXTREMELY conservative. Only flag if a normal user would be shocked by what actually happens.",
+
+  "do_NOT_flag_as_critical": {
+    "title": "CRITICAL: What NOT to flag as missing fields",
+    "rule": "If displaying a parameter would NOT help users understand or verify the transaction, do NOT flag it as critical",
+    "examples": [
+      {
+        "parameter": "makerTraits (bitpacked uint256)",
+        "what_it_controls": "Cancellation mode, nonce, epoch, various flags via bitwise operations",
+        "why_NOT_critical": "Displaying as raw shows '0x00000000000000000000000000000000000000000000000000000000000001a4' - users CANNOT understand what this means. This is INCOMPREHENSIBLE to users.",
+        "action": "Add to spec limitations, NOT critical issues"
+      },
+      {
+        "parameter": "flags (bitmask)",
+        "what_it_controls": "Multiple behavior flags via bitwise AND operations",
+        "why_NOT_critical": "Raw hex like '0x06' is meaningless - users cannot determine which flags are set",
+        "action": "Add to spec limitations, NOT critical issues"
+      },
+      {
+        "parameter": "Packed data (multiple values in one uint256)",
+        "why_NOT_critical": "Cannot be decomposed with ERC-7730 spec - raw display is incomprehensible",
+        "action": "Add to spec limitations, NOT critical issues"
+      },
+      {
+        "parameter": "Technical parameters (liquidity, sqrtPriceX96, tick, feeGrowthGlobal0X128)",
+        "why_NOT_critical": "Users cannot verify correctness without deep protocol knowledge - raw numbers are meaningless",
+        "action": "Add to spec limitations, NOT critical issues"
+      }
+    ],
+    "key_principle": "Only flag as CRITICAL if showing the parameter would help users UNDERSTAND and VERIFY what they're signing. If the value would be INCOMPREHENSIBLE raw hex/numbers, it's NOT critical to hide it."
+  },
+
+  "explanation_format": {
+    "title": "How to write critical issue explanations",
+    "description": "Critical issue explanations must be CONCISE, DIRECT, and focus on USER IMPACT",
+    "requirements": {
+      "focus_on": "What the user CANNOT see and why it matters for their money/tokens",
+      "be_concise": "Get straight to the point - what's missing and what's the risk",
+      "avoid": [
+        "Long explanations of contract internals",
+        "Detailed technical descriptions of how the contract works",
+        "Step-by-step analysis of the source code",
+        "Multiple sentences explaining the background"
+      ],
+      "structure": "Missing display of [WHAT], while the contract [WHAT HAPPENS], and [PARAMETER] is excluded/wrong, so the user cannot see [CRITICAL INFO] which is a direct [RISK TYPE] and therefore critical."
+    },
+    "bad_example": "Target address embedded in 'args' can change the external target to which the order is filled but 'args' is excluded from the descriptor and no field shows this target address or its presence. When takerTraits.argsHasTarget() is set, the contract reads the first 20 bytes of args as the target address (target = address(bytes20(args))). The current ERC-7730 descriptor excludes 'args' entirely and does not display the extracted target address nor indicate that a target override is present. This hides a security-critical fact: the order fill may be sent to a third-party contract or recipient different from the default (msg.sender). Users will not see or be warned that the order's execution target is changed by the hidden 'args' bytes and could be sending funds or invoking logic on an unexpected contract.",
+    "good_example": "Missing display of the actual recipient (the resolved 'target' parsed from args) while the contract sends the maker's token to that target, and args is excluded from display, so the user cannot see where the maker-side tokens will be delivered which is a direct recipient risk and therefore critical.",
+    "key_difference": "The good example is ONE concise sentence that states: what's missing + what the contract does + why user can't see it + what the risk is. The bad example has 4-5 sentences with excessive technical details about how the contract works internally.",
+    "template": "Missing display of [WHAT USER NEEDS TO SEE] while the contract [WHAT IT DOES WITH USER'S MONEY/TOKENS], and [DESCRIPTOR PROBLEM], so the user cannot see [CRITICAL INFORMATION] which is a direct [recipient/amount/token] risk and therefore critical."
+  },
 
   "critical_criteria": [
     {
@@ -125,8 +175,24 @@
           "critical_if": "NEITHER is present UNLESS one of these exceptions applies",
           "exceptions": [
             "Function ONLY supports native ETH (check source code: no ERC20 support, hardcoded ETH) AND has nativeCurrencyAddress",
-            "Token address is NOT in function inputs (computed from pool/DEX, encoded in bytes, determined on-chain) AND has nativeCurrencyAddress"
+            "Token address is NOT in function inputs (computed from pool/DEX, encoded in bytes, determined on-chain) AND has nativeCurrencyAddress - this is VALID and NOT CRITICAL"
           ],
+          "exception_2_detailed_explanation": {
+            "title": "tokenAmount with ONLY nativeCurrencyAddress (no tokenPath or token) is VALID when output token cannot be determined and can be native sentinel ETH address",
+            "when_this_is_NOT_critical": [
+              "Output token is determined by pool/DEX address (not in function inputs)",
+              "Output token is computed on-chain from routing logic",
+              "The descriptor has nativeCurrencyAddress to handle native ETH case",
+              "For ERC20 outputs, the wallet will show raw amount without symbol (acceptable limitation)"
+            ],
+            "example_valid_case": {
+              "function": "ethUnoswap2(uint256 minReturn, bytes32[] dex)",
+              "definition": "minReceiveAmount: {\"format\": \"tokenAmount\", \"params\": {\"nativeCurrencyAddress\": [\"$.metadata.constants.addressAsEth\", \"$.metadata.constants.addressAsNull\"]}}",
+              "why_valid": "Output token is determined by DEX/pool routing (not in function inputs). When output is native ETH (matching nativeCurrencyAddress), it displays properly as ETH. When output is an ERC20, wallet shows raw amount without symbol - this is an acceptable spec limitation.",
+              "action": "NOT CRITICAL - this is correct usage. Do NOT flag as issue. If you want to mention it, add to spec limitations: 'Output token cannot be determined from inputs (computed by DEX routing), so ERC20 amounts display without token symbol.'"
+            },
+            "when_this_IS_critical": "Only flag as critical if the token address IS in function inputs but descriptor doesn't reference it with tokenPath"
+          },
           "spec_limitation": "If exception 2 applies (token determined by pool): This is a SPEC LIMITATION - Add to 'Parameters that cannot be clear signed' section, NOT to critical issues. Example: 'Output token cannot be clear signed because it is determined by the pool/DEX and not an explicit function input'",
           "severity": "critical_with_exceptions"
         },
@@ -138,6 +204,29 @@
         {
           "type": "enum without reference",
           "condition": "Field has \"format\": \"enum\" but missing $ref to metadata.constants OR metadata.enums",
+          "severity": "critical"
+        },
+        {
+          "type": "calldata without callee",
+          "condition": "Field has \"format\": \"calldata\" but missing BOTH \"calleePath\" AND \"callee\" in params",
+          "explanation": "Embedded calldata requires knowing which contract is being called to find the correct ERC-7730 descriptor for the nested call",
+          "severity": "critical"
+        },
+        {
+          "type": "calldata with both callee and calleePath",
+          "condition": "Field has \"format\": \"calldata\" with BOTH \"calleePath\" AND \"callee\" in params (XOR violation)",
+          "explanation": "Must specify EITHER calleePath (dynamic) OR callee (fixed), not both",
+          "severity": "critical"
+        },
+        {
+          "type": "calldata XOR violations",
+          "description": "Other XOR constraint violations in calldata format",
+          "violations": [
+            "Both selector AND selectorPath present (use one or neither)",
+            "Both chainId AND chainIdPath present (use one or neither)",
+            "Both amount AND amountPath present (use one or neither)",
+            "Both spender AND spenderPath present (use one or neither)"
+          ],
           "severity": "critical"
         },
         {
@@ -156,6 +245,22 @@
           ],
           "note": "Check BOTH the field params AND any $ref definition params for these requirements",
           "severity": "critical_with_exceptions"
+        },
+        {
+          "type": "Date/timestamp format with unreasonably large values",
+          "description": "Using \"format\": \"date\" with \"encoding\": \"timestamp\" on values that are NOT valid Unix timestamps",
+          "validation": "Unix timestamps should be reasonable values (typically 10-13 digits for dates between 1970-2286). Values larger than 2^40 (~1.1 trillion, year 36,812) are NOT valid timestamps.",
+          "critical_patterns": [
+            {
+              "pattern": "Huge uint256 value formatted as timestamp",
+              "example": "goodUntil: 169651817337550577389281124630292667735310025728713516845115 formatted as date",
+              "why_critical": "This is clearly NOT a Unix timestamp - likely bitpacked data or different encoding. User will see meaningless date (overflow or year 10^45) instead of actual expiration",
+              "how_to_detect": "If using format: date with encoding: timestamp, check transaction samples. If decoded value is > 2^40, it's NOT a valid timestamp"
+            }
+          ],
+          "action": "Flag as CRITICAL: 'Field uses date format with timestamp encoding, but the actual value is unreasonably large (not a valid Unix timestamp). User will see meaningless date instead of actual expiration time.'",
+          "note": "This requires checking actual transaction data - cannot be detected from descriptor alone",
+          "severity": "critical"
         }
       ]
     },
@@ -276,8 +381,102 @@
       "severity": "critical"
     },
     {
+      "id": "10b",
+      "title": "Misleading or incorrect labels and intents",
+      "description": "Labels or intents that mislead users about what a field represents or what action is being performed",
+      "severity": "critical",
+      "check_intent_accuracy": {
+        "description": "The intent field must accurately describe the ACTUAL operation the function performs",
+        "critical_examples": [
+          {
+            "wrong": "Intent: 'Cancel all limit orders' for increaseEpoch() function",
+            "why_critical": "Says 'all orders' but function only increments user's epoch - misleads about scope",
+            "correct": "Intent should be 'Increase Order Epoch' or 'Invalidate Old Orders'"
+          },
+          {
+            "wrong": "Intent: 'Transfer Tokens' for a function that also stakes them",
+            "why_critical": "Hides the staking action - user thinks it's just a transfer"
+          },
+          {
+            "wrong": "Intent: 'Swap' for a generic execute/multicall function",
+            "why_critical": "Function can do arbitrary operations, not just swaps"
+          }
+        ],
+        "NOT_critical_for_generic_functions": {
+          "description": "Generic execution functions (execute, call, multicall) can have generic or specific intent labels",
+          "examples": [
+            "execute(bytes data) with intent 'Execute' - OK (generic)",
+            "execute(bytes data) with intent 'Swap' - OK if the nested calldata will be decoded on next screen",
+            "permitAndCall(permit, action) with intent 'Execute with Permit' - OK"
+          ],
+          "reason": "For wrapper/execution functions, the label on the wrapper is less important since users will see the decoded nested call on subsequent screens"
+        }
+      },
+      "check_label_accuracy": {
+        "examples": [
+          {
+            "wrong": "Label: 'Amount' on a field showing the recipient address",
+            "why_critical": "User thinks they're seeing an amount but it's actually showing where funds go"
+          },
+          {
+            "wrong": "Label: 'Token In' on a field showing the output token",
+            "why_critical": "User thinks they're sending this token but they're actually receiving it"
+          },
+          {
+            "wrong": "Label: 'Recipient' on msg.sender (@.from)",
+            "why_critical": "Recipient implies someone else receives funds, but @.from is the caller/sender"
+          },
+          {
+            "wrong": "Label: 'Minimum Return' on a field showing the exact amount (not minimum)",
+            "why_critical": "User expects a minimum threshold but sees the exact transfer amount"
+          },
+          {
+            "wrong": "Label: 'Fee' on the main swap amount",
+            "why_critical": "User thinks this is a small fee but it's actually the full amount being swapped"
+          }
+        ],
+        "NOT_critical_for_generic_calldata": {
+          "description": "For arbitrary execution functions, calldata labels can be generic or specific",
+          "example": "execute(bytes action) with label 'Swap' on action field is acceptable if nested call is decoded",
+          "reason": "Users will see the actual operation on the next screen when nested calldata is decoded"
+        }
+      },
+      "validation": [
+        "Check that intent accurately describes the function's primary operation",
+        "Check that labels accurately describe what the path references",
+        "For amounts: verify if it's 'Amount', 'Minimum Amount', 'Maximum Amount', 'Fee', etc.",
+        "For addresses: verify if it's 'Recipient', 'Sender', 'Token', 'Contract', etc.",
+        "For @.from: should be 'Sender' or 'Beneficiary' (if they receive funds), NOT 'Recipient'",
+        "For recipient parameters: should be 'Recipient' or 'Destination', NOT 'Sender'"
+      ],
+      "action": "Flag as CRITICAL with explanation of why the label/intent is misleading and what it should be instead"
+    },
+    {
       "id": 11,
       "title": "Labels and intents must not be longer than 20 characters",
+      "description": "Hardware wallets have strict character limits for display elements",
+      "limits": {
+        "intent": {
+          "max_characters": 20,
+          "path": "context.deployment.intents.intent",
+          "examples_valid": ["Swap Tokens", "Transfer NFT", "Approve Token", "Stake ETH"],
+          "examples_invalid": ["Swap tokens on Uniswap V3", "Transfer NFT to recipient", "Approve unlimited tokens"]
+        },
+        "field_label": {
+          "max_characters": 20,
+          "path": "display.formats[].fields[].label",
+          "examples_valid": ["Amount", "Recipient", "Token", "Deadline"],
+          "examples_invalid": ["Amount to be transferred", "Recipient wallet address", "Token contract address"]
+        }
+      },
+      "validation_rules": {
+        "counting": "Count characters, not bytes (unicode characters count as 1)",
+        "truncation_behavior": "Hardware wallets will truncate or reject displays with labels exceeding limits"
+      },
+      "issue_format": {
+        "issue_template": "Intent/Label exceeds 20 character limit",
+        "include_in_message": "The specific intent or label that's too long with actual character count"
+      },
       "severity": "critical"
     },
     {

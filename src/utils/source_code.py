@@ -1185,14 +1185,29 @@ class SourceCodeExtractor:
                 if tokens:
                     field_type = tokens[0]
 
-                    # Resolve custom types (including interfaces that were extracted)
-                    if field_type in custom_type_mapping:
-                        field_type = custom_type_mapping[field_type]
-                    # Resolve nested structs recursively
-                    elif field_type in all_structs:
-                        nested_tuple = self._struct_to_tuple(all_structs[field_type], custom_type_mapping, all_structs)
+                    # Resolve types: try direct lookup first, then qualified name lookup
+                    lookup_name = field_type
+
+                    # Try direct lookup in custom types (enums, interfaces, UDVTs)
+                    if lookup_name in custom_type_mapping:
+                        field_type = custom_type_mapping[lookup_name]
+                    # Try direct lookup in structs (recursive resolution)
+                    elif lookup_name in all_structs:
+                        nested_tuple = self._struct_to_tuple(all_structs[lookup_name], custom_type_mapping, all_structs)
                         if nested_tuple:
                             field_type = nested_tuple
+                    # If not found and contains '.', try unqualified name (handles ANY qualified type)
+                    elif '.' in lookup_name:
+                        unqualified_name = lookup_name.split('.')[-1]
+                        # Try custom types (enums, interfaces, UDVTs)
+                        if unqualified_name in custom_type_mapping:
+                            field_type = custom_type_mapping[unqualified_name]
+                        # Try structs (recursive resolution)
+                        elif unqualified_name in all_structs:
+                            nested_tuple = self._struct_to_tuple(all_structs[unqualified_name], custom_type_mapping, all_structs)
+                            if nested_tuple:
+                                field_type = nested_tuple
+                    # else: keep field_type as-is (primitive or unknown type)
 
                     types.append(field_type)
 
@@ -1312,16 +1327,34 @@ class SourceCodeExtractor:
                         base_type = param_type[:bracket_pos]
                         array_suffix = param_type[bracket_pos:]
 
-                    # Check if this is a custom type (including interfaces) and resolve it
-                    if base_type in custom_type_mapping:
-                        resolved_type = custom_type_mapping[base_type]
+                    # Resolve types: try direct lookup first, then qualified name lookup
+                    resolved_type = None
+                    lookup_name = base_type
+
+                    # Try direct lookup in custom types (enums, interfaces, UDVTs)
+                    if lookup_name in custom_type_mapping:
+                        resolved_type = custom_type_mapping[lookup_name]
+                        logger.debug(f"    Resolved type: {base_type}{array_suffix} -> {resolved_type}{array_suffix}")
+                    # Try direct lookup in structs
+                    elif lookup_name in struct_type_mapping:
+                        resolved_type = struct_type_mapping[lookup_name]
+                        logger.debug(f"    Resolved struct type: {base_type}{array_suffix} -> {resolved_type}{array_suffix}")
+                    # If not found and contains '.', try unqualified name (handles ANY qualified type)
+                    elif '.' in lookup_name:
+                        unqualified_name = lookup_name.split('.')[-1]
+                        # Try custom types (enums, interfaces, UDVTs)
+                        if unqualified_name in custom_type_mapping:
+                            resolved_type = custom_type_mapping[unqualified_name]
+                            logger.debug(f"    Resolved qualified type: {base_type}{array_suffix} -> {resolved_type}{array_suffix}")
+                        # Try structs
+                        elif unqualified_name in struct_type_mapping:
+                            resolved_type = struct_type_mapping[unqualified_name]
+                            logger.debug(f"    Resolved qualified struct type: {base_type}{array_suffix} -> {resolved_type}{array_suffix}")
+
+                    # Apply resolved type or keep original
+                    if resolved_type:
                         param_type = resolved_type + array_suffix
-                        logger.debug(f"    Resolved type: {base_type}{array_suffix} -> {param_type}")
-                    # Check if this is a struct type and resolve it to tuple
-                    elif base_type in struct_type_mapping:
-                        resolved_type = struct_type_mapping[base_type]
-                        param_type = resolved_type + array_suffix
-                        logger.debug(f"    Resolved struct type: {base_type}{array_suffix} -> {param_type}")
+                    # else: keep param_type as-is (primitive or unknown type)
 
                     types.append(param_type)
 

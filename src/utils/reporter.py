@@ -549,7 +549,7 @@ def _render_critical_issue(issue_obj: Any, index: int) -> str:
     add_detail("Evidence", "evidence")
 
     md += "\n".join(md_nonlocal) + "\n"
-    md += "</details>\n"
+    md += "</details>\n\n"  # Extra newline for spacing between issues
     return md
 
 

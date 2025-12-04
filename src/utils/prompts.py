@@ -471,9 +471,8 @@ You MUST output a SINGLE JSON object (no markdown, no extra text before or after
             messages=[{"role": "user", "content": prompt}],
             response_format={"type": "json_object"}
         )
-
+        logger.info(f"AI raw response {response}")
         json_response = response.choices[0].message.content
-        logger.info(f"AI raw response {json_response}")
         logger.info(f"Successfully received JSON response for {selector}")
 
         # Parse JSON response

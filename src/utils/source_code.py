@@ -43,6 +43,35 @@ class SolidityCodeParser:
         text = re.sub(r'//.*', '', text)
         return text
 
+    def extract_interfaces(self) -> List[str]:
+        """
+        Extract all interface names from the code.
+
+        Interfaces and contracts used as types always map to 'address' in the ABI.
+
+        Returns:
+            List of interface names
+        """
+        interfaces = []
+
+        # Pattern to match interface definitions
+        interface_pattern = r'interface\s+(\w+)\s*\{'
+
+        for match in re.finditer(interface_pattern, self.cleaned_code):
+            interface_name = match.group(1)
+            interfaces.append(interface_name)
+            logger.debug(f"Found interface: {interface_name}")
+
+        # Also match abstract contracts and regular contracts (they can be used as types too)
+        contract_pattern = r'(?:abstract\s+)?contract\s+(\w+)\s*(?:is\s+[^{]+)?\s*\{'
+
+        for match in re.finditer(contract_pattern, self.cleaned_code):
+            contract_name = match.group(1)
+            interfaces.append(contract_name)
+            logger.debug(f"Found contract type: {contract_name}")
+
+        return interfaces
+
     def extract_structs(self) -> Dict[str, str]:
         """
         Extract all struct definitions from the code.
@@ -1062,23 +1091,27 @@ class SourceCodeExtractor:
             result['using_statements'] = parser.extract_using_statements()
             logger.info(f"  ✓ Found {len(result['using_statements'])} using statements")
 
-            logger.info("  [3/7] Extracting libraries...")
+            logger.info("  [3/8] Extracting libraries...")
             result['libraries'] = parser.extract_libraries()
             logger.info(f"  ✓ Found {len(result['libraries'])} libraries")
 
-            logger.info("  [4/7] Extracting structs...")
+            logger.info("  [4/8] Extracting interfaces...")
+            result['interfaces'] = parser.extract_interfaces()
+            logger.info(f"  ✓ Found {len(result['interfaces'])} interfaces/contracts")
+
+            logger.info("  [5/8] Extracting structs...")
             result['structs'] = parser.extract_structs()
             logger.info(f"  ✓ Found {len(result['structs'])} structs")
 
-            logger.info("  [5/7] Extracting enums...")
+            logger.info("  [6/8] Extracting enums...")
             result['enums'] = parser.extract_enums()
             logger.info(f"  ✓ Found {len(result['enums'])} enums")
 
-            logger.info("  [6/7] Extracting constants...")
+            logger.info("  [7/8] Extracting constants...")
             result['constants'] = parser.extract_constants()
             logger.info(f"  ✓ Found {len(result['constants'])} constants")
 
-            logger.info("  [7/7] Extracting functions (this may take a while for large contracts)...")
+            logger.info("  [8/8] Extracting functions (this may take a while for large contracts)...")
             result['functions'] = parser.extract_functions()
             logger.info(f"  ✓ Found {len(result['functions'])} functions")
 
@@ -1101,25 +1134,38 @@ class SourceCodeExtractor:
 
         return result
 
-    def _struct_to_tuple(self, struct_def: str) -> Optional[str]:
+    def _struct_to_tuple(
+        self,
+        struct_def: str,
+        custom_type_mapping: Optional[Dict[str, str]] = None,
+        all_structs: Optional[Dict[str, str]] = None
+    ) -> Optional[str]:
         """
-        Convert a struct definition to its tuple representation.
+        Convert a struct definition to its tuple representation, recursively resolving
+        custom types and nested structs.
 
         Example:
             struct SwapDescription {
-                address srcToken;
+                IERC20 srcToken;      // Interface -> address
                 address dstToken;
                 uint256 amount;
             }
 
-        Returns: "(address,address,uint256)"
+        Returns: "(address,address,uint256)" (with IERC20 resolved to address)
 
         Args:
             struct_def: Struct definition string
+            custom_type_mapping: Optional mapping of custom types to base types
+            all_structs: Optional dict of all struct definitions for recursive resolution
 
         Returns:
             Tuple representation or None if parsing fails
         """
+        if custom_type_mapping is None:
+            custom_type_mapping = {}
+        if all_structs is None:
+            all_structs = {}
+
         try:
             # Extract fields from struct body
             match = re.search(r'\{([^}]+)\}', struct_def)
@@ -1138,6 +1184,16 @@ class SourceCodeExtractor:
                 tokens = line.split()
                 if tokens:
                     field_type = tokens[0]
+
+                    # Resolve custom types (including interfaces that were extracted)
+                    if field_type in custom_type_mapping:
+                        field_type = custom_type_mapping[field_type]
+                    # Resolve nested structs recursively
+                    elif field_type in all_structs:
+                        nested_tuple = self._struct_to_tuple(all_structs[field_type], custom_type_mapping, all_structs)
+                        if nested_tuple:
+                            field_type = nested_tuple
+
                     types.append(field_type)
 
             if not types:
@@ -1256,11 +1312,11 @@ class SourceCodeExtractor:
                         base_type = param_type[:bracket_pos]
                         array_suffix = param_type[bracket_pos:]
 
-                    # Check if this is a custom type and resolve it
+                    # Check if this is a custom type (including interfaces) and resolve it
                     if base_type in custom_type_mapping:
                         resolved_type = custom_type_mapping[base_type]
                         param_type = resolved_type + array_suffix
-                        logger.debug(f"    Resolved custom type: {base_type}{array_suffix} -> {param_type}")
+                        logger.debug(f"    Resolved type: {base_type}{array_suffix} -> {param_type}")
                     # Check if this is a struct type and resolve it to tuple
                     elif base_type in struct_type_mapping:
                         resolved_type = struct_type_mapping[base_type]
@@ -1316,12 +1372,24 @@ class SourceCodeExtractor:
                 custom_type_mapping[type_name] = base_type
                 logger.debug(f"  Custom type mapping: {type_name} -> {base_type}")
 
+        # Add interfaces and contracts (they all map to address in ABI)
+        interfaces = extracted_code.get('interfaces', [])
+        for interface_name in interfaces:
+            custom_type_mapping[interface_name] = 'address'
+            logger.debug(f"  Interface/Contract mapping: {interface_name} -> address")
+
+        # Add enums (they all map to uint8 in ABI)
+        enums = extracted_code.get('enums', {})
+        for enum_name in enums.keys():
+            custom_type_mapping[enum_name] = 'uint8'
+            logger.debug(f"  Enum mapping: {enum_name} -> uint8")
+
         # Get struct mapping for resolving struct types to tuples
         structs = extracted_code.get('structs', {})
         struct_type_mapping = {}
         for struct_name, struct_def in structs.items():
-            # Extract tuple representation from struct
-            tuple_repr = self._struct_to_tuple(struct_def)
+            # Extract tuple representation from struct, resolving custom types and nested structs
+            tuple_repr = self._struct_to_tuple(struct_def, custom_type_mapping, structs)
             if tuple_repr:
                 struct_type_mapping[struct_name] = tuple_repr
                 logger.debug(f"  Struct type mapping: {struct_name} -> {tuple_repr}")

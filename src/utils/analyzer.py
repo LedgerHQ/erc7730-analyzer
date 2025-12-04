@@ -835,7 +835,7 @@ class ERC7730Analyzer:
                     logger.info(f"Generating AI audit report for {selector}...")
                 logger.info(f"{'='*60}")
 
-                critical_report, detailed_report = generate_clear_signing_audit(
+                critical_report, detailed_report, report_json = generate_clear_signing_audit(
                     selector,
                     decoded_txs,  # Will be empty list if no transactions
                     erc7730_format_expanded,  # Use expanded format with metadata and display.definitions
@@ -844,35 +844,9 @@ class ERC7730Analyzer:
                     use_smart_referencing=self.use_smart_referencing
                 )
 
-                # If no transactions, prepend a critical warning to BOTH reports
-                if has_no_transactions:
-                    no_tx_warning = """🔴 **CRITICAL WARNING: No Historical Transactions Found**
-
-⚠️ This analysis is based ONLY on static source code review without real transaction data.
-
-**Issue:** No transactions were found for this selector within the configured lookback period.
-
-**Impact:** The analysis cannot verify:
-- Actual on-chain behavior and token flows
-- Real-world parameter values and edge cases
-- Event emissions and receipt logs
-- Integration with other contracts
-
-**Recommendations:**
-1. Increase the `LOOKBACK_DAYS` environment variable to search a longer time period
-2. Provide manual sample transactions for this selector to enable dynamic analysis
-3. Verify this function is actually being used in production
-4. If this is a new/unused function, consider removing it from the ERC-7730 file until it's actively used
-
----
-
-"""
-                    # Prepend warning to BOTH reports
-                    critical_report = no_tx_warning + critical_report
-                    detailed_report = no_tx_warning + detailed_report
-
                 audit_report_critical = critical_report
                 audit_report_detailed = detailed_report
+                audit_report_json = report_json
 
                 logger.info(f"\nCritical Report:\n{critical_report}\n")
                 logger.info(f"\nDetailed Report:\n{detailed_report}\n")
@@ -886,6 +860,7 @@ class ERC7730Analyzer:
                 'erc7730_format': erc7730_format,
                 'audit_report_critical': audit_report_critical,
                 'audit_report_detailed': audit_report_detailed,
+                'audit_report_json': audit_report_json,
                 'source_code': function_source  # Store source code for reports
             }
 

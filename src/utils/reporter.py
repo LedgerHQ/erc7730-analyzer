@@ -10,6 +10,7 @@ import logging
 from typing import Dict, Any, List
 from pathlib import Path
 from datetime import datetime
+import json as json_lib  # avoid shadowing json module import
 
 logger = logging.getLogger(__name__)
 
@@ -214,40 +215,61 @@ def parse_first_report(audit_report: str) -> tuple:
     if critical_section:
         section_text = critical_section.group(1)
 
+        # Remove content inside <details> tags (new structured format)
+        # This prevents extracting Evidence bullets as separate issues
+        section_without_details = re.sub(r'<details>.*?</details>', '', section_text, flags=re.DOTALL)
+
         # Prefer text before "**Your analysis:**"
-        analysis_split = re.split(r'\*\*Your analysis:\*\*', section_text, flags=re.IGNORECASE)
+        analysis_split = re.split(r'\*\*Your analysis:\*\*', section_without_details, flags=re.IGNORECASE)
         pre_analysis_text = analysis_split[0]
         extracted = _extract_issue_bullets(pre_analysis_text)
 
         # Fallback: include entire section (for legacy formats) if nothing found
         if not extracted:
-            extracted = _extract_issue_bullets(section_text)
+            extracted = _extract_issue_bullets(section_without_details)
 
         critical.extend(extracted)
 
-    # Extract recommendations (lines starting with - under "**Recommendations:**")
+    # Extract recommendations (multi-line bullets under "### **Recommendations:**")
+    # Use ### to match section header, not inline recommendations
+    # Stop at duplicate "Issues Found" section (AI bug) or end of string
     rec_section = re.search(
-        r'\*\*Recommendations:\*\*(.*?)(?=$)',
+        r'###\s*\*\*Recommendations:\*\*(.*?)(?=###\s*\*\*Issues Found:\*\*|$)',
         audit_report,
         re.DOTALL | re.IGNORECASE
     )
 
     if rec_section:
-        for line in rec_section.group(1).split('\n'):
-            line = line.strip()
-            # Skip empty lines
-            if not line:
-                continue
+        # Parse multi-line bullet points
+        current_bullet = []
+        lines = rec_section.group(1).split('\n')
+
+        for line in lines:
+            stripped = line.strip()
+
             # Skip markdown separators (---, - ---, etc.)
-            if re.match(r'^[-*]+\s*[-*]*\s*$', line):
+            if re.match(r'^[-*]+\s*[-*]*\s*$', stripped):
                 continue
-            # Extract bullet points
-            if line.startswith('-'):
-                rec_text = re.sub(r'^[-*]\s+', '', line).strip()
-                # Remove bold markdown wrapper if present
-                rec_text = re.sub(r'^\*\*(.*)\*\*$', r'\1', rec_text)
-                if rec_text:
-                    recommendations.append(rec_text)
+
+            # New bullet point starts
+            if stripped.startswith('-'):
+                # Save previous bullet if any
+                if current_bullet:
+                    bullet_text = '\n'.join(current_bullet)
+                    recommendations.append(bullet_text)
+
+                # Start new bullet (remove the leading dash but preserve markdown formatting)
+                rec_text = re.sub(r'^[-*]\s+', '', stripped).strip()
+                current_bullet = [rec_text] if rec_text else []
+
+            # Continuation of current bullet (indented content or regular lines)
+            elif stripped and current_bullet:
+                current_bullet.append(line.rstrip())  # Keep original indentation
+
+        # Don't forget the last bullet
+        if current_bullet:
+            bullet_text = '\n'.join(current_bullet)
+            recommendations.append(bullet_text)
 
     return critical, recommendations
 
@@ -339,6 +361,196 @@ def extract_recommendations(audit_report: str) -> list:
         bullets = re.findall(r'[-*]\s+(.+)', rec_section.group(1))
         recommendations.extend([b.strip() for b in bullets if b.strip()])
     return recommendations[:3]
+
+
+def _format_code_snippet(snippet: Any) -> str:
+    """
+    Render a code snippet (dict/str) as a fenced JSON block for readability.
+    """
+    if snippet is None:
+        return ""
+
+    try:
+        if isinstance(snippet, str):
+            candidate = snippet.strip()
+            try:
+                parsed = json_lib.loads(candidate)
+                snippet_str = json_lib.dumps(parsed, indent=2)
+            except Exception:
+                snippet_str = candidate
+        elif isinstance(snippet, (dict, list)):
+            snippet_str = json_lib.dumps(snippet, indent=2)
+        else:
+            snippet_str = str(snippet)
+    except Exception:
+        snippet_str = str(snippet)
+
+    return f"\n```json\n{snippet_str}\n```\n"
+
+
+def _brace_delta(line: str) -> int:
+    """Approximate brace balance to group JSON-like blocks."""
+    return line.count('{') - line.count('}') + line.count('[') - line.count(']')
+
+
+def _format_text_with_json_blocks(text: str) -> str:
+    """
+    Look for JSON-like blocks in freeform text and render them as fenced code blocks.
+    """
+    if not text:
+        return ""
+
+    lines = text.splitlines()
+    output: List[str] = []
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        stripped = line.strip()
+        # Skip if already in a fenced block
+        if stripped.startswith("```"):
+            output.append(line)
+            i += 1
+            continue
+
+        # Multi-line block starting with brace on its own line
+        if stripped.startswith('{') or stripped.startswith('['):
+            balance = _brace_delta(stripped)
+            block_lines = [line]
+            j = i + 1
+            while balance > 0 and j < len(lines):
+                block_lines.append(lines[j])
+                balance += _brace_delta(lines[j])
+                j += 1
+
+            block_text = "\n".join(block_lines)
+            try:
+                parsed = json_lib.loads(block_text)
+                pretty = json_lib.dumps(parsed, indent=2)
+                output.append(f"```json\n{pretty}\n```")
+                i = j
+                continue
+            except Exception:
+                # Fall through to treat lines normally
+                pass
+
+        # Inline JSON fragment on the same line (e.g., "1) Change ... {\"intent\": \"X\"}")
+        brace_pos = line.find('{')
+        if brace_pos != -1:
+            prefix = line[:brace_pos].rstrip()
+            candidate = line[brace_pos:].strip()
+            try:
+                parsed = json_lib.loads(candidate)
+                pretty = json_lib.dumps(parsed, indent=2)
+                if prefix:
+                    output.append(prefix)
+                output.append(f"```json\n{pretty}\n```")
+                i += 1
+                continue
+            except Exception:
+                pass
+
+        output.append(line)
+        i += 1
+
+    return "\n".join(output)
+
+
+def _render_recommendations_from_json(recs: Dict[str, Any]) -> str:
+    """
+    Format recommendations from structured JSON into markdown, preserving
+    code snippets and optional improvements.
+    """
+    if not recs:
+        return ""
+
+    lines: List[str] = []
+
+    # Fixes
+    for fix in recs.get('fixes', []):
+        title = fix.get('title', 'Fix')
+        description = fix.get('description', '')
+        formatted_desc = _format_text_with_json_blocks(description)
+        lines.append(f"- **{title}:** {formatted_desc}")
+        if fix.get('code_snippet'):
+            lines.append(_format_code_snippet(fix['code_snippet']))
+
+    # Spec limitations
+    for lim in recs.get('spec_limitations', []):
+        param = lim.get('parameter', 'Parameter')
+        explanation = lim.get('explanation', '')
+        impact = lim.get('impact', '')
+        detected = lim.get('detected_pattern')
+        line = f"- **{param} cannot be clear signed:** {explanation}"
+        if impact:
+            line += f" **Why this matters:** {impact}"
+        if detected:
+            line += f" **Detected pattern:** {detected}"
+        lines.append(line)
+
+    # Optional improvements
+    for opt in recs.get('optional_improvements', []):
+        title = opt.get('title', 'Improvement')
+        description = opt.get('description', '')
+        prefix = "(Optional) "
+        if title.lower().startswith('optional'):
+            prefix = ""
+        formatted_desc = _format_text_with_json_blocks(description)
+        lines.append(f"- **{prefix}{title}:** {formatted_desc}")
+        if opt.get('code_snippet'):
+            lines.append(_format_code_snippet(opt['code_snippet']))
+
+    # Additional suggested snippets for optional improvements
+    optional_snippets = recs.get('suggested_code_snippets_for_optional_improvements') or []
+    if optional_snippets:
+        lines.append("**Suggested code snippets for optional improvements:**")
+        for snippet in optional_snippets:
+            desc = snippet.get('description', 'Optional improvement')
+            lines.append(f"- {desc}")
+            for key, value in snippet.items():
+                if key == 'description':
+                    continue
+                label = key.replace('_', ' ').title()
+                lines.append(f"  - {label}:")
+                lines.append(_format_code_snippet(value))
+
+    if not lines:
+        return ""
+
+    # Join with double newlines to keep spacing around code fences
+    return "\n\n".join(lines) + "\n"
+
+
+def _render_critical_issue(issue_obj: Any, index: int) -> str:
+    """
+    Render a critical issue with details into markdown (with collapsible section).
+    """
+    if not isinstance(issue_obj, dict):
+        return f"- {issue_obj}"
+
+    summary = issue_obj.get('issue', f'Issue {index}')
+    details = issue_obj.get('details', {})
+    if not details:
+        return f"- {summary}"
+
+    md = f"**{index}. {summary}**\n\n"
+    md += "<details>\n"
+    md += "<summary><i>🔍 Click to see detailed analysis</i></summary>\n\n"
+
+    def add_detail(label: str, key: str):
+        value = details.get(key)
+        if value:
+            md_part = _format_text_with_json_blocks(str(value))
+            md_nonlocal.append(f"**{label}:** {md_part}\n")
+
+    md_nonlocal: List[str] = []
+    add_detail("What descriptor shows", "what_descriptor_shows")
+    add_detail("What actually happens", "what_actually_happens")
+    add_detail("Why this is critical", "why_critical")
+    add_detail("Evidence", "evidence")
+
+    md += "\n".join(md_nonlocal) + "\n"
+    md += "</details>\n"
+    return md
 
 
 def format_source_code_section(source_code: Dict) -> str:
@@ -554,6 +766,10 @@ def generate_summary_file(results: Dict, summary_file: Path):
                 display_issues_from_ai = []
                 recommendations = []
 
+            # Provide a default warning so no-transaction selectors surface as a minor issue
+            if not display_issues_from_ai:
+                display_issues_from_ai = ["⚠️ No historical transactions - static analysis only"]
+
             issue_data = {
                 'selector': selector,
                 'function_name': function_name,
@@ -573,15 +789,19 @@ def generate_summary_file(results: Dict, summary_file: Path):
                 'no_historical_txs': True  # Flag to indicate no transactions
             }
 
-            # Categorize by severity (no historical txs is a critical warning)
+            # Categorize by severity (no historical txs should be a warning, not a critical)
             has_ai_critical = len(critical_issues_from_ai) > 0
+            has_missing_params = len(ai_missing_params) > 0
+            has_display_issues = len(display_issues_from_ai) > 0
 
             if has_ai_critical:
                 critical_issues_list.append(issue_data)
+            elif has_missing_params:
+                major_issues_list.append(issue_data)
+            elif has_display_issues:
+                minor_issues_list.append(issue_data)
             else:
-                # Always add a critical for no historical transactions
-                issue_data['critical_issues'] = ['No historical transactions found for analysis']
-                critical_issues_list.append(issue_data)
+                no_issues_list.append(issue_data)
 
     # Build summary table
     all_issues = critical_issues_list + major_issues_list + minor_issues_list + no_issues_list
@@ -649,28 +869,18 @@ def generate_summary_file(results: Dict, summary_file: Path):
         report += json.dumps(expanded_format, indent=2)
         report += "\n```\n\n</details>\n\n"
 
-        # Add source code section (collapsible) - only if there are critical issues
-        audit_report_detailed = selector_data.get('audit_report_detailed', '')
-        if not audit_report_detailed:
-            audit_report_detailed = selector_data.get('audit_report', '')
-
-        has_critical_issues = False
-        if audit_report_detailed:
-            critical_issues_from_ai = extract_critical_issues(audit_report_detailed)
-            has_critical_issues = len(critical_issues_from_ai) > 0
-
-        if has_critical_issues:
-            source_code = selector_data.get('source_code')
-            if source_code:
-                formatted_code = format_source_code_section(source_code)
-                if formatted_code:
-                    report += "<details>\n<summary><b>📝 Source Code</b></summary>\n\n"
-                    report += "```solidity\n"
-                    report += formatted_code
-                    # Ensure there's a newline before closing the code fence
-                    if not formatted_code.endswith('\n'):
-                        report += "\n"
-                    report += "```\n\n</details>\n\n"
+        # Add source code section (collapsible) - always show if available
+        source_code = selector_data.get('source_code')
+        if source_code:
+            formatted_code = format_source_code_section(source_code)
+            if formatted_code:
+                report += "<details>\n<summary><b>📝 Source Code</b></summary>\n\n"
+                report += "```solidity\n"
+                report += formatted_code
+                # Ensure there's a newline before closing the code fence
+                if not formatted_code.endswith('\n'):
+                    report += "\n"
+                report += "```\n\n</details>\n\n"
 
         # Add decoded transaction parameters (collapsible sections per transaction)
         # transactions = selector_data.get('transactions', [])
@@ -764,17 +974,44 @@ def generate_criticals_report(results: Dict, criticals_file: Path):
             # Fallback: extract from combined report
             audit_report_critical = selector_data.get('audit_report', '')
 
+        audit_report_json = selector_data.get('audit_report_json')
+
         func_data = {
             'selector': selector,
             'function_name': function_name,
             'function_sig': function_sig,
             'erc7730_format': selector_data.get('erc7730_format', {}),
             'contract_address': selector_data.get('contract_address', 'N/A'),
-            'chain_id': selector_data.get('chain_id', 'N/A')
+            'chain_id': selector_data.get('chain_id', 'N/A'),
+            'critical_issues': [],
+            'recommendations': [],
+            'recommendations_rendered': "",
+            'critical_issues_rendered': ""
         }
 
-        if audit_report_critical:
-            # Parse FIRST REPORT section for critical issues and recommendations
+        if audit_report_json:
+            # Prefer structured JSON when available
+            crits = audit_report_json.get('critical_issues', [])
+            func_data['critical_issues'] = [
+                c.get('issue', c) if isinstance(c, dict) else str(c) for c in crits
+            ]
+            rendered_criticals = []
+            for idx, crit in enumerate(crits, 1):
+                rendered_criticals.append(_render_critical_issue(crit, idx))
+            func_data['critical_issues_rendered'] = "\n".join(rendered_criticals)
+
+            func_data['recommendations_rendered'] = _render_recommendations_from_json(
+                audit_report_json.get('recommendations', {})
+            )
+            func_data['recommendations'] = []  # keep legacy field empty
+            func_data['has_critical'] = len(func_data['critical_issues']) > 0
+
+            all_functions.append(func_data)
+            if func_data['has_critical']:
+                critical_functions.append(func_data)
+
+        elif audit_report_critical:
+            # Parse FIRST REPORT section for critical issues and recommendations (legacy)
             critical_issues, recommendations = parse_first_report(audit_report_critical)
 
             func_data['critical_issues'] = critical_issues
@@ -853,24 +1090,28 @@ def generate_criticals_report(results: Dict, criticals_file: Path):
         if func.get('has_critical'):
             # Critical Issues
             report += "### 🔴 Critical Issues\n\n"
-            for issue in func['critical_issues']:
-                # Add bullet point formatting
-                report += f"- {issue}\n"
-
-            report += "\n"
+            if func.get('critical_issues_rendered'):
+                report += func['critical_issues_rendered'] + "\n"
+            else:
+                for issue in func['critical_issues']:
+                    report += f"- {issue}\n"
+                report += "\n"
         else:
             # No critical issues
             report += "### ✅ No Critical Issues\n\n"
             report += "No critical issues found.\n\n"
 
         # Recommendations (always show, even when no critical issues)
-        if func['recommendations']:
+        if func.get('recommendations_rendered'):
+            report += "### 💡 Recommendations\n\n"
+            report += func['recommendations_rendered']
+            report += "\n"
+        elif func['recommendations']:
             report += "### 💡 Recommendations\n\n"
             for rec in func['recommendations']:
-                # Add bullet point formatting
-                report += f"- {rec}\n"
-
-            report += "\n"
+                # Multi-line recommendations are already formatted with newlines
+                # Just add the leading dash and preserve all internal formatting
+                report += f"- {rec}\n\n"
 
         report += "---\n\n"
 

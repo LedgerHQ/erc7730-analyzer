@@ -39,6 +39,30 @@ def _risk_emoji(level: str) -> str:
     }.get(level.lower(), '⚪')
 
 
+def _format_code_snippet(snippet: Any) -> str:
+    """Render a code snippet object/string as a JSON code block."""
+    if snippet is None:
+        return ""
+
+    # Try to pretty print JSON-like content; otherwise fall back to plain string
+    try:
+        if isinstance(snippet, str):
+            candidate = snippet.strip()
+            try:
+                parsed = json.loads(candidate)
+                snippet_str = json.dumps(parsed, indent=2)
+            except Exception:
+                snippet_str = candidate
+        elif isinstance(snippet, (dict, list)):
+            snippet_str = json.dumps(snippet, indent=2)
+        else:
+            snippet_str = str(snippet)
+    except Exception:
+        snippet_str = str(snippet)
+
+    return f"\n```json\n{snippet_str}\n```\n"
+
+
 def _severity_emoji(severity: str) -> str:
     """
     Convert severity level to emoji.
@@ -125,11 +149,33 @@ def format_critical_report(data: Dict) -> str:
 
         # Issues section
         md += "### **Issues Found:**\n\n"
-        if not issues:
+        if not critical_issues:
             md += "✅ No critical issues found\n\n"
         else:
-            for issue in issues:
-                md += f"- {issue}\n"
+            for idx, issue_obj in enumerate(critical_issues, 1):
+                # Get issue summary (brief description)
+                issue_summary = issue_obj.get('issue', '')
+                details = issue_obj.get('details', {})
+
+                if details:
+                    # Structured format with collapsible details
+                    md += f"**{idx}. {issue_summary}**\n\n"
+                    md += "<details>\n"
+                    md += "<summary><i>🔍 Click to see detailed analysis</i></summary>\n\n"
+
+                    if details.get('what_descriptor_shows'):
+                        md += f"**What descriptor shows:** {details['what_descriptor_shows']}\n\n"
+                    if details.get('what_actually_happens'):
+                        md += f"**What actually happens:** {details['what_actually_happens']}\n\n"
+                    if details.get('why_critical'):
+                        md += f"**Why this is critical:** {details['why_critical']}\n\n"
+                    if details.get('evidence'):
+                        md += f"**Evidence:** {details['evidence']}\n\n"
+
+                    md += "</details>\n\n"
+                else:
+                    # Fallback to simple format for backward compatibility
+                    md += f"- {issue_summary}\n"
             md += "\n"
 
         md += "---\n\n"
@@ -154,6 +200,10 @@ def format_critical_report(data: Dict) -> str:
                 description = fix.get('description', '')
                 md += f"- **{title}:** {description}\n"
 
+                code_snippet = fix.get('code_snippet')
+                if code_snippet:
+                    md += _format_code_snippet(code_snippet)
+
         # Spec limitations
         if recs.get('spec_limitations'):
             for lim in recs['spec_limitations']:
@@ -174,7 +224,30 @@ def format_critical_report(data: Dict) -> str:
             for opt in recs['optional_improvements']:
                 title = opt.get('title', 'Improvement')
                 description = opt.get('description', '')
-                md += f"- **(Optional) {title}:** {description}\n"
+                # Avoid double "Optional" if the title already includes it
+                prefix = "(Optional) "
+                if title.lower().startswith('optional'):
+                    prefix = ""
+                md += f"- **{prefix}{title}:** {description}\n"
+
+                code_snippet = opt.get('code_snippet')
+                if code_snippet:
+                    md += _format_code_snippet(code_snippet)
+
+        # Additional suggested snippets for optional improvements (if provided)
+        optional_snippets = recs.get('suggested_code_snippets_for_optional_improvements') or []
+        if optional_snippets:
+            md += "\n**Suggested code snippets for optional improvements:**\n\n"
+            for snippet in optional_snippets:
+                desc = snippet.get('description', 'Optional improvement')
+                md += f"- {desc}\n"
+
+                for key, value in snippet.items():
+                    if key == 'description':
+                        continue
+                    label = key.replace('_', ' ').title()
+                    md += f"  - {label}:\n"
+                    md += _format_code_snippet(value)
 
         md += "\n"
         return md
@@ -279,9 +352,29 @@ def _format_critical_issues_section(critical_issues: List[Dict]) -> str:
     if not critical_issues:
         md += "**✅ No critical issues found**\n\n"
     else:
-        for issue_obj in critical_issues:
-            issue = issue_obj.get('issue', '')
-            md += f"- {issue}\n"
+        for idx, issue_obj in enumerate(critical_issues, 1):
+            issue_summary = issue_obj.get('issue', '')
+            details = issue_obj.get('details', {})
+
+            if details:
+                # Structured format with collapsible details
+                md += f"**{idx}. {issue_summary}**\n\n"
+                md += "<details>\n"
+                md += "<summary><i>🔍 Click to see detailed analysis</i></summary>\n\n"
+
+                if details.get('what_descriptor_shows'):
+                    md += f"**What descriptor shows:** {details['what_descriptor_shows']}\n\n"
+                if details.get('what_actually_happens'):
+                    md += f"**What actually happens:** {details['what_actually_happens']}\n\n"
+                if details.get('why_critical'):
+                    md += f"**Why this is critical:** {details['why_critical']}\n\n"
+                if details.get('evidence'):
+                    md += f"**Evidence:** {details['evidence']}\n\n"
+
+                md += "</details>\n\n"
+            else:
+                # Fallback to simple format for backward compatibility
+                md += f"- {issue_summary}\n"
         md += "\n"
 
     return md
@@ -352,7 +445,18 @@ def _format_transaction_samples(samples: List[Dict]) -> str:
     md = "### 5️⃣ Transaction Samples - What Users See\n\n"
 
     if not samples:
-        md += "**No transaction samples available for analysis.**\n\n"
+        md += "⚠️ **Warning: No Historical Transactions Found**\n\n"
+        md += "This section is based ONLY on static source code review without real transaction data.\n\n"
+        md += "**Impact:** The analysis cannot verify:\n"
+        md += "- Actual on-chain behavior and token flows\n"
+        md += "- Real-world parameter values and edge cases\n"
+        md += "- Event emissions and receipt logs\n"
+        md += "- Integration with other contracts\n\n"
+        md += "**Recommendations:**\n"
+        md += "1. Increase the `LOOKBACK_DAYS` environment variable to search a longer time period\n"
+        md += "2. Provide manual sample transactions for this selector to enable dynamic analysis\n"
+        md += "3. Verify this function is actually being used in production\n"
+        md += "4. If this is a new/unused function, consider removing it from the ERC-7730 file until it's actively used\n\n"
         return md
 
     for i, sample in enumerate(samples, 1):
@@ -438,6 +542,10 @@ def _format_overall_assessment(assessment: Dict, recommendations: Dict) -> str:
             description = fix.get('description', '')
             md += f"- **Fix:** {title} - {description}\n"
 
+            code_snippet = fix.get('code_snippet')
+            if code_snippet:
+                md += _format_code_snippet(code_snippet)
+
         # Spec limitations
         for lim in spec_limitations:
             param = lim.get('parameter', 'Parameter')
@@ -448,7 +556,28 @@ def _format_overall_assessment(assessment: Dict, recommendations: Dict) -> str:
         for opt in optional_improvements:
             title = opt.get('title', 'Improvement')
             description = opt.get('description', '')
-            md += f"- **(Optional):** {title} - {description}\n"
+            prefix = "(Optional):"
+            if title.lower().startswith('optional'):
+                prefix = "(Optional)"
+            md += f"- **{prefix}** {title} - {description}\n"
+
+            code_snippet = opt.get('code_snippet')
+            if code_snippet:
+                md += _format_code_snippet(code_snippet)
+
+        optional_snippets = recommendations.get('suggested_code_snippets_for_optional_improvements') or []
+        if optional_snippets:
+            md += "\n**Suggested code snippets for optional improvements:**\n\n"
+            for snippet in optional_snippets:
+                desc = snippet.get('description', 'Optional improvement')
+                md += f"- {desc}\n"
+
+                for key, value in snippet.items():
+                    if key == 'description':
+                        continue
+                    label = key.replace('_', ' ').title()
+                    md += f"  - {label}:\n"
+                    md += _format_code_snippet(value)
 
         md += "\n"
 

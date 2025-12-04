@@ -20,11 +20,12 @@
         "description": "Path applies to the current ERC-7730 file (after merging with includes)",
         "value_location": "Values can be found in the merged ERC-7730 file itself",
         "examples": [
-          "$.metadata.enums.interestRateMode - refers to enum definition",
-          "$.metadata.constants.addressAsEth - refers to constant definition",
+          "$.metadata.enums.interestRateMode - refers to enum definition (value→label mappings)",
+          "$.metadata.constants.addressAsEth - refers to constant value (sentinel addresses, fixed values)",
           "$.display.definitions.tokenAmount - refers to field definition"
         ],
-        "note": "Used for $ref references to definitions, constants, and enums"
+        "note": "Used for $ref references to definitions, constants, and enums. PREFER $.metadata.enums.* for enum mappings, $.metadata.constants.* for constant values.",
+        "best_practice": "Enum mappings (0→'Stable', 1→'Variable') belong in $.metadata.enums.*, not $.metadata.constants.*"
       },
       "@": {
         "description": "Path applies to the container of the structured data to be signed (the transaction)",
@@ -326,12 +327,12 @@
       "notes": "Enums can be static (object with key-value pairs) OR dynamic (URL string returning JSON)",
       "examples": [
         {
-          "description": "Reference to constants",
+          "description": "Reference to enums",
           "code": {
             "path": "_swapType",
             "format": "enum",
             "params": {
-              "$ref": "$.metadata.constants.swapTypes"
+              "$ref": "$.metadata.enums.swapTypes"
             }
           }
         },
@@ -819,7 +820,7 @@
       "example": "02:17:30 (value=8250)"
     },
     "unit": {
-      "description": "Value converted to float using decimals, displayed with unit. Optional SI prefix for scientific representation",
+      "description": "Value converted to float using decimals (value / 10^decimals), and displayed appending the corresponding unit. Optional SI prefix for scientific representation",
       "parameters": {
         "base": "Symbol of the base unit (SI unit or symbols like '%', 'bps')",
         "decimals": "Number of decimals in integer representation (defaults to 0)",
@@ -832,11 +833,12 @@
       }
     },
     "enum": {
-      "description": "Value converted using referenced constant enumeration values",
+      "description": "Value converted using referenced enumeration values",
       "parameters": {
-        "$ref": "Internal path (starting with '$.' root) to enumerations in metadata.constants"
+        "$ref": "Internal path (starting with '$.' root) to enumerations. PREFER $.metadata.enums.* for enum mappings (value→label). $.metadata.constants.* is also valid but $.metadata.enums.* is the standard location for enum definitions."
       },
-      "example": "$ref to $.metadata.constants.myEnum"
+      "example": "$ref to $.metadata.enums.myEnum (preferred) or $.metadata.constants.myEnum (also valid)",
+      "best_practice": "Use $.metadata.enums.* for enum mappings, $.metadata.constants.* for constant values (addresses, sentinel values)"
     }
   },
   "string_formats": {

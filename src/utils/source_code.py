@@ -1101,8 +1101,59 @@ class SourceCodeExtractor:
 
         return result
 
+    def _struct_to_tuple(self, struct_def: str) -> Optional[str]:
+        """
+        Convert a struct definition to its tuple representation.
+
+        Example:
+            struct SwapDescription {
+                address srcToken;
+                address dstToken;
+                uint256 amount;
+            }
+
+        Returns: "(address,address,uint256)"
+
+        Args:
+            struct_def: Struct definition string
+
+        Returns:
+            Tuple representation or None if parsing fails
+        """
+        try:
+            # Extract fields from struct body
+            match = re.search(r'\{([^}]+)\}', struct_def)
+            if not match:
+                return None
+
+            body = match.group(1)
+
+            # Extract field types (first token before semicolon on each line)
+            types = []
+            for line in body.split(';'):
+                line = line.strip()
+                if not line:
+                    continue
+                # Split by whitespace and take first token (the type)
+                tokens = line.split()
+                if tokens:
+                    field_type = tokens[0]
+                    types.append(field_type)
+
+            if not types:
+                return None
+
+            return f"({','.join(types)})"
+        except Exception as e:
+            logger.debug(f"Failed to parse struct: {e}")
+            return None
+
     @staticmethod
-    def _normalize_signature_for_matching(signature: str) -> str:
+    def _normalize_signature_for_matching(
+        signature: str,
+        custom_type_mapping: Optional[Dict[str, str]] = None,
+        struct_type_mapping: Optional[Dict[str, str]] = None
+    ) -> str:
         """
         Normalize a function signature to just function name and parameter types for matching.
 
@@ -1110,13 +1161,23 @@ class SourceCodeExtractor:
         - "approve(uint256 proposalId, uint256 index)" -> "approve(uint256,uint256)"
         - "approve(uint256,uint256)" -> "approve(uint256,uint256)"
         - "transfer(address memory to, uint256 amount)" -> "transfer(address,uint256)"
+        - "swap(Address dex, uint256 amount)" -> "swap(uint256,uint256)" (if Address maps to uint256)
+        - "swap(SwapDescription desc)" -> "swap((address,address,uint256))" (if struct is defined)
 
         Args:
             signature: Function signature with or without parameter names
+            custom_type_mapping: Optional dict mapping custom type names to their underlying types
+                                 (e.g., {'Address': 'uint256', 'TakerTraits': 'uint256'})
+            struct_type_mapping: Optional dict mapping struct names to their tuple representations
+                                (e.g., {'SwapDescription': '(address,address,uint256)'})
 
         Returns:
-            Normalized signature with only types
+            Normalized signature with only types, custom types and structs resolved
         """
+        if custom_type_mapping is None:
+            custom_type_mapping = {}
+        if struct_type_mapping is None:
+            struct_type_mapping = {}
         if '(' not in signature or ')' not in signature:
             return signature
 
@@ -1126,22 +1187,87 @@ class SourceCodeExtractor:
         if not params_str.strip():
             return f"{func_name}()"
 
-        # Split parameters and extract only the type (first token)
-        params = params_str.split(',')
+        # Split parameters by comma, but respect parentheses for tuple types
+        params = []
+        current_param = []
+        paren_depth = 0
+
+        for char in params_str:
+            if char == '(':
+                paren_depth += 1
+                current_param.append(char)
+            elif char == ')':
+                paren_depth -= 1
+                current_param.append(char)
+            elif char == ',' and paren_depth == 0:
+                # Top-level comma - parameter separator
+                params.append(''.join(current_param).strip())
+                current_param = []
+            else:
+                current_param.append(char)
+
+        # Don't forget the last parameter
+        if current_param:
+            params.append(''.join(current_param).strip())
+
+        # Extract only the type (first token) from each parameter
         types = []
         for param in params:
-            param = param.strip()
             if not param:
                 continue
-            # Remove storage location keywords and parameter names
-            # Split by whitespace and take the first token (the type)
-            tokens = param.split()
-            if tokens:
-                param_type = tokens[0]
-                # Handle array types: might be split like "uint256 [ ]" or "uint256[]"
-                if len(tokens) > 1 and tokens[1].startswith('['):
-                    param_type += tokens[1]
-                types.append(param_type)
+            # For tuple types like "(address,address,uint256) paramName", split and take just the tuple
+            if param.startswith('('):
+                # Find the closing parenthesis
+                paren_depth = 0
+                tuple_end = 0
+                for i, char in enumerate(param):
+                    if char == '(':
+                        paren_depth += 1
+                    elif char == ')':
+                        paren_depth -= 1
+                        if paren_depth == 0:
+                            tuple_end = i + 1
+                            break
+                # Extract just the tuple type (including closing paren)
+                tuple_type = param[:tuple_end]
+                # Check if there's an array bracket after the tuple
+                remaining = param[tuple_end:].strip()
+                if remaining.startswith('['):
+                    # Handle tuple arrays like "(uint256,uint256)[]"
+                    bracket_end = remaining.find(']') + 1
+                    tuple_type += remaining[:bracket_end]
+                types.append(tuple_type)
+            else:
+                # Remove storage location keywords and parameter names
+                # Split by whitespace and take the first token (the type)
+                tokens = param.split()
+                if tokens:
+                    param_type = tokens[0]
+                    # Handle array types: might be split like "uint256 [ ]" or "uint256[]"
+                    if len(tokens) > 1 and tokens[1].startswith('['):
+                        param_type += tokens[1]
+
+                    # Resolve custom types to their underlying types
+                    # Handle arrays: "CustomType[]" -> resolve CustomType, keep []
+                    base_type = param_type
+                    array_suffix = ''
+                    if '[' in param_type:
+                        bracket_pos = param_type.index('[')
+                        base_type = param_type[:bracket_pos]
+                        array_suffix = param_type[bracket_pos:]
+
+                    # Check if this is a custom type and resolve it
+                    if base_type in custom_type_mapping:
+                        resolved_type = custom_type_mapping[base_type]
+                        param_type = resolved_type + array_suffix
+                        logger.debug(f"    Resolved custom type: {base_type}{array_suffix} -> {param_type}")
+                    # Check if this is a struct type and resolve it to tuple
+                    elif base_type in struct_type_mapping:
+                        resolved_type = struct_type_mapping[base_type]
+                        param_type = resolved_type + array_suffix
+                        logger.debug(f"    Resolved struct type: {base_type}{array_suffix} -> {param_type}")
+
+                    types.append(param_type)
 
         return f"{func_name}({','.join(types)})"
 
@@ -1179,11 +1305,35 @@ class SourceCodeExtractor:
         # Find the function
         target_function = None
 
+        # Get custom types mapping for resolving type aliases
+        custom_types = extracted_code.get('custom_types', {})
+        custom_type_mapping = {}
+        for type_name, type_decl in custom_types.items():
+            # Extract base type from "type TypeName is BaseType;"
+            match = re.search(r'type\s+\w+\s+is\s+([^;]+);', type_decl)
+            if match:
+                base_type = match.group(1).strip()
+                custom_type_mapping[type_name] = base_type
+                logger.debug(f"  Custom type mapping: {type_name} -> {base_type}")
+
+        # Get struct mapping for resolving struct types to tuples
+        structs = extracted_code.get('structs', {})
+        struct_type_mapping = {}
+        for struct_name, struct_def in structs.items():
+            # Extract tuple representation from struct
+            tuple_repr = self._struct_to_tuple(struct_def)
+            if tuple_repr:
+                struct_type_mapping[struct_name] = tuple_repr
+                logger.debug(f"  Struct type mapping: {struct_name} -> {tuple_repr}")
+
         # If signature is provided, normalize it for comparison
         normalized_target_sig = None
         if function_signature:
-            normalized_target_sig = self._normalize_signature_for_matching(function_signature)
+            normalized_target_sig = self._normalize_signature_for_matching(function_signature, custom_type_mapping, struct_type_mapping)
             logger.info(f"  Looking for function with normalized signature: {normalized_target_sig}")
+
+        # Track all candidates for better error reporting
+        candidates = []
 
         for func_data in extracted_code['functions'].values():
             if func_data['name'] == function_name and func_data['visibility'] in ['public', 'external']:
@@ -1191,8 +1341,9 @@ class SourceCodeExtractor:
                 if normalized_target_sig:
                     # Normalize the extracted signature for comparison
                     # The extracted signature has parameter names, so we need to normalize it
-                    extracted_sig = self._normalize_signature_for_matching(func_data['signature'])
-                    logger.debug(f"    Comparing: {extracted_sig} vs {normalized_target_sig}")
+                    extracted_sig = self._normalize_signature_for_matching(func_data['signature'], custom_type_mapping, struct_type_mapping)
+                    candidates.append((func_data['signature'], extracted_sig))
+                    logger.info(f"    Comparing: {extracted_sig} vs {normalized_target_sig}")
                     if extracted_sig == normalized_target_sig:
                         target_function = func_data
                         logger.info(f"  ✓ Matched function by signature: {func_data['signature']} -> {extracted_sig}")
@@ -1204,7 +1355,14 @@ class SourceCodeExtractor:
                     break
 
         if not target_function:
-            logger.warning(f"Function {function_name} not found")
+            if candidates:
+                logger.warning(f"Function {function_name} not found - signature mismatch")
+                logger.warning(f"  Target signature: {normalized_target_sig}")
+                logger.warning(f"  Found {len(candidates)} candidate(s) with same name but different signatures:")
+                for orig_sig, norm_sig in candidates:
+                    logger.warning(f"    - {orig_sig} -> {norm_sig}")
+            else:
+                logger.warning(f"Function {function_name} not found - no matching name or visibility")
             return {
                 'function': None,
                 'custom_types': [],

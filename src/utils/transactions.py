@@ -25,12 +25,12 @@ logger = logging.getLogger(__name__)
 # Blockscout API endpoints for chains that don't use Etherscan
 # Note: These use Blockscout v2 API with different structure than Etherscan
 BLOCKSCOUT_URLS = {
-    56: 'https://blockscout.com/bnb/mainnet',         # BNB Smart Chain Mainnet
-    97: 'https://blockscout.com/bnb/testnet',         # BNB Smart Chain Testnet
-    100: 'https://gnosis.blockscout.com',             # Gnosis Chain
-    137: 'https://polygon.blockscout.com',            # Polygon PoS
-    42220: 'https://celo.blockscout.com',             # Celo Mainnet
-    44787: 'https://celo-alfajores.blockscout.com',   # Celo Alfajores Testnet
+        56: "https://api.bscscan.com/api",           # BNB Smart Chain
+        97: "https://api-testnet.bscscan.com/api",   # BNB Testnet
+        100: "https://gnosis.blockscout.com/api",    # Gnosis Chain
+        137: "https://polygon.blockscout.com/api",   # Polygon PoS (alternative)
+        42220: "https://explorer.celo.org/api",      # Celo Mainnet
+        44787: "https://explorer.celo.org/alfajores/api"  # Celo Alfajores Testnet
     # Add more as needed
 }
 
@@ -107,7 +107,7 @@ class TransactionFetcher:
 
         try:
             base_url = self._get_api_base_url(chain_id, use_blockscout)
-            response = requests.get(base_url, params=params)
+            response = requests.get(base_url, params=params, timeout=10)
             response.raise_for_status()
             data = response.json()
 
@@ -136,7 +136,7 @@ class TransactionFetcher:
 
         try:
             base_url = BLOCKSCOUT_URLS[chain_id]
-            response = requests.get(f"{base_url}/api/v2/stats")
+            response = requests.get(f"{base_url}/api/v2/stats", timeout=10)
             response.raise_for_status()
             data = response.json()
             return data
@@ -178,9 +178,9 @@ class TransactionFetcher:
 
             for _ in range(max_pages):
                 if next_page_params:
-                    response = requests.get(url, params=next_page_params)
+                    response = requests.get(url, params=next_page_params, timeout=10)
                 else:
-                    response = requests.get(url, params=params)
+                    response = requests.get(url, params=params, timeout=10)
 
                 response.raise_for_status()
                 data = response.json()
@@ -260,7 +260,7 @@ class TransactionFetcher:
 
         try:
             base_url = self._get_api_base_url(chain_id, use_blockscout)
-            response = requests.get(base_url, params=params)
+            response = requests.get(base_url, params=params, timeout=10)
             response.raise_for_status()
             data = response.json()
 
@@ -430,7 +430,7 @@ class TransactionFetcher:
                     }
 
                     base_url = self._get_api_base_url(chain_id, False)
-                    response = requests.get(base_url, params=params)
+                    response = requests.get(base_url, params=params, timeout=10)
                     response.raise_for_status()
                     data = response.json()
 
@@ -836,7 +836,7 @@ class TransactionFetcher:
                 txs = None
                 for attempt in range(max_retries):
                     try:
-                        response = requests.get(base_url, params=params)
+                        response = requests.get(base_url, params=params, timeout=10)
                         response.raise_for_status()
                         data = response.json()
 
@@ -1020,7 +1020,7 @@ class TransactionFetcher:
             try:
                 base_url = BLOCKSCOUT_URLS[chain_id]
                 url = f"{base_url}/api/v2/transactions/{tx_hash}"
-                response = requests.get(url)
+                response = requests.get(url, timeout=10)
                 response.raise_for_status()
                 data = response.json()
 
@@ -1067,7 +1067,7 @@ class TransactionFetcher:
 
         try:
             base_url = self._get_api_base_url(chain_id, use_blockscout)
-            response = requests.get(base_url, params=params)
+            response = requests.get(base_url, params=params, timeout=10)
             response.raise_for_status()
             data = response.json()
 
@@ -1182,7 +1182,7 @@ class TransactionFetcher:
             }
 
             base_url = f"https://api.etherscan.io/v2/api?chainid={chain_id}"
-            response = requests.get(base_url, params=params)
+            response = requests.get(base_url, params=params, timeout=10)
             response.raise_for_status()
             data = response.json()
 
@@ -1244,7 +1244,7 @@ class TransactionFetcher:
             }
 
             base_url = f"https://api.etherscan.io/v2/api?chainid={chain_id}"
-            response = requests.get(base_url, params=params)
+            response = requests.get(base_url, params=params, timeout=10)
             response.raise_for_status()
             data = response.json()
 

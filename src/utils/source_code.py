@@ -1209,6 +1209,9 @@ class SourceCodeExtractor:
                                 field_type = nested_tuple
                     # else: keep field_type as-is (primitive or unknown type)
 
+                    # Normalize type aliases (uint -> uint256, int -> int256, etc.)
+                    field_type = SourceCodeExtractor._normalize_type_aliases(field_type)
+
                     types.append(field_type)
 
             if not types:
@@ -1218,6 +1221,43 @@ class SourceCodeExtractor:
         except Exception as e:
             logger.debug(f"Failed to parse struct: {e}")
             return None
+
+    @staticmethod
+    def _normalize_type_aliases(param_type: str) -> str:
+        """
+        Normalize Solidity type aliases to their canonical forms.
+
+        Solidity allows shorthand aliases:
+        - uint = uint256
+        - int = int256
+        - ufixed = ufixed128x18
+        - fixed = fixed128x18
+
+        Args:
+            param_type: Type string (may include array suffix)
+
+        Returns:
+            Normalized type string
+        """
+        # Handle arrays: uint[] -> normalize uint -> uint256[]
+        base_type = param_type
+        array_suffix = ''
+        if '[' in param_type:
+            bracket_pos = param_type.index('[')
+            base_type = param_type[:bracket_pos]
+            array_suffix = param_type[bracket_pos:]
+
+        # Normalize type aliases
+        if base_type == 'uint':
+            base_type = 'uint256'
+        elif base_type == 'int':
+            base_type = 'int256'
+        elif base_type == 'ufixed':
+            base_type = 'ufixed128x18'
+        elif base_type == 'fixed':
+            base_type = 'fixed128x18'
+
+        return base_type + array_suffix
 
     @staticmethod
     def _normalize_signature_for_matching(
@@ -1355,6 +1395,9 @@ class SourceCodeExtractor:
                     if resolved_type:
                         param_type = resolved_type + array_suffix
                     # else: keep param_type as-is (primitive or unknown type)
+
+                    # Normalize type aliases (uint -> uint256, int -> int256, etc.)
+                    param_type = SourceCodeExtractor._normalize_type_aliases(param_type)
 
                     types.append(param_type)
 

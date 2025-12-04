@@ -12,13 +12,7 @@ from openai import OpenAI
 
 logger = logging.getLogger(__name__)
 
-# Load ERC-7730 format specification from JSON
-def load_format_spec() -> Dict:
-    """Load ERC-7730 format specification from JSON file."""
-    spec_path = Path(__file__).parent / "audit_rules" / "erc7730_format_reference.json"
-    with open(spec_path, 'r') as f:
-        return json.load(f)
-
+# Load audit rules that are always used in full (not optimized)
 def load_validation_rules() -> Dict:
     """Load validation rules from JSON file."""
     rules_path = Path(__file__).parent / "audit_rules" / "validation_rules.json"
@@ -32,37 +26,29 @@ def load_critical_issues() -> Dict:
         return json.load(f)
 
 def load_recommendations() -> Dict:
-    """Load recommendations format from JSON file."""
+    """Load recommendations format guidelines from JSON file."""
     recs_path = Path(__file__).parent / "audit_rules" / "recommendations.json"
     with open(recs_path, 'r') as f:
         return json.load(f)
 
 def load_spec_limitations() -> Dict:
-    """Load spec limitations from JSON file."""
+    """Load spec limitations guidelines from JSON file."""
     spec_lim_path = Path(__file__).parent / "audit_rules" / "spec_limitations.json"
     with open(spec_lim_path, 'r') as f:
         return json.load(f)
 
 def load_display_issues() -> Dict:
-    """Load display issues from JSON file."""
+    """Load display issues guidelines from JSON file."""
     display_path = Path(__file__).parent / "audit_rules" / "display_issues.json"
     with open(display_path, 'r') as f:
         return json.load(f)
 
-# Cache all JSON files to avoid reloading on every call
-_FORMAT_SPEC = None
+# Cache these files to avoid reloading on every call
 _VALIDATION_RULES = None
 _CRITICAL_ISSUES = None
 _RECOMMENDATIONS = None
 _SPEC_LIMITATIONS = None
 _DISPLAY_ISSUES = None
-
-def get_format_spec() -> Dict:
-    """Get cached format specification."""
-    global _FORMAT_SPEC
-    if _FORMAT_SPEC is None:
-        _FORMAT_SPEC = load_format_spec()
-    return _FORMAT_SPEC
 
 def get_validation_rules() -> Dict:
     """Get cached validation rules."""
@@ -79,21 +65,21 @@ def get_critical_issues() -> Dict:
     return _CRITICAL_ISSUES
 
 def get_recommendations() -> Dict:
-    """Get cached recommendations format."""
+    """Get cached recommendations format guidelines."""
     global _RECOMMENDATIONS
     if _RECOMMENDATIONS is None:
         _RECOMMENDATIONS = load_recommendations()
     return _RECOMMENDATIONS
 
 def get_spec_limitations() -> Dict:
-    """Get cached spec limitations."""
+    """Get cached spec limitations guidelines."""
     global _SPEC_LIMITATIONS
     if _SPEC_LIMITATIONS is None:
         _SPEC_LIMITATIONS = load_spec_limitations()
     return _SPEC_LIMITATIONS
 
 def get_display_issues() -> Dict:
-    """Get cached display issues."""
+    """Get cached display issues guidelines."""
     global _DISPLAY_ISSUES
     if _DISPLAY_ISSUES is None:
         _DISPLAY_ISSUES = load_display_issues()
@@ -107,7 +93,7 @@ def generate_clear_signing_audit(
     function_signature: str,
     source_code: Dict = None,
     use_smart_referencing: bool = True
-) -> Tuple[str, str]:
+) -> Tuple[str, str, Dict]:
     """
     Use AI to generate a clear signing audit report comparing decoded transactions
     with ERC-7730 format definitions.
@@ -193,22 +179,21 @@ def generate_clear_signing_audit(
         else:
             erc7730_enums_section += "⚠️ **No enum definitions found in descriptor.** If any fields use `\"format\": \"enum\"`, the $ref will be broken.\n\n"
 
-        # Load audit rules (smart or full)
-        from .smart_rules import analyze_descriptor_features, load_relevant_rules, format_smart_rules_note
+        # Load optimized format specification (smart optimization applied here)
+        from .smart_rules import analyze_descriptor_features, load_optimized_format_spec, format_optimization_note
 
         descriptor_features = analyze_descriptor_features(erc7730_format)
-        rules_dict, metadata = load_relevant_rules(descriptor_features, use_smart_referencing)
+        format_spec, metadata = load_optimized_format_spec(descriptor_features, use_smart_referencing)
 
-        # Extract individual rule sets
-        format_spec = rules_dict.get('erc7730_format_reference.json', {})
-        validation_rules = rules_dict.get('validation_rules.json', {})
-        critical_issues = rules_dict.get('critical_issues.json', {})
-        recommendations = rules_dict.get('recommendations.json', {})
-        spec_limitations = rules_dict.get('spec_limitations.json', {})
-        display_issues = rules_dict.get('display_issues.json', {})
+        # Load audit rules directly (always used in full)
+        validation_rules = get_validation_rules()
+        critical_issues = get_critical_issues()
+        recommendations = get_recommendations()
+        spec_limitations = get_spec_limitations()
+        display_issues = get_display_issues()
 
-        # Format smart rules note for prompt
-        smart_rules_note = format_smart_rules_note(metadata)
+        # Format optimization note for prompt
+        optimization_note = format_optimization_note(metadata)
 
         # Prepare the prompt
         prompt = f"""You are a clear signing security auditor for ERC-7730 clear signing metadata. Your job is to ensure users see all CRITICAL information they need BEFORE signing.
@@ -219,11 +204,6 @@ ERC-7730 is a standard for displaying blockchain transaction parameters in human
 
 **Contract Languages Supported:**
 This analysis supports both Solidity and Vyper contracts. Vyper uses Python-like syntax with decorators (@external, @internal, @view, @payable) for function visibility, while Solidity uses keywords (public, external, internal, private). The core ERC-7730 validation logic is the same for both languages.
-
-You MUST produce TWO separate sections in your response:
-1. **FIRST REPORT**: CRITICALS ONLY (ultra-strict, terse) - for the mini report
-2. **SECOND REPORT**: Full detailed analysis - for the comprehensive report
-
 
 INPUTS:
 **Function:** {function_signature}
@@ -293,11 +273,9 @@ Use this specification to validate all format types, required/optional parameter
 
 ---
 
-{smart_rules_note}
+{optimization_note}
 
 ---
-
-FIRST REPORT: CRITICALS ONLY - BE ULTRA STRICT
 
 The complete criteria for CRITICAL issues are provided below in JSON format:
 
@@ -327,14 +305,35 @@ The complete validation rules are provided below in JSON format. These define wh
 - Review all `spec_limitations` - parameters that cannot be clear signed due to ERC-7730 limitations
 - When in doubt, DO NOT flag as critical
 
-**CRITICAL REQUIREMENTS:**
-1. **Array indexing validation**: When ERC-7730 uses array indexing, verify the index points to actual data relevant to the user (not sentinel values)
-2. **Can it be fixed?**: ONLY flag as CRITICAL if the issue EXISTS in function inputs AND can be displayed with ERC-7730 spec AND can be shown in human-readable format
-3. **Human readability**: Parameters that can ONLY be shown as incomprehensible raw data (packed bits, liquidity numbers, technical params) are NOT critical to hide
-4. **Slicing uint256 values**: When field paths use slice syntax (e.g., `[-20:]`, `[0:16]`):
-   - CRITICAL if slicing **financial amounts** (tokenAmount format, or names like: min*, max*, balance, price, amount, value, fee, debt) → values can exceed slice size, showing incorrect amounts
-   - NOT CRITICAL if slicing **packed address types** where source code shows custom types (`type X is uint256`) with flags/metadata in high bits → intentional extraction
-   - **Be consistent**: similar patterns across different functions must receive the same assessment unless there's material contextual difference
+---
+
+**RECOMMENDATIONS FORMAT GUIDELINES:**
+
+The complete recommendations format guidelines are provided below in JSON format:
+
+```json
+{json.dumps(recommendations, indent=2)}
+```
+
+---
+
+**SPEC LIMITATIONS DETECTION:**
+
+The complete spec limitations detection guidelines are provided below in JSON format:
+
+```json
+{json.dumps(spec_limitations, indent=2)}
+```
+
+---
+
+**DISPLAY ISSUES DETECTION:**
+
+The complete display issues detection guidelines are provided below in JSON format:
+
+```json
+{json.dumps(display_issues, indent=2)}
+```
 
 ---
 
@@ -350,15 +349,26 @@ You MUST output a SINGLE JSON object (no markdown, no extra text before or after
 
   "critical_issues": [
     {{
-      "issue": "Description of critical issue (concise, no 'CRITICAL:' prefix)"
+      "issue": "Brief 1-2 sentence summary of what's wrong and user impact",
+      "details": {{
+        "what_descriptor_shows": "What users currently see in the descriptor",
+        "what_actually_happens": "What actually happens in the contract code",
+        "why_critical": "Why this misleads users or causes loss",
+        "evidence": "Code snippets, transaction examples, or field paths that prove this"
+      }}
     }}
   ],
 
   "recommendations": {{
     "fixes": [
       {{
-        "title": "Brief title",
-        "description": "Actionable fix description"
+        "title": "Brief title (e.g., 'Add msg.value display', 'Fix inverted token addresses')",
+        "description": "Human-readable explanation of what to change and why. Keep this concise (1-2 sentences). DO NOT embed JSON here.",
+        "code_snippet": {{
+          "field_to_add": {{"path": "fieldname", "label": "Label", "format": "formatType"}},
+          "OR_changes_to_make": {{"field": "amountOut", "change": "tokenPath from 'srcToken' to 'dstToken'"}},
+          "OR_full_example": {{"format": {{"fields": [...], "required": [...]}}}}
+        }}
       }}
     ],
     "spec_limitations": [
@@ -372,7 +382,8 @@ You MUST output a SINGLE JSON object (no markdown, no extra text before or after
     "optional_improvements": [
       {{
         "title": "Brief title",
-        "description": "Optional improvement description"
+        "description": "Optional improvement description (1-2 sentences)",
+        "code_snippet": {{"field_or_change": "descriptor JSON if applicable"}}
       }}
     ]
   }},
@@ -431,14 +442,24 @@ You MUST output a SINGLE JSON object (no markdown, no extra text before or after
 
 **IMPORTANT RULES:**
 1. Output ONLY the JSON (no markdown formatting, no extra text)
-2. Critical issues: DO NOT include spec limitations here - only fixable issues
-3. Spec limitations: Always include in recommendations.spec_limitations with all 3 parts (parameter, explanation, impact)
-4. Missing parameters: Only list if risk is medium/high AND not in excluded array
-5. Transaction samples: {f"Empty array (no transactions available)" if not decoded_transactions else f"Analyze up to 3 transactions"}
-6. Use actual values from the descriptor and transactions provided above
+2. **Critical issues**:
+   - DO NOT include spec limitations here - only fixable issues
+   - Each issue must be DETAILED: what's wrong + why critical + supporting evidence
+   - Include examples: code snippets, field paths, transaction hashes, specific values
+   - Make it easy for a reviewer to understand without reading the whole descriptor
+3. **Recommendations.fixes**:
+   - Split content into TWO fields: "description" (human explanation) and "code_snippet" (JSON to add/modify)
+   - description: Keep concise (1-2 sentences), explain WHAT and WHY, NO embedded JSON
+   - code_snippet: Put the actual descriptor JSON here for proper code block formatting
+   - Example: description="Add a field to display the recipient address", code_snippet={{"path":"recipient","label":"Recipient","format":"addressName"}}
+4. **Spec limitations**: Always include in recommendations.spec_limitations with all 4 parts (parameter, explanation, impact, detected_pattern)
+5. **Missing parameters**: Only list if risk is medium/high AND not in excluded array
+6. **Transaction samples**: {f"Empty array (no transactions available)" if not decoded_transactions else f"Analyze up to 3 transactions"}
+7. Use actual values from the descriptor and transactions provided above
 
 **VALIDATION:**
-- critical_issues array: Each issue is a plain description, no "CRITICAL:" prefix
+- critical_issues array: DETAILED descriptions with evidence, no "CRITICAL:" prefix
+- recommendations.fixes: Must include exact descriptor code changes to make
 - recommendations.spec_limitations: Must include detected_pattern when found in source code
 - transaction_samples: Must include transaction_hash from the input transaction data, and decoded_parameters should match the actual decoded_input from transactions
 - Be consistent: Same patterns across functions get same assessment
@@ -446,12 +467,13 @@ You MUST output a SINGLE JSON object (no markdown, no extra text before or after
 {f"⚠️ **NO HISTORICAL TRANSACTIONS FOUND** - This selector has no transaction history. Set transaction_samples to empty array and add display issue noting this." if not decoded_transactions else ""}"""
 
         response = client.chat.completions.create(
-            model="gpt-5-mini-2025-08-07",
+            model="gpt-5-mini",
             messages=[{"role": "user", "content": prompt}],
             response_format={"type": "json_object"}
         )
 
         json_response = response.choices[0].message.content
+        logger.info(f"AI raw response {json_response}")
         logger.info(f"Successfully received JSON response for {selector}")
 
         # Parse JSON response
@@ -468,9 +490,10 @@ You MUST output a SINGLE JSON object (no markdown, no extra text before or after
         critical_report, detailed_report = format_audit_reports(report_data)
         logger.info(f"Successfully formatted reports: Critical ({len(critical_report)} chars), Detailed ({len(detailed_report)} chars)")
 
-        return critical_report, detailed_report
+        # Return both markdown strings and raw structured JSON
+        return critical_report, detailed_report, report_data
 
     except Exception as e:
         logger.error(f"Failed to generate audit report: {e}")
         error_msg = f"Error generating audit: {str(e)}"
-        return error_msg, error_msg
+        return error_msg, error_msg, {}

@@ -8,6 +8,30 @@
 
   "rule": "You MUST be EXTREMELY conservative. Only flag if a normal user would be shocked by what actually happens.",
 
+  "critical_requirements": [
+    {
+      "requirement": "Array indexing validation",
+      "description": "When ERC-7730 uses array indexing, verify the index points to actual data relevant to the user (not sentinel values)"
+    },
+    {
+      "requirement": "Can it be fixed?",
+      "description": "ONLY flag as CRITICAL if the issue EXISTS in function inputs AND can be displayed with ERC-7730 spec AND can be shown in human-readable format"
+    },
+    {
+      "requirement": "Human readability",
+      "description": "Parameters that can ONLY be shown as incomprehensible raw data (packed bits, liquidity numbers, technical params) are NOT critical to hide"
+    },
+    {
+      "requirement": "Slicing uint256 values",
+      "description": "When field paths use slice syntax (e.g., `[-20:]`, `[0:16]`):",
+      "rules": [
+        "CRITICAL if slicing **financial amounts** (tokenAmount format, or names like: min*, max*, balance, price, amount, value, fee, debt) → values can exceed slice size, showing incorrect amounts",
+        "NOT CRITICAL if slicing **packed address types** where source code shows custom types (`type X is uint256`) with flags/metadata in high bits → intentional extraction",
+        "**Be consistent**: similar patterns across different functions must receive the same assessment unless there's material contextual difference"
+      ]
+    }
+  ],
+
   "do_NOT_flag_as_critical": {
     "title": "CRITICAL: What NOT to flag as missing fields",
     "rule": "If displaying a parameter would NOT help users understand or verify the transaction, do NOT flag it as critical",
@@ -33,6 +57,22 @@
         "parameter": "Technical parameters (liquidity, sqrtPriceX96, tick, feeGrowthGlobal0X128)",
         "why_NOT_critical": "Users cannot verify correctness without deep protocol knowledge - raw numbers are meaningless",
         "action": "Add to spec limitations, NOT critical issues"
+      },
+      {
+        "parameter": "Concatenated bytes with separate length array (data + dataLengths)",
+        "what_it_controls": "Multiple calldata blobs concatenated together, sliced using separate lengths array",
+        "source_code_pattern": "data.slice(position, dataLengths[i]) - splits concatenated blob dynamically",
+        "why_NOT_critical": "ERC-7730 cannot dynamically slice a concatenated bytes blob using another array. The 'format: calldata' expects discrete per-transaction data, not a blob requiring parsing. Displaying raw concatenated bytes is INCOMPREHENSIBLE.",
+        "action": "Add to spec limitations, NOT critical issues. Do NOT propose format: calldata on the concatenated blob.",
+        "example": "executeHotfix(values[], destinations[], data, dataLengths[]) where data contains all calldatas joined and must be split per dataLengths[i]"
+      },
+      {
+        "parameter": "Role/context information not in function parameters",
+        "what_it_controls": "Function operates on a specific role (e.g., Validator, Attestation) or has implicit behavior (e.g., sets as default) but this information is in the function name/selector, not in parameters",
+        "source_code_pattern": "Function name like authorizeValidatorSigner, authorizeAttestationSigner, setIndexedSigner with hardcoded role constants",
+        "why_NOT_critical": "ERC-7730 cannot inject contextual metadata that isn't in the function inputs. Adding literal value fields ({value: 'Validator', label: 'Role'}) creates confusing separate hardware wallet screens showing standalone text. The intent field can partially address this (e.g., 'Authorize Validator') within the 20-character limit, but cannot fully convey complex multi-part information like 'authorizes validator AND sets as default'.",
+        "action": "Add to spec limitations, NOT critical issues. Do NOT recommend adding literal value fields for role/context - they create poor UX on hardware wallets.",
+        "example": "authorizeValidatorSigner(address signer, ...) where 'Validator' role is implicit in function name, or setIndexedSigner() where 'sets as default' is implicit behavior"
       }
     ],
     "key_principle": "Only flag as CRITICAL if showing the parameter would help users UNDERSTAND and VERIFY what they're signing. If the value would be INCOMPREHENSIBLE raw hex/numbers, it's NOT critical to hide it."
@@ -475,7 +515,11 @@
       },
       "issue_format": {
         "issue_template": "Intent/Label exceeds 20 character limit",
-        "include_in_message": "The specific intent or label that's too long with actual character count"
+        "include_in_message": "The specific intent or label that's too long with actual character count AND a proposed shorter alternative ≤20 characters"
+      },
+      "recommendation_format": {
+        "must_include": "Exact descriptor JSON with the shorter intent/label (VERIFY it's ≤20 chars)",
+        "character_count_validation": "Count characters in your proposed fix before including it. If your fix exceeds 20 chars, DO NOT recommend it."
       },
       "severity": "critical"
     },

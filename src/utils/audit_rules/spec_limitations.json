@@ -4,6 +4,21 @@
   "description": "Common spec limitations to detect when certain parameters cannot be clear signed with current ERC-7730 spec",
   "version": "1.0.0",
 
+  "when_to_flag_as_spec_limitation": [
+    "Bitpacked parameters (bitwise operations in source code)",
+    "Output tokens determined by pool/DEX (not in function inputs)",
+    "Deeply nested arrays beyond ERC-7730 capabilities",
+    "Dynamic/computed data not available in inputs",
+    "Concatenated bytes with separate length array requiring dynamic slicing"
+  ],
+
+  "required_information": [
+    "Parameter name",
+    "Why it cannot be signed (specific technical reason)",
+    "Impact on users (what information they're missing)",
+    "Detected code pattern (evidence from source code)"
+  ],
+
   "common_spec_limitations": [
     {
       "id": 1,
@@ -101,7 +116,36 @@
         "explanation": "This function executes arbitrary encoded calldata. While the high-level function can be clear signed, the nested calls within the calldata parameter {calldata_param_name} would require recursive ERC-7730 descriptors for each possible nested function.",
         "why_matters": "**Why this matters:** This is acceptable for generic execution functions where users understand they're batching multiple operations. Each nested operation should ideally have its own ERC-7730 descriptor if it's a known function."
       }
-    }
+    },
+    {
+      "id": 6,
+    "type": "Role/context information not in function parameters",
+    "description": "Function behavior varies by role/context (e.g., validator vs attestation signer) but the role is hardcoded in the function or determined by the function selector itself, not passed as a parameter",
+    "why_limitation": "ERC-7730 can only display parameters from the function inputs. It cannot inject contextual information about which role a function operates on when that role is implicit in the function name/selector",
+    "examples": [
+      "authorizeValidatorSigner() - role is 'Validator' but not a parameter",
+      "authorizeAttestationSigner() - role is 'Attestation' but not a parameter",
+      "setIndexedSigner() - 'sets as default' behavior is implicit, not a boolean parameter"
+    ],
+    "source_code_patterns": [
+      "Function name contains role information (authorizeValidatorSigner, authorizeAttestationSigner)",
+      "setIndexedSigner or similar naming indicating default/indexed behavior",
+      "Hardcoded role constants passed to internal functions"
+    ],
+    "why_literal_fields_dont_work": {
+      "problem": "Adding literal value fields like {value: 'Validator', label: 'Role', format: 'raw'} creates separate hardware wallet screens showing standalone text",
+      "user_experience": "User sees multiple screens: 'Role: Validator', 'Action: Set as default' - confusing and disconnected from the actual signer being authorized",
+      "not_a_fix": "This doesn't provide clear context in a hardware wallet UX - just adds noise screens"
+    },
+    "output_format": {
+      "title": "**Role and default/indexed behavior cannot be clearly represented:**",
+      "explanation": "This function authorizes a signer for the {role_name} role and sets it as the account's default/indexed {role_name} signer. However, the role and defaulting behavior are implicit in the function itself (not parameters), and ERC-7730 cannot inject contextual metadata that flows naturally on hardware wallet displays. Adding literal 'Role' and 'Action' fields would create separate, disconnected screens showing standalone text ('Role: Validator', 'Action: Set as default'), which is confusing rather than helpful.",
+      "why_matters": "**Why this matters:** Users signing this transaction may not understand that (1) this authorizes a {role_name} signing key specifically, and (2) this signer will be set as their account's default {role_name} signer. The intent field can partially address this (e.g., 'Authorize Validator') but cannot fully convey the defaulting behavior within the 20-character limit.",
+      "detected_pattern": "**Detected pattern:** Function name is `{function_name}`, which hardcodes the role. Source code shows calls to setIndexedSigner or equivalent, indicating default signer behavior."
+    },
+    "example_output": "**Role and default/indexed behavior cannot be clearly represented:** This function authorizes a signer for the Validator role and sets it as the account's default/indexed validator signer. However, the role and defaulting behavior are implicit in the function itself (not parameters), and ERC-7730 cannot inject contextual metadata that flows naturally on hardware wallet displays. Adding literal 'Role' and 'Action' fields would create separate, disconnected screens showing standalone text ('Role: Validator', 'Action: Set as default'), which is confusing rather than helpful.\n\n**Why this matters:** Users signing this transaction may not understand that (1) this authorizes a Validator signing key specifically, and (2) this signer will be set as their account's default validator signer. The intent field can partially address this (e.g., 'Authorize Validator') but cannot fully convey the defaulting behavior within the 20-character limit.\n\n**Detected pattern:** Function name is `authorizeValidatorSigner`, which hardcodes the role. Source code shows calls to setIndexedSigner(signer, ValidatorSigner), indicating default signer behavior."
+  }
+
   ],
 
   "formatting_requirements": {

@@ -1,40 +1,31 @@
 """
-Smart rule referencing for ERC-7730 audits.
+Smart format specification optimizer for ERC-7730 audits.
 
-Dynamically selects relevant rule sections based on descriptor features
-to reduce token usage while maintaining comprehensive coverage.
+Dynamically selects relevant sections from erc7730_format_reference.json
+based on descriptor features to reduce token usage while maintaining
+comprehensive coverage.
+
+Note: This module ONLY optimizes erc7730_format_reference.json.
+Other audit rule files (validation_rules.json, critical_issues.json)
+should be loaded directly as they are always used in full.
 """
 
 import json
 import logging
 from pathlib import Path
-from typing import Dict, List, Set
+from typing import Dict, Tuple
 
 logger = logging.getLogger(__name__)
 
 
-# Sections that are ALWAYS included regardless of descriptor
-CORE_SECTIONS = {
-    'validation_rules.json': {
-        'always_include': True,  # Include entire file
-        'reason': 'Critical validation logic and NOT_CRITICAL patterns'
-    },
-    'critical_issues.json': {
-        'always_include': True,  # Include entire file
-        'reason': 'Core critical issue definitions and criteria'
-    },
-    'erc7730_format_reference.json': [
-        'path_syntax',
-        'validation_notes',
-        'xor_constraints',
-        'special_paths',
-        'alternative_field_value',
-    ],
-    # These files are small and always included completely
-    'recommendations.json': {'always_include': True},
-    'spec_limitations.json': {'always_include': True},
-    'display_issues.json': {'always_include': True}
-}
+# Core sections always included in format reference
+CORE_FORMAT_SECTIONS = [
+    'path_syntax',
+    'validation_notes',
+    'xor_constraints',
+    'special_paths',
+    'alternative_field_value',
+]
 
 # Map format types to relevant rule sections in erc7730_format_reference.json
 FORMAT_TYPE_SECTIONS = {
@@ -181,23 +172,31 @@ def analyze_descriptor_features(erc7730_format: Dict) -> Dict:
     return features
 
 
-def load_relevant_rules(
+def load_optimized_format_spec(
     descriptor_features: Dict,
     use_smart_referencing: bool = True
-) -> tuple[Dict[str, Dict], Dict]:
+) -> Tuple[Dict, Dict]:
     """
-    Load relevant rule sections based on descriptor features.
+    Load optimized ERC-7730 format specification based on descriptor features.
+
+    This function ONLY optimizes erc7730_format_reference.json. Other rule files
+    should be loaded directly as they are always used in full.
 
     Args:
         descriptor_features: Output from analyze_descriptor_features()
-        use_smart_referencing: If False, load all rules
+        use_smart_referencing: If False, load full format spec
 
     Returns:
-        Tuple of (rules_dict, metadata_dict) where:
-        - rules_dict: Dict mapping filenames to their loaded content
+        Tuple of (format_spec_dict, metadata_dict) where:
+        - format_spec_dict: Optimized or full format specification
         - metadata_dict: Info about what was included/excluded
     """
     rules_path = Path(__file__).parent / "audit_rules"
+    format_ref_path = rules_path / 'erc7730_format_reference.json'
+
+    # Load full format reference
+    with open(format_ref_path, 'r') as f:
+        full_format_ref = json.load(f)
 
     # Check for fallback conditions
     complexity = descriptor_features['complexity_score']
@@ -207,80 +206,52 @@ def load_relevant_rules(
     )
 
     if should_fallback:
+        reason = 'high_complexity' if complexity >= COMPLEXITY_FALLBACK_THRESHOLD else 'disabled'
         logger.info(
-            f"Using FULL rules (complexity={complexity}, "
+            f"Using FULL format spec (complexity={complexity}, "
             f"smart_ref={use_smart_referencing})"
         )
-        return _load_full_rules(rules_path), {
+        return full_format_ref, {
             'mode': 'full',
-            'reason': 'high_complexity' if complexity >= COMPLEXITY_FALLBACK_THRESHOLD else 'disabled',
+            'reason': reason,
             'complexity': complexity
         }
 
     # Smart referencing: select relevant sections
     logger.info(
-        f"Using SMART rules (complexity={complexity}, "
+        f"Using SMART format spec (complexity={complexity}, "
         f"format_types={descriptor_features['format_types']})"
     )
 
-    # Track which sections to include per file
-    sections_to_include = {
-        'erc7730_format_reference.json': set(CORE_SECTIONS['erc7730_format_reference.json'])
-    }
+    # Start with core sections
+    sections_to_include = set(CORE_FORMAT_SECTIONS)
 
     # Add format-type-specific sections
     for fmt_type in descriptor_features['format_types']:
         if fmt_type in FORMAT_TYPE_SECTIONS:
-            sections_to_include['erc7730_format_reference.json'].update(
-                FORMAT_TYPE_SECTIONS[fmt_type]
-            )
+            sections_to_include.update(FORMAT_TYPE_SECTIONS[fmt_type])
 
     # Add feature-specific sections
     for feature, is_present in descriptor_features.items():
         if is_present and feature in FEATURE_SECTIONS:
-            sections_to_include['erc7730_format_reference.json'].update(
-                FEATURE_SECTIONS[feature]
-            )
+            sections_to_include.update(FEATURE_SECTIONS[feature])
 
     # Always include complete_examples if complexity >= 5
     if complexity >= 5:
-        sections_to_include['erc7730_format_reference.json'].add('complete_examples')
-
-    # Load the actual rules
-    loaded_rules = {}
-
-    # Files that are always loaded completely
-    always_complete = [
-        'validation_rules.json',
-        'critical_issues.json',
-        'recommendations.json',
-        'spec_limitations.json',
-        'display_issues.json'
-    ]
-
-    for filename in always_complete:
-        file_path = rules_path / filename
-        if file_path.exists():
-            with open(file_path, 'r') as f:
-                loaded_rules[filename] = json.load(f)
-
-    # Load format reference with selected sections
-    format_ref_path = rules_path / 'erc7730_format_reference.json'
-    with open(format_ref_path, 'r') as f:
-        full_format_ref = json.load(f)
+        sections_to_include.add('complete_examples')
 
     # Filter to selected sections
-    selected_sections = sections_to_include['erc7730_format_reference.json']
     filtered_format_ref = {
         k: v for k, v in full_format_ref.items()
-        if k.startswith('$') or k in ['title', 'description', 'version'] or k in selected_sections
+        if k.startswith('$') or k in ['title', 'description', 'version'] or k in sections_to_include
     }
 
-    loaded_rules['erc7730_format_reference.json'] = filtered_format_ref
-
     # Calculate metadata
-    total_sections = len([k for k in full_format_ref.keys() if not k.startswith('$') and k not in ['title', 'description', 'version']])
-    included_sections = len(selected_sections)
+    total_sections = len([
+        k for k in full_format_ref.keys()
+        if not k.startswith('$') and k not in ['title', 'description', 'version']
+    ])
+    included_sections = len(sections_to_include)
     excluded_sections = total_sections - included_sections
 
     metadata = {
@@ -291,46 +262,27 @@ def load_relevant_rules(
         'included_format_sections': included_sections,
         'excluded_format_sections': excluded_sections,
         'reduction_percent': round((excluded_sections / total_sections) * 100, 1),
-        'sections_included': list(selected_sections),
-        'sections_excluded': list(set(full_format_ref.keys()) - set(filtered_format_ref.keys()) - {'$schema', 'title', 'description', 'version'})
+        'sections_included': list(sections_to_include),
+        'sections_excluded': list(
+            set(full_format_ref.keys()) - set(filtered_format_ref.keys()) -
+            {'$schema', 'title', 'description', 'version'}
+        )
     }
 
     logger.info(
-        f"Smart rules: {included_sections}/{total_sections} format sections "
+        f"Smart format spec: {included_sections}/{total_sections} sections "
         f"({metadata['reduction_percent']}% reduction)"
     )
 
-    return loaded_rules, metadata
+    return filtered_format_ref, metadata
 
 
-def _load_full_rules(rules_path: Path) -> Dict[str, Dict]:
-    """Load all rules without filtering."""
-    loaded_rules = {}
-
-    rule_files = [
-        'validation_rules.json',
-        'critical_issues.json',
-        'erc7730_format_reference.json',
-        'recommendations.json',
-        'spec_limitations.json',
-        'display_issues.json'
-    ]
-
-    for filename in rule_files:
-        file_path = rules_path / filename
-        if file_path.exists():
-            with open(file_path, 'r') as f:
-                loaded_rules[filename] = json.load(f)
-
-    return loaded_rules
-
-
-def format_smart_rules_note(metadata: Dict) -> str:
+def format_optimization_note(metadata: Dict) -> str:
     """
-    Format a note about smart rule selection for inclusion in prompt.
+    Format a note about format specification optimization for inclusion in prompt.
 
     Args:
-        metadata: Metadata dict from load_relevant_rules()
+        metadata: Metadata dict from load_optimized_format_spec()
 
     Returns:
         Formatted string to include in prompt
@@ -342,22 +294,22 @@ def format_smart_rules_note(metadata: Dict) -> str:
         }.get(metadata['reason'], metadata['reason'])
 
         return f"""
-**📋 Rule Selection: FULL RULES**
+**📋 Format Specification: FULL**
 
-All rule sections included because {reason_text}.
+All format specification sections included because {reason_text}.
 """
 
     # Smart mode
     format_types_text = ', '.join(sorted(metadata['format_types'])) if metadata['format_types'] else 'none'
 
     return f"""
-**🎯 Rule Selection: SMART REFERENCING**
+**🎯 Format Specification: OPTIMIZED**
 
 Based on descriptor features:
 - Format types detected: {format_types_text}
 - Complexity score: {metadata['complexity']}/10
-- Format sections included: {metadata['included_format_sections']}/{metadata['total_format_sections']} ({100 - metadata['reduction_percent']:.0f}% of format rules)
+- Format sections included: {metadata['included_format_sections']}/{metadata['total_format_sections']} ({100 - metadata['reduction_percent']:.0f}%)
 
-Core validation rules and critical criteria are always included.
-Format-specific sections included based on detected format types.
+Only format specification sections relevant to detected format types are included.
+Validation rules and critical criteria are always loaded in full separately.
 """

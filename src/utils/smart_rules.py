@@ -169,6 +169,28 @@ def analyze_descriptor_features(erc7730_format: Dict) -> Dict:
     # Cap complexity at 10
     features['complexity_score'] = min(features['complexity_score'], 10)
 
+    # Log detected features
+    logger.info(f"📊 Descriptor analysis:")
+    logger.info(f"  - Format types: {sorted(features['format_types']) if features['format_types'] else 'none'}")
+    logger.info(f"  - Complexity score: {features['complexity_score']}/10")
+
+    detected_features = []
+    if features['has_arrays']:
+        detected_features.append('arrays')
+    if features['has_nested_paths']:
+        detected_features.append('nested paths')
+    if features['has_exclusions']:
+        detected_features.append('exclusions')
+    if features['uses_containers']:
+        detected_features.append('$ref containers')
+    if features['uses_xor']:
+        detected_features.append('XOR values')
+
+    if detected_features:
+        logger.info(f"  - Features detected: {', '.join(detected_features)}")
+    else:
+        logger.info(f"  - Features detected: none (simple descriptor)")
+
     return features
 
 
@@ -225,20 +247,38 @@ def load_optimized_format_spec(
 
     # Start with core sections
     sections_to_include = set(CORE_FORMAT_SECTIONS)
+    logger.debug(f"  📋 Core sections: {sorted(CORE_FORMAT_SECTIONS)}")
 
     # Add format-type-specific sections
+    format_type_sections_added = {}
     for fmt_type in descriptor_features['format_types']:
         if fmt_type in FORMAT_TYPE_SECTIONS:
-            sections_to_include.update(FORMAT_TYPE_SECTIONS[fmt_type])
+            added_sections = FORMAT_TYPE_SECTIONS[fmt_type]
+            sections_to_include.update(added_sections)
+            format_type_sections_added[fmt_type] = sorted(added_sections)
+
+    if format_type_sections_added:
+        logger.info(f"  📦 Format-specific sections added:")
+        for fmt_type, sections in format_type_sections_added.items():
+            logger.info(f"    - {fmt_type}: {sections}")
 
     # Add feature-specific sections
+    feature_sections_added = {}
     for feature, is_present in descriptor_features.items():
         if is_present and feature in FEATURE_SECTIONS:
-            sections_to_include.update(FEATURE_SECTIONS[feature])
+            added_sections = FEATURE_SECTIONS[feature]
+            sections_to_include.update(added_sections)
+            feature_sections_added[feature] = sorted(added_sections)
+
+    if feature_sections_added:
+        logger.info(f"  🔧 Feature-specific sections added:")
+        for feature, sections in feature_sections_added.items():
+            logger.info(f"    - {feature}: {sections}")
 
     # Always include complete_examples if complexity >= 5
     if complexity >= 5:
         sections_to_include.add('complete_examples')
+        logger.info(f"  ⚠️  High complexity ({complexity}), including complete_examples")
 
     # Filter to selected sections
     filtered_format_ref = {
@@ -273,6 +313,11 @@ def load_optimized_format_spec(
         f"Smart format spec: {included_sections}/{total_sections} sections "
         f"({metadata['reduction_percent']}% reduction)"
     )
+
+    # Log detailed breakdown
+    logger.info(f"  ✅ Included sections ({included_sections}): {sorted(sections_to_include)}")
+    if metadata['sections_excluded']:
+        logger.info(f"  ❌ Excluded sections ({excluded_sections}): {sorted(metadata['sections_excluded'])}")
 
     return filtered_format_ref, metadata
 

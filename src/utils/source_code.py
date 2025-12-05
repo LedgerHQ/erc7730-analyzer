@@ -255,8 +255,11 @@ class SolidityCodeParser:
 
         for match in re.finditer(function_pattern, self.source_code):
             function_name = match.group(1)
-            params = match.group(2).strip()
+            params_raw = match.group(2).strip()
             visibility_block = match.group(3).strip()
+
+            # Clean comments from params for signature
+            params_clean = self._clean_comments_from_params(params_raw)
 
             # Determine visibility
             visibility = 'internal'  # default
@@ -301,7 +304,7 @@ class SolidityCodeParser:
             functions[key] = {
                 'name': function_name,
                 'visibility': visibility,
-                'signature': f"{function_name}({params})",
+                'signature': f"{function_name}({params_clean})",
                 'body': function_body,
                 'docstring': docstring,
                 'start_line': start_line,
@@ -335,6 +338,25 @@ class SolidityCodeParser:
                 break
 
         return '\n'.join(docstring_lines).strip() if docstring_lines else None
+
+    def _clean_comments_from_params(self, params: str) -> str:
+        """
+        Remove inline comments from function parameters.
+
+        Example:
+            Input:  "uint256 amount, // comment\n        address receiver"
+            Output: "uint256 amount, address receiver"
+        """
+        # Remove single-line comments (//...)
+        cleaned = re.sub(r'//[^\n]*', '', params)
+
+        # Remove multi-line comments (/* ... */)
+        cleaned = re.sub(r'/\*.*?\*/', '', cleaned, flags=re.DOTALL)
+
+        # Remove excessive whitespace and newlines
+        cleaned = ' '.join(cleaned.split())
+
+        return cleaned
 
     def find_internal_functions_used(self, function_body: str) -> List[str]:
         """
@@ -1476,37 +1498,44 @@ class SourceCodeExtractor:
             normalized_target_sig = self._normalize_signature_for_matching(function_signature, custom_type_mapping, struct_type_mapping)
             logger.info(f"  Looking for function with normalized signature: {normalized_target_sig}")
 
-        # Track all candidates for better error reporting
+        # Track all candidates
         candidates = []
+        first_candidate = None
 
         for func_data in extracted_code['functions'].values():
             if func_data['name'] == function_name and func_data['visibility'] in ['public', 'external']:
-                # If signature is provided, match by signature; otherwise match by name only
+                # Store first candidate as fallback
+                if not first_candidate:
+                    first_candidate = func_data
+
+                # If signature is provided, try smart matching by signature
                 if normalized_target_sig:
                     # Normalize the extracted signature for comparison
-                    # The extracted signature has parameter names, so we need to normalize it
                     extracted_sig = self._normalize_signature_for_matching(func_data['signature'], custom_type_mapping, struct_type_mapping)
-                    candidates.append((func_data['signature'], extracted_sig))
-                    logger.info(f"    Comparing: {extracted_sig} vs {normalized_target_sig}")
+                    candidates.append((func_data, func_data['signature'], extracted_sig))
+                    logger.debug(f"    Comparing: {extracted_sig} vs {normalized_target_sig}")
                     if extracted_sig == normalized_target_sig:
                         target_function = func_data
-                        logger.info(f"  ✓ Matched function by signature: {func_data['signature']} -> {extracted_sig}")
+                        logger.info(f"  ✓ Smart match by signature: {func_data['signature']} -> {extracted_sig}")
                         break
                 else:
-                    # Fallback: match by name only (old behavior)
+                    # No signature provided, take first match by name
                     target_function = func_data
                     logger.info(f"  ✓ Matched function by name only: {func_data['signature']}")
                     break
 
-        if not target_function:
+        # Fallback: if signature matching failed but we have candidates, use first candidate
+        if not target_function and first_candidate:
+            target_function = first_candidate
+            logger.info(f"  ⚠ Signature matching failed, using first candidate (fallback): {first_candidate['signature']}")
             if candidates:
-                logger.warning(f"Function {function_name} not found - signature mismatch")
-                logger.warning(f"  Target signature: {normalized_target_sig}")
-                logger.warning(f"  Found {len(candidates)} candidate(s) with same name but different signatures:")
-                for orig_sig, norm_sig in candidates:
-                    logger.warning(f"    - {orig_sig} -> {norm_sig}")
-            else:
-                logger.warning(f"Function {function_name} not found - no matching name or visibility")
+                logger.debug(f"    Target signature: {normalized_target_sig}")
+                logger.debug(f"    Found {len(candidates)} candidate(s):")
+                for func, orig_sig, norm_sig in candidates:
+                    logger.debug(f"      - {orig_sig} -> {norm_sig}")
+
+        if not target_function:
+            logger.warning(f"Function {function_name} not found - no matching name or visibility")
             return {
                 'function': None,
                 'custom_types': [],
@@ -1767,6 +1796,12 @@ class SourceCodeExtractor:
         # Check if we need to truncate
         if result['total_lines'] > max_lines:
             result['truncated'] = True
+            original_internal_count = len(result['internal_functions'])
+            logger.warning(
+                f"⚠️  Code extraction exceeded {max_lines} lines limit "
+                f"(total: {result['total_lines']} lines). Truncating internal functions..."
+            )
+
             # Prioritize: main function > structs/enums > internal functions
             # Keep main function always, truncate internal functions if needed
             available_lines = max_lines - target_function['line_count']
@@ -1775,6 +1810,10 @@ class SourceCodeExtractor:
 
             if available_lines < 0:
                 # Even structs/enums are too much, keep only function
+                logger.warning(
+                    f"  - Main function + structs/enums exceed limit. "
+                    f"Keeping only main function ({target_function['line_count']} lines)"
+                )
                 result['structs'] = []
                 result['enums'] = []
                 result['internal_functions'] = []
@@ -1788,6 +1827,15 @@ class SourceCodeExtractor:
                         available_lines -= func_lines
                     else:
                         break
+
+                kept_count = len(truncated_internals)
+                dropped_count = original_internal_count - kept_count
                 result['internal_functions'] = truncated_internals
+
+                if dropped_count > 0:
+                    logger.warning(
+                        f"  - Kept {kept_count}/{original_internal_count} internal functions "
+                        f"({dropped_count} dropped due to line limit)"
+                    )
 
         return result

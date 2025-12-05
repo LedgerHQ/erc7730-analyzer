@@ -539,6 +539,31 @@
       ],
       "critical_case": "If payable function has no parameters AND no @.value field → user can't see amount being sent",
       "severity": "critical"
+    },
+    {
+      "id": 13,
+      "title": "msg.value differs from amount parameter due to protocol fees",
+      "description": "When @.value (total ETH sent) differs from the amount parameter displayed, and the difference represents protocol fees",
+      "rule": "This is NOT CRITICAL if the descriptor already displays the amount parameter with nativeCurrencyAddress",
+      "why_not_critical": [
+        "The amount parameter shows what the user is effectively sending/swapping",
+        "The difference is protocol fees (common in DEX aggregators)",
+        "Displaying both @.value and amount would create duplication",
+        "The descriptor already uses nativeCurrencyAddress to show it's native ETH",
+        "Users understand DEX transactions involve fees"
+      ],
+      "correct_classification": "WARNING (not critical)",
+      "recommendation_action": "Check transaction samples: if any transaction has @.value different from the displayed amount parameter, add this to recommendations section",
+      "recommendation_template": "In the analyzed transactions, @.value (e.g., {example_value} ETH) differs from the displayed amount parameter (e.g., {example_amount} ETH), with the difference representing protocol fees. Consider adding documentation or UI hints to explain this fee structure to users, so they understand the total ETH sent may be slightly higher than the swap amount due to protocol fees.",
+      "example": {
+        "transaction_value": "1.0 ETH",
+        "amount_parameter": "0.979 ETH",
+        "difference": "0.021 ETH (protocol fees)",
+        "descriptor_shows": "Amount parameter (0.979) with nativeCurrencyAddress",
+        "classification": "WARNING - mention in recommendations, NOT critical"
+      },
+      "critical_if": "Only flag as CRITICAL if the descriptor does NOT show the amount parameter at all",
+      "severity": "warning"
     }
   ],
 

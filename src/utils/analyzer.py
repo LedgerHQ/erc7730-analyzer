@@ -733,8 +733,8 @@ class ERC7730Analyzer:
                     function_source = self.source_extractor.get_function_with_dependencies(
                         function_name,
                         extracted_code,
-                        function_signature=function_data['signature'],  # Pass signature to handle overloads
-                        max_lines=300
+                        function_signature=function_data['signature'],  # Try smart matching, fallback to name
+                        max_lines=1000  # Increased from 300 to include more internal functions
                     )
 
                     if function_source and function_source['function']:

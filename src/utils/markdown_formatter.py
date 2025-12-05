@@ -463,13 +463,8 @@ def _format_transaction_samples(samples: List[Dict]) -> str:
         # Get transaction hash if available
         tx_hash = sample.get('transaction_hash', '')
         if tx_hash:
-            # Shorten hash for display (first 10 chars)
-            short_hash = tx_hash[:10] if len(tx_hash) > 10 else tx_hash
-            md += f"#### 📝 Transaction {i} - `{short_hash}...`\n\n"
-            # Add full hash as a collapsible detail or link
-            md += f"<details>\n<summary><strong>🔗 View Full Transaction Hash</strong></summary>\n\n"
-            md += f"```\n{tx_hash}\n```\n\n"
-            md += "</details>\n\n"
+            # Display full hash directly
+            md += f"#### 📝 Transaction {i} - `{tx_hash}`\n\n"
         else:
             md += f"#### 📝 Transaction {i}\n\n"
 
@@ -489,12 +484,18 @@ def _format_transaction_samples(samples: List[Dict]) -> str:
 
             md += "\n"
 
-        # Decoded parameters (collapsible)
+        # Decoded parameters (collapsible with button)
         decoded_params = sample.get('decoded_parameters', {})
         if decoded_params:
             md += "<details>\n"
             md += "<summary><strong>📋 View Decoded Transaction Parameters</strong> (click to expand)</summary>\n\n"
             md += "```python\n"  # Python syntax highlighting for key: value pairs
+
+            # Always show native value first (even if 0)
+            native_value = sample.get('native_value', '0')
+            md += f"@.value (native ETH sent): {native_value} wei\n"
+
+            # Then show function parameters
             for param_name, param_value in decoded_params.items():
                 md += f"{param_name}: {param_value}\n"
             md += "```\n\n"

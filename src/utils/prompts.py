@@ -419,11 +419,6 @@ You MUST output a SINGLE JSON object (no markdown, no extra text before or after
           "value_shown": "Actual formatted value from this transaction",
           "hidden_missing": "What's hidden or not shown"
         }}
-      ],
-      "decoded_parameters": {{
-        "param1": "value1",
-        "param2": "value2"
-      }}
     }}
   ],
 
@@ -461,7 +456,6 @@ You MUST output a SINGLE JSON object (no markdown, no extra text before or after
 - critical_issues array: DETAILED descriptions with evidence, no "CRITICAL:" prefix
 - recommendations.fixes: Must include exact descriptor code changes to make
 - recommendations.spec_limitations: Must include detected_pattern when found in source code
-- transaction_samples: Must include transaction_hash from the input transaction data, and decoded_parameters should match the actual decoded_input from transactions
 - Be consistent: Same patterns across functions get same assessment
 
 {f"⚠️ **NO HISTORICAL TRANSACTIONS FOUND** - This selector has no transaction history. Set transaction_samples to empty array and add display issue noting this." if not decoded_transactions else ""}"""
@@ -482,6 +476,19 @@ You MUST output a SINGLE JSON object (no markdown, no extra text before or after
             logger.error(f"Failed to parse JSON response: {e}")
             logger.error(f"Response content: {json_response[:500]}...")
             raise Exception(f"Invalid JSON from AI: {e}")
+
+        # Enrich transaction samples with actual decoded data
+        # The AI provides transaction_hash and user_intent, we add decoded_parameters and native_value
+        if 'transaction_samples' in report_data and decoded_transactions:
+            for sample in report_data['transaction_samples']:
+                tx_hash = sample.get('transaction_hash', '')
+                # Find matching transaction in decoded_transactions
+                matching_tx = next((tx for tx in decoded_transactions if tx.get('hash') == tx_hash), None)
+                if matching_tx:
+                    # Add native value (msg.value)
+                    sample['native_value'] = matching_tx.get('value', '0')
+                    # Add decoded parameters directly from transaction data
+                    sample['decoded_parameters'] = matching_tx.get('decoded_input', {})
 
         # Format using markdown_formatter
         from .markdown_formatter import format_audit_reports

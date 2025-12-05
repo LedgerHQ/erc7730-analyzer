@@ -493,7 +493,7 @@ def _format_transaction_samples(samples: List[Dict]) -> str:
 
             # Always show native value first (even if 0)
             native_value = sample.get('native_value', '0')
-            md += f"@.value (native ETH sent): {native_value} wei\n"
+            md += f"native ETH sent: {native_value} wei\n"
 
             # Then show function parameters
             for param_name, param_value in decoded_params.items():

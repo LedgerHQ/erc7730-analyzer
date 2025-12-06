@@ -17,6 +17,7 @@ import requests
 from web3 import Web3
 
 from .abi import ABI, fetch_contract_abi
+from .abi_merger import merge_abis_from_deployments
 from .transactions import TransactionFetcher
 from .prompts import generate_clear_signing_audit
 from .source_code import SourceCodeExtractor
@@ -394,7 +395,7 @@ class ERC7730Analyzer:
         if abi and isinstance(abi, str):
             logger.info(f"ABI is a URL, fetching from: {abi}")
             try:
-                response = requests.get(abi)
+                response = requests.get(abi, timeout=10)
                 response.raise_for_status()
                 data = response.json()
 
@@ -409,26 +410,37 @@ class ERC7730Analyzer:
 
                 logger.info(f"Successfully fetched ABI from URL ({len(abi)} entries)")
             except Exception as e:
-                logger.error(f"Failed to fetch ABI from URL: {e}")
+                logger.warning(f"Failed to fetch ABI from URL: {e}")
+                logger.info("Falling back to next ABI source...")
                 abi = None
 
+        # Check if we have a valid ABI from ERC-7730 file
         if abi and isinstance(abi, list) and len(abi) > 0:
             logger.info(f"Using ABI from ERC-7730 file ({len(abi)} entries)")
-        elif abi_file:
+        elif abi_file and abi_file.exists() and abi_file.is_file():
+            # Try loading from ABI file if provided and valid
             logger.info(f"Loading ABI from file: {abi_file}")
-            with open(abi_file, 'r') as f:
-                abi = json.load(f)
-        else:
-            # Try to fetch ABI from first deployment
-            first_deployment = deployments[0]
-            abi = fetch_contract_abi(
-                first_deployment['address'],
-                first_deployment['chainId'],
+            try:
+                with open(abi_file, 'r') as f:
+                    abi = json.load(f)
+                logger.info(f"Successfully loaded ABI from file ({len(abi)} entries)")
+            except Exception as e:
+                logger.warning(f"Failed to load ABI from file: {e}")
+                logger.info("Falling back to API fetch...")
+                abi = None
+
+        # If no ABI yet, fetch from deployments via API
+        if not abi or not isinstance(abi, list) or len(abi) == 0:
+            logger.info("No ABI from ERC-7730 file or ABI file, fetching from API...")
+            # Fetch and merge ABIs from all deployments
+            abi, fetch_results = merge_abis_from_deployments(
+                deployments,
+                fetch_contract_abi,
                 self.etherscan_api_key
             )
 
         if not abi:
-            logger.error("Could not obtain contract ABI")
+            logger.error("Could not obtain contract ABI from any source (ERC-7730, file, or API)")
             return {}
 
         # Initialize the ABI helper

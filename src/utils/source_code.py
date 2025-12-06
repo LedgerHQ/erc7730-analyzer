@@ -807,7 +807,12 @@ class SourceCodeExtractor:
             response = requests.get(base_url, params=params)
             data = response.json()
 
-            logger.info(f"facets() API response: {data}")
+            # Trim response for logging (can be very large for Diamond proxies)
+            data_str = str(data)
+            if len(data_str) > 100:
+                logger.info(f"facets() API response: {data_str[:100]}... (truncated, {len(data_str)} chars total)")
+            else:
+                logger.info(f"facets() API response: {data_str}")
 
             # Check if the call succeeded
             if 'error' in data:
@@ -877,7 +882,12 @@ class SourceCodeExtractor:
                     facet_response = requests.get(base_url, params=facet_params)
                     facet_data = facet_response.json()
 
-                    logger.info(f"  facetAddress({selector}) response: {facet_data}")
+                    # Trim response for logging
+                    facet_data_str = str(facet_data)
+                    if len(facet_data_str) > 100:
+                        logger.info(f"  facetAddress({selector}) response: {facet_data_str[:100]}... (truncated)")
+                    else:
+                        logger.info(f"  facetAddress({selector}) response: {facet_data_str}")
 
                     if facet_data.get('result') and 'error' not in facet_data and facet_data['result'] != '0x':
                         # Extract facet address from result (last 20 bytes / 40 hex chars)

@@ -136,9 +136,9 @@ Priority: Command-line arguments > Environment variables > Defaults
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     context_id = (results.get('context', {}).get('$id') or 'unknown').replace(' ', '_')
 
-    # Generate detailed summary file
-    summary_file = output_dir / f"SUMMARY_{context_id}_{timestamp}.md"
-    logger.info(f"Generating detailed summary file at {summary_file}")
+    # Generate full report file
+    summary_file = output_dir / f"FULL_REPORT_{context_id}_{timestamp}.md"
+    logger.info(f"Generating full report file at {summary_file}")
     generate_summary_file(results, summary_file)
 
     # Generate critical issues mini report

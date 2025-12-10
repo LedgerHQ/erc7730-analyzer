@@ -191,6 +191,45 @@ class SolidityCodeParser:
 
         return using_statements
 
+    def extract_modifiers(self) -> Dict[str, str]:
+        """
+        Extract all modifier definitions from the code.
+
+        Returns:
+            Dictionary mapping modifier name to modifier code
+        """
+        modifiers = {}
+
+        # Pattern to match modifier definitions
+        # modifier modifierName(params) { body }
+        modifier_pattern = r'modifier\s+(\w+)\s*\(([^)]*)\)\s*\{'
+
+        for match in re.finditer(modifier_pattern, self.source_code):
+            modifier_name = match.group(1)
+            start_pos = match.start()
+            body_start = match.end() - 1  # Position of opening brace
+
+            # Find matching closing brace
+            open_braces = 0
+            i = body_start
+            while i < len(self.source_code):
+                if self.source_code[i] == '{':
+                    open_braces += 1
+                elif self.source_code[i] == '}':
+                    open_braces -= 1
+                    if open_braces == 0:
+                        body_end = i + 1
+                        break
+                i += 1
+            else:
+                body_end = len(self.source_code)
+
+            modifier_body = self.source_code[start_pos:body_end]
+            modifiers[modifier_name] = modifier_body.strip()
+            logger.debug(f"Found modifier: {modifier_name}")
+
+        return modifiers
+
     def extract_libraries(self) -> Dict[str, str]:
         """
         Extract all library definitions from the code.
@@ -298,6 +337,9 @@ class SolidityCodeParser:
             # Extract docstring (NatSpec comment before function)
             docstring = self._extract_docstring_before_position(start_pos)
 
+            # Extract modifiers used by this function
+            modifiers_used = self.find_modifiers_used(visibility_block)
+
             # Create unique key
             key = f"{function_name}_{visibility}_{start_line}"
 
@@ -307,12 +349,16 @@ class SolidityCodeParser:
                 'signature': f"{function_name}({params_clean})",
                 'body': function_body,
                 'docstring': docstring,
+                'modifiers': modifiers_used,  # NEW: List of modifier names
                 'start_line': start_line,
                 'end_line': end_line,
                 'line_count': end_line - start_line + 1
             }
 
-            logger.debug(f"Found function: {function_name} ({visibility}) at lines {start_line}-{end_line}")
+            if modifiers_used:
+                logger.debug(f"Found function: {function_name} ({visibility}) with modifiers {modifiers_used} at lines {start_line}-{end_line}")
+            else:
+                logger.debug(f"Found function: {function_name} ({visibility}) at lines {start_line}-{end_line}")
 
         return functions
 
@@ -403,6 +449,36 @@ class SolidityCodeParser:
             library_calls.append(f"{lib_name}.{func_name}")
 
         return list(set(library_calls))  # Remove duplicates
+
+    def find_modifiers_used(self, visibility_block: str) -> List[str]:
+        """
+        Find modifiers used in a function's visibility block.
+
+        Args:
+            visibility_block: The text between function parameters and opening brace
+                             (e.g., "external virtual override ensure(deadline) returns (uint[])")
+
+        Returns:
+            List of modifier names used (e.g., ["ensure"])
+        """
+        modifiers = []
+
+        # Pattern to match modifier calls: modifierName(args) or just modifierName
+        # This should appear after visibility and before returns/{
+        # Common patterns: ensure(deadline), onlyOwner, nonReentrant
+        modifier_pattern = r'\b([a-z_][a-zA-Z0-9_]*)\s*(?:\([^)]*\))?'
+
+        # Keywords to exclude (not modifiers)
+        keywords = {'public', 'private', 'internal', 'external', 'pure', 'view',
+                   'payable', 'virtual', 'override', 'returns', 'return'}
+
+        for match in re.finditer(modifier_pattern, visibility_block):
+            modifier_name = match.group(1)
+            # Exclude keywords
+            if modifier_name not in keywords:
+                modifiers.append(modifier_name)
+
+        return list(set(modifiers))  # Remove duplicates
 
 
 class SourceCodeExtractor:
@@ -699,12 +775,19 @@ class SourceCodeExtractor:
             response.raise_for_status()
             data = response.json()
 
-            if data.get('result') and data['result'] != '0x' + '0' * 64:
-                # Extract address from storage slot (last 20 bytes)
-                impl_address = '0x' + data['result'][-40:]
-                if impl_address != '0x' + '0' * 40:
-                    logger.info(f"Detected EIP-1967 proxy, implementation: {impl_address}")
-                    return impl_address
+            # Check for API errors first
+            if 'error' in data or data.get('status') == '0' or data.get('message') == 'NOTOK':
+                logger.debug(f"API error when checking EIP-1967 implementation slot")
+                # Continue to next detection method
+            elif data.get('result') and data['result'] != '0x' + '0' * 64:
+                # Ensure result is valid hex before extracting address
+                result = data['result']
+                if result.startswith('0x') and len(result) == 66:  # 0x + 64 hex chars
+                    # Extract address from storage slot (last 20 bytes)
+                    impl_address = '0x' + result[-40:]
+                    if impl_address != '0x' + '0' * 40:
+                        logger.info(f"Detected EIP-1967 proxy, implementation: {impl_address}")
+                        return impl_address
 
             # Try Etherscan's built-in proxy detection
             params = {
@@ -815,8 +898,12 @@ class SourceCodeExtractor:
                 logger.info(f"facets() API response: {data_str}")
 
             # Check if the call succeeded
-            if 'error' in data:
-                error_msg = data.get('error', {}).get('message', 'unknown error')
+            # Etherscan API returns status: '1' for success, '0' for failure
+            if 'error' in data or data.get('status') == '0' or data.get('message') == 'NOTOK':
+                if 'error' in data:
+                    error_msg = data.get('error', {}).get('message', 'unknown error')
+                else:
+                    error_msg = data.get('result', 'API error')
                 logger.info(f"facets() call failed: {error_msg}")
                 logger.info(f"Trying fallback detection method...")
                 return self._detect_diamond_via_sourcecode(contract_address, chain_id)
@@ -889,7 +976,12 @@ class SourceCodeExtractor:
                     else:
                         logger.info(f"  facetAddress({selector}) response: {facet_data_str}")
 
-                    if facet_data.get('result') and 'error' not in facet_data and facet_data['result'] != '0x':
+                    # Check if facetAddress() call succeeded
+                    if (facet_data.get('result') and
+                        'error' not in facet_data and
+                        facet_data.get('status') != '0' and
+                        facet_data.get('message') != 'NOTOK' and
+                        facet_data['result'] != '0x'):
                         # Extract facet address from result (last 20 bytes / 40 hex chars)
                         facet_address = '0x' + facet_data['result'][-40:].lower()
                         # Check it's not zero address
@@ -897,7 +989,12 @@ class SourceCodeExtractor:
                             selector_to_facet[selector] = facet_address
                             logger.info(f"  Selector {selector} -> Facet {facet_address}")
                     else:
-                        error_msg = facet_data.get('error', {}).get('message', 'no result') if 'error' in facet_data else 'no result'
+                        if 'error' in facet_data:
+                            error_msg = facet_data.get('error', {}).get('message', 'no result')
+                        elif facet_data.get('status') == '0':
+                            error_msg = facet_data.get('result', 'API error')
+                        else:
+                            error_msg = 'no result'
                         logger.warning(f"  Failed to get facet for selector {selector}: {error_msg}")
 
                 if selector_to_facet:
@@ -965,6 +1062,7 @@ class SourceCodeExtractor:
             'structs': {},
             'enums': {},
             'constants': {},
+            'modifiers': {},
             'internal_functions': {}
         }
 
@@ -1002,6 +1100,7 @@ class SourceCodeExtractor:
                 all_structs = {}
                 all_enums = {}
                 all_constants = {}
+                all_modifiers = {}
                 all_internal_functions = {}
 
                 for facet_addr in unique_facet_addresses:
@@ -1022,6 +1121,7 @@ class SourceCodeExtractor:
                             facet_structs = {}
                             facet_enums = {}
                             facet_constants = {}
+                            facet_modifiers = {}  # Vyper doesn't have modifiers
                             facet_internal = {
                                 k: v for k, v in facet_functions.items()
                                 if v['visibility'] == 'internal'
@@ -1037,6 +1137,7 @@ class SourceCodeExtractor:
                             facet_structs = parser.extract_structs()
                             facet_enums = parser.extract_enums()
                             facet_constants = parser.extract_constants()
+                            facet_modifiers = parser.extract_modifiers()
                             facet_functions = parser.extract_functions()
 
                             # Separate internal functions
@@ -1053,9 +1154,10 @@ class SourceCodeExtractor:
                         all_structs.update(facet_structs)
                         all_enums.update(facet_enums)
                         all_constants.update(facet_constants)
+                        all_modifiers.update(facet_modifiers)
                         all_internal_functions.update(facet_internal)
 
-                        logger.info(f"    Added {len(facet_functions)} functions, {len(facet_custom_types)} custom types, {len(facet_using_statements)} using statements, {len(facet_libraries)} libraries, {len(facet_structs)} structs, {len(facet_enums)} enums, {len(facet_constants)} constants from facet")
+                        logger.info(f"    Added {len(facet_functions)} functions, {len(facet_custom_types)} custom types, {len(facet_using_statements)} using statements, {len(facet_libraries)} libraries, {len(facet_structs)} structs, {len(facet_enums)} enums, {len(facet_constants)} constants, {len(facet_modifiers)} modifiers from facet")
                     else:
                         logger.warning(f"    Could not fetch source code for facet {facet_addr}")
 
@@ -1066,10 +1168,11 @@ class SourceCodeExtractor:
                 result['structs'] = all_structs
                 result['enums'] = all_enums
                 result['constants'] = all_constants
+                result['modifiers'] = all_modifiers
                 result['internal_functions'] = all_internal_functions
                 result['source_code'] = f"Diamond proxy with {len(unique_facet_addresses)} facets"
 
-                logger.info(f"✓ Extracted total: {len(all_functions)} functions, {len(all_custom_types)} custom types, {len(all_using_statements)} using statements, {len(all_libraries)} libraries, {len(all_structs)} structs, {len(all_enums)} enums, {len(all_constants)} constants from all facets")
+                logger.info(f"✓ Extracted total: {len(all_functions)} functions, {len(all_custom_types)} custom types, {len(all_using_statements)} using statements, {len(all_libraries)} libraries, {len(all_structs)} structs, {len(all_enums)} enums, {len(all_constants)} constants, {len(all_modifiers)} modifiers from all facets")
 
                 # Cache and return
                 self.code_cache[cache_key] = result
@@ -1102,10 +1205,11 @@ class SourceCodeExtractor:
             logger.info("Detected Vyper code - using Vyper parser")
             # Extract functions using Vyper parser
             result['functions'] = self.extract_vyper_functions(source_code)
-            # Vyper doesn't have structs/enums in the same way as Solidity
+            # Vyper doesn't have structs/enums/modifiers in the same way as Solidity
             result['structs'] = {}
             result['enums'] = {}
             result['constants'] = {}
+            result['modifiers'] = {}  # Vyper doesn't have modifiers
             result['internal_functions'] = {
                 k: v for k, v in result['functions'].items()
                 if v['visibility'] == 'internal'
@@ -1139,11 +1243,15 @@ class SourceCodeExtractor:
             result['enums'] = parser.extract_enums()
             logger.info(f"  ✓ Found {len(result['enums'])} enums")
 
-            logger.info("  [7/8] Extracting constants...")
+            logger.info("  [7/9] Extracting constants...")
             result['constants'] = parser.extract_constants()
             logger.info(f"  ✓ Found {len(result['constants'])} constants")
 
-            logger.info("  [8/8] Extracting functions (this may take a while for large contracts)...")
+            logger.info("  [8/9] Extracting modifiers...")
+            result['modifiers'] = parser.extract_modifiers()
+            logger.info(f"  ✓ Found {len(result['modifiers'])} modifiers")
+
+            logger.info("  [9/9] Extracting functions (this may take a while for large contracts)...")
             result['functions'] = parser.extract_functions()
             logger.info(f"  ✓ Found {len(result['functions'])} functions")
 
@@ -1159,7 +1267,8 @@ class SourceCodeExtractor:
                    f"{len(result.get('libraries', {}))} libraries, "
                    f"{len(result['structs'])} structs, "
                    f"{len(result['enums'])} enums, "
-                   f"{len(result['constants'])} constants")
+                   f"{len(result['constants'])} constants, "
+                   f"{len(result.get('modifiers', {}))} modifiers")
 
         # Cache the result
         self.code_cache[cache_key] = result
@@ -1571,6 +1680,7 @@ class SourceCodeExtractor:
             'using_statements': [],
             'libraries': [],
             'structs': [],
+            'modifiers': [],  # NEW: Will store modifier code used by this function
             'internal_functions': [],  # Will store dicts with 'body' and 'docstring'
             'enums': [],
             'constants': [],
@@ -1591,6 +1701,19 @@ class SourceCodeExtractor:
             if enum_name in target_function['body']:
                 result['enums'].append(enum_code)
                 result['total_lines'] += enum_code.count('\n') + 1
+
+        # Add modifiers used by this function
+        modifiers_used = target_function.get('modifiers', [])
+        if modifiers_used:
+            logger.info(f"  - Function uses modifiers: {modifiers_used}")
+            for modifier_name in modifiers_used:
+                if modifier_name in extracted_code.get('modifiers', {}):
+                    modifier_code = extracted_code['modifiers'][modifier_name]
+                    result['modifiers'].append(modifier_code)
+                    result['total_lines'] += modifier_code.count('\n') + 1
+                    logger.info(f"    ✓ Including modifier: {modifier_name}")
+                else:
+                    logger.warning(f"    ✗ Modifier {modifier_name} not found in extracted code")
 
         # Add referenced custom types (e.g., type TakerTraits is uint256;)
         # Also track which custom types are used to find their associated libraries

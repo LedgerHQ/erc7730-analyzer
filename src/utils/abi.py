@@ -144,8 +144,13 @@ def detect_diamond_proxy(
         data = response.json()
 
         # Check if the call succeeded
-        if 'error' in data or not data.get('result') or data['result'] == '0x':
-            logger.debug(f"Not a Diamond proxy (facets() call failed or empty)")
+        # Etherscan API returns status: '1' for success, '0' for failure
+        if 'error' in data or data.get('status') == '0' or data.get('message') == 'NOTOK':
+            logger.debug(f"Not a Diamond proxy (facets() call failed)")
+            return None
+
+        if not data.get('result') or data['result'] == '0x':
+            logger.debug(f"Not a Diamond proxy (empty result)")
             return None
 
         result = data['result']
@@ -251,12 +256,19 @@ def detect_proxy_implementation(
         response.raise_for_status()
         data = response.json()
 
-        if data.get('result') and data['result'] != '0x' + '0' * 64:
-            # Extract address from storage slot (last 20 bytes)
-            impl_address = '0x' + data['result'][-40:]
-            if impl_address != '0x' + '0' * 40:
-                logger.info(f"Detected EIP-1967 proxy, implementation: {impl_address}")
-                return impl_address
+        # Check for API errors first
+        if 'error' in data or data.get('status') == '0' or data.get('message') == 'NOTOK':
+            logger.debug(f"API error when checking EIP-1967 implementation slot")
+            # Continue to next detection method
+        elif data.get('result') and data['result'] != '0x' + '0' * 64:
+            # Ensure result is valid hex before extracting address
+            result = data['result']
+            if result.startswith('0x') and len(result) == 66:  # 0x + 64 hex chars
+                # Extract address from storage slot (last 20 bytes)
+                impl_address = '0x' + result[-40:]
+                if impl_address != '0x' + '0' * 40:
+                    logger.info(f"Detected EIP-1967 proxy, implementation: {impl_address}")
+                    return impl_address
 
         # Try Etherscan's built-in proxy detection
         params = {

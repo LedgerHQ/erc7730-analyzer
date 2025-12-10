@@ -151,7 +151,15 @@
         },
         "solution": {
           "option1": {
-            "description": "Hardcode to native sentinel constant",
+            "description": "Use amount format",
+            "field": {
+              "path": "minReceive",
+              "label": "Amount to Receive",
+              "format": "amount"
+            }
+          },
+          "option2": {
+            "description": "Hardcode to native sentinel constant(s)",
             "field": {
               "path": "minReceive",
               "label": "Minimum to Receive",
@@ -159,14 +167,6 @@
               "params": {
                 "token": "0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE"
               }
-            }
-          },
-          "option2": {
-            "description": "Use @.value if amount equals msg.value",
-            "field": {
-              "path": "@.value",
-              "label": "Amount to Receive",
-              "format": "amount"
             }
           }
         }

@@ -461,7 +461,7 @@ You MUST output a SINGLE JSON object (no markdown, no extra text before or after
 {f"⚠️ **NO HISTORICAL TRANSACTIONS FOUND** - This selector has no transaction history. Set transaction_samples to empty array and add display issue noting this." if not decoded_transactions else ""}"""
 
         response = client.chat.completions.create(
-            model="gpt-5-mini",
+            model="gpt-5.1",
             messages=[{"role": "user", "content": prompt}],
             response_format={"type": "json_object"}
         )

@@ -13,6 +13,43 @@
     "Use concrete examples with actual field definitions, not generic descriptions"
   ],
 
+  "validate_existing_descriptor_first": {
+    "title": "CRITICAL: Validate existing descriptors before recommending changes",
+    "description": "Before recommending any changes, check if the existing descriptor is already correct",
+    "validation_steps": [
+      {
+        "check": "Byte slicing patterns (e.g., srcToken.[-20:], param.[0:12])",
+        "how_to_validate": "Check source code for bit operations on that parameter",
+        "patterns_that_justify_slicing": [
+          "(param & MASK) - bit masking to extract portions",
+          "(param >> 160) - bit shifting to extract high/low bytes",
+          "address(param) - casting uint256 to address (takes last 20 bytes)",
+          "_bytes32ToAddress(param) - helper function casting to address",
+          "type X is uint256 - custom type with packed data"
+        ],
+        "action_if_found": "The existing byte slicing is CORRECT. Do NOT recommend removing or changing it.",
+        "action_if_not_found": "The byte slicing may be wrong. Check if the parameter should be displayed as full value instead."
+      },
+      {
+        "check": "Token path references",
+        "how_to_validate": "Verify tokenPath points to actual token address parameter in ABI",
+        "action_if_correct": "Do NOT recommend changes to working tokenPath references"
+      },
+      {
+        "check": "Format type appropriateness",
+        "how_to_validate": "Check if format matches parameter type and usage in source code",
+        "action_if_correct": "Do NOT recommend changing format if it's already appropriate"
+      }
+    ],
+    "example_false_positive": {
+      "descriptor": "{\"path\": \"amount\", \"tokenPath\": \"srcToken.[-20:]\"}",
+      "source_code": "address srcTokenAddr = _bytes32ToAddress(srcToken);",
+      "wrong_recommendation": "Change tokenPath from 'srcToken.[-20:]' to 'srcToken'",
+      "why_wrong": "Source code shows srcToken is cast to address, so .[-20:] extracts the address bytes - this is CORRECT",
+      "correct_action": "Do NOT recommend any changes - descriptor is already correct"
+    }
+  },
+
   "formatting_requirements": {
     "bullet_format": "USE BULLET POINTS with dashes (-), NOT numbered lists",
     "complete_sentences": "Each recommendation must be a COMPLETE, STANDALONE sentence",
@@ -52,7 +89,56 @@
         "Code snippet contains the actual JSON to add/modify, properly formatted",
         "DO NOT embed JSON in description text - use code_snippet field instead",
         "When recommending enum mappings: Use ACTUAL values from source code if available. If values are not visible in the provided source code, use clear placeholders like 'ROLE_VALIDATOR' or '0xROLE_VALUE_FROM_CONTRACT' and explicitly state 'populate with actual role constants from the contract source code'",
-        "NEVER use made-up hex values like 0x1111...1111 or 0x2222...2222 that appear to be real constants but are actually placeholders"
+        "NEVER use made-up hex values like 0x1111...1111 or 0x2222...2222 that appear to be real constants but are actually placeholders",
+        "CRITICAL - Check source code for packed data before recommending tokenPath/field paths: When recommending new fields or fixing tokenPath references, check if the source code contains bit masks, bit shifts, or address casts on that parameter. If the code shows operations like (param & MASK), (param >> 160), address(param), or _bytes32ToAddress(param), you MUST recommend the sliced path (e.g., srcToken.[-20:] to extract address bytes). Do NOT recommend using the raw parameter name without slicing when source code shows casting/masking."
+      ],
+      "packed_data_patterns": {
+        "title": "CRITICAL: Detecting packed uint256 parameters that need byte slicing",
+        "description": "When source code casts uint256 parameters to address or applies bit operations, the descriptor MUST use byte slicing to extract the correct portion",
+        "source_code_patterns_requiring_slicing": [
+          {
+            "pattern": "address(uint256_param) or address(bytes32_param)",
+            "descriptor_solution": "Use param.[-20:] to extract last 20 bytes (address)",
+            "example_code": "address srcTokenAddr = address(srcToken);",
+            "example_descriptor": "\"tokenPath\": \"srcToken.[-20:]\""
+          },
+          {
+            "pattern": "_bytes32ToAddress(param) or similar helper functions",
+            "descriptor_solution": "Use param.[-20:] to extract address bytes",
+            "example_code": "address srcTokenAddr = _bytes32ToAddress(srcToken);",
+            "example_descriptor": "\"tokenPath\": \"srcToken.[-20:]\""
+          },
+          {
+            "pattern": "(param & MASK) >> shift - extracting high bits",
+            "descriptor_solution": "Use param.[0:N] to extract high bytes",
+            "example_code": "uint256 orderId = (srcToken & _ORDER_ID_MASK) >> 160;",
+            "example_descriptor": "\"path\": \"srcToken.[0:12]\" // extracts order ID from high bytes"
+          },
+          {
+            "pattern": "param & 0xffff...ffff - masking to extract low bits",
+            "descriptor_solution": "Use param.[-N:] to extract low bytes",
+            "example_code": "address token = address(uint160(srcToken));",
+            "example_descriptor": "\"tokenPath\": \"srcToken.[-20:]\""
+          }
+        ],
+        "how_to_detect": "Look for type casting (address(), uint160()), helper functions (_bytes32ToAddress), or bit operations (&, >>, <<) on the parameter",
+        "action_when_detected": "ALWAYS recommend the sliced path in your code_snippet, NOT the raw parameter name",
+        "example_wrong_recommendation": {
+          "source_code": "address srcTokenAddr = _bytes32ToAddress(srcToken);",
+          "wrong": "\"tokenPath\": \"srcToken\"",
+          "why_wrong": "srcToken is uint256/bytes32 packed data, taking it directly won't extract the address correctly",
+          "correct": "\"tokenPath\": \"srcToken.[-20:]\"",
+          "why_correct": "Extracts last 20 bytes which is where the address is stored after casting"
+        }
+      }
+    },
+    {
+      "type": "Validating existing descriptors before recommending changes",
+      "description": "Before recommending changes to EXISTING byte slicing, verify it's actually wrong",
+      "requirements": [
+        "If descriptor already has byte slicing (e.g., srcToken.[-20:]), check source code to see if it's justified",
+        "Do NOT recommend removing slicing if source code shows casting/bit operations on that parameter",
+        "Only recommend changes to slicing if it's provably incorrect for the use case"
       ],
       "json_structure": {
         "title": "Brief, clear title of the fix",

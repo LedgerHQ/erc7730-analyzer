@@ -370,6 +370,25 @@
             "If function ONLY accepts native ETH (no token parameter) and no @.value field exists → CRITICAL",
             "If function accepts both tokens and ETH: Only NOT critical if another amount field displays the same value (e.g., deposit(uint256 amount) where amount must equal msg.value)"
           ],
+          "NOT_CRITICAL_when_tokenAmount_has_nativeCurrencyAddress": {
+            "title": "CRITICAL: Do NOT flag missing @.value when tokenAmount field already handles native ETH",
+            "rule": "If a tokenAmount field (either directly or via $ref) has nativeCurrencyAddress, and the tokenPath points to a token parameter that can be an ETH sentinel address, then that field ALREADY displays native ETH amounts. Adding @.value would create DUPLICATE display.",
+            "detection_steps": [
+              "Step 1: Check if descriptor has a tokenAmount field with tokenPath pointing to a token address parameter",
+              "Step 2: Check if that field has $ref - if yes, look up the definition",
+              "Step 3: Check if the definition (or field itself) has nativeCurrencyAddress parameter",
+              "Step 4: If YES → That field ALREADY displays native ETH when token is sentinel. DO NOT flag missing @.value"
+            ],
+            "concrete_example": {
+              "descriptor": {
+                "field": "{\"path\": \"baseRequest.fromTokenAmount\", \"$ref\": \"$.display.definitions.sendAmount\", \"params\": {\"tokenPath\": \"baseRequest.fromToken.[-20:]\"}}",
+                "definition": "{\"sendAmount\": {\"format\": \"tokenAmount\", \"params\": {\"nativeCurrencyAddress\": [\"0xEeee...\", \"0x0000...\"]}}}"
+              },
+              "why_NOT_critical": "The sendAmount definition has nativeCurrencyAddress. When baseRequest.fromToken is 0xEeee...eE (ETH sentinel), the fromTokenAmount field will display the amount as native ETH. This ALREADY shows msg.value equivalent. Adding @.value would duplicate the display.",
+              "action": "DO NOT flag as missing @.value. DO NOT recommend adding @.value field."
+            },
+            "when_it_IS_critical": "Only flag missing @.value if NONE of the tokenAmount fields have nativeCurrencyAddress (neither directly nor via $ref definition)"
+          },
           "fix_example": "{\"path\": \"@.value\", \"label\": \"Amount\", \"format\": \"amount\"}"
         },
         {

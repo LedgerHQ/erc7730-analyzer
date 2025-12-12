@@ -1765,9 +1765,21 @@ class SourceCodeExtractor:
                 result['total_lines'] += 1
                 logger.info(f"    ✓ Including using statement: {using_stmt}")
 
-        # Add internal functions that are called
-        # Also scan them for library calls
-        for internal_call in internal_calls:
+        # Add internal functions that are called - WITH RECURSIVE EXTRACTION
+        # We need to recursively find functions called by internal functions
+        processed_internal_calls = set()
+        internal_calls_to_process = list(set(internal_calls))  # Start with calls from main function
+
+        logger.info(f"  - Initial internal calls found: {internal_calls_to_process}")
+
+        while internal_calls_to_process:
+            internal_call = internal_calls_to_process.pop(0)
+
+            # Skip if already processed
+            if internal_call in processed_internal_calls:
+                continue
+            processed_internal_calls.add(internal_call)
+
             found = False
 
             # First check in internal_functions (private/internal visibility)
@@ -1780,6 +1792,13 @@ class SourceCodeExtractor:
                     all_code_to_scan.append(func_data['body'])  # Scan internal functions for constants too
                     result['total_lines'] += func_data['line_count']
                     logger.info(f"    ✓ Including internal function: {internal_call}()")
+
+                    # RECURSIVE: Find functions called BY this internal function
+                    nested_calls = parser.find_internal_functions_used(func_data['body'])
+                    for nested_call in nested_calls:
+                        if nested_call not in processed_internal_calls and nested_call not in internal_calls_to_process:
+                            internal_calls_to_process.append(nested_call)
+                            logger.debug(f"      → Found nested call: {nested_call}()")
 
                     # Scan this internal function for library calls too
                     internal_lib_calls = parser.find_library_calls(func_data['body'])
@@ -1801,10 +1820,21 @@ class SourceCodeExtractor:
                         result['total_lines'] += func_data['line_count']
                         logger.info(f"    ✓ Including called public/external function: {internal_call}()")
 
+                        # RECURSIVE: Find functions called BY this public function
+                        nested_calls = parser.find_internal_functions_used(func_data['body'])
+                        for nested_call in nested_calls:
+                            if nested_call not in processed_internal_calls and nested_call not in internal_calls_to_process:
+                                internal_calls_to_process.append(nested_call)
+                                logger.debug(f"      → Found nested call: {nested_call}()")
+
                         # Scan this function for library calls too
                         public_lib_calls = parser.find_library_calls(func_data['body'])
                         library_calls.extend(public_lib_calls)
+                        found = True
                         break
+
+            if not found:
+                logger.debug(f"    ⚠ Internal call {internal_call}() not found in extracted functions")
 
         # Add library functions that are called (e.g., LibAsset.isNativeAsset)
         # We need to recursively scan for nested library calls

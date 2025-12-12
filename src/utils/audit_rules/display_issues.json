@@ -147,7 +147,7 @@
               ]
             }
           },
-          "issue": "User receives native ETH but tokenPath points to sendingAssetId (input token). If user passes USDC address, display shows '100 USDC received' when they actually receive 100 ETH."
+          "issue": "User receives only native ETH but tokenPath points to sendingAssetId (input token). If user passes USDC address, display shows '100 USDC received' when they actually receive 100 ETH."
         },
         "solution": {
           "option1": {

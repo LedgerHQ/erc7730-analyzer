@@ -497,6 +497,32 @@
           "Are the output token and minimum amount shown?"
         ],
         "action": "NOT critical - intermediate routing doesn't affect final outcome users see"
+      },
+      {
+        "id": "missing_msg_value_when_tokenAmount_has_nativeCurrencyAddress",
+        "title": "Missing @.value when tokenAmount field already displays native ETH",
+        "description": "If a payable function has a tokenAmount field with nativeCurrencyAddress that displays ETH amounts via token parameter, adding @.value would create DUPLICATE display",
+        "patterns": [
+          "Field has $ref pointing to definition with nativeCurrencyAddress",
+          "Field uses tokenPath pointing to token address parameter",
+          "Token parameter can be ETH sentinel (0xEeee...eE or 0x0000...00)",
+          "When token is ETH sentinel, the tokenAmount field shows native ETH"
+        ],
+        "detection_steps": [
+          "Step 1: Check if descriptor has tokenAmount field with tokenPath to token parameter",
+          "Step 2: Check if field has $ref - if yes, look up the definition in display.definitions",
+          "Step 3: Check if definition (or field itself) has nativeCurrencyAddress",
+          "Step 4: If YES → Field ALREADY displays native ETH amounts when token is sentinel"
+        ],
+        "concrete_example": {
+          "descriptor_field": "{\"path\": \"baseRequest.fromTokenAmount\", \"$ref\": \"$.display.definitions.sendAmount\", \"params\": {\"tokenPath\": \"baseRequest.fromToken.[-20:]\"}}",
+          "definition": "{\"sendAmount\": {\"format\": \"tokenAmount\", \"params\": {\"nativeCurrencyAddress\": [\"0xEeee...eE\", \"0x0000...00\"]}}}",
+          "why_NOT_critical": "The sendAmount definition has nativeCurrencyAddress. When baseRequest.fromToken equals the ETH sentinel address, fromTokenAmount displays as native ETH. This ALREADY shows the equivalent of msg.value. Adding a separate @.value field would show the same amount twice (duplicate).",
+          "user_sees": "Amount to Send: 1.5 ETH (when fromToken is 0xEeee...eE)",
+          "if_we_added_at_value": "Amount to Send: 1.5 ETH + ETH Value: 1.5 ETH (DUPLICATE - confusing)"
+        },
+        "when_it_IS_critical": "Only flag missing @.value if NONE of the tokenAmount fields have nativeCurrencyAddress (neither directly nor via $ref)",
+        "action": "Mark as NOT CRITICAL. Do NOT recommend adding @.value field when tokenAmount with nativeCurrencyAddress already exists."
       }
     ],
     "spec_limitations": [

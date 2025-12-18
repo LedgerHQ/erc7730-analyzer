@@ -92,7 +92,9 @@ def generate_clear_signing_audit(
     erc7730_format: Dict,
     function_signature: str,
     source_code: Dict = None,
-    use_smart_referencing: bool = True
+    use_smart_referencing: bool = True,
+    erc4626_context: Dict = None,
+    erc20_context: Dict = None
 ) -> Tuple[str, str, Dict]:
     """
     Use AI to generate a clear signing audit report comparing decoded transactions
@@ -104,6 +106,9 @@ def generate_clear_signing_audit(
         erc7730_format: ERC-7730 format definition for this selector
         function_signature: Function signature
         source_code: Optional dictionary with extracted source code
+        use_smart_referencing: Whether to use smart rule referencing
+        erc4626_context: Optional ERC4626 vault context for special handling
+        erc20_context: Optional ERC20 token context for special handling
 
     Returns:
         Tuple of (critical_report, detailed_report) as markdown strings
@@ -160,6 +165,16 @@ def generate_clear_signing_audit(
                     # Add function body
                     source_code_section += f"```\n{internal_func_data['body']}\n```\n\n"
 
+            if source_code.get('parent_functions'):
+                source_code_section += "**Parent Contract Implementations (from super. calls):**\n"
+                logger.info(f"   Including {len(source_code['parent_functions'])} parent function(s) from super. calls")
+                for parent_func in source_code['parent_functions']:
+                    parent_name = parent_func.get('parent_contract', 'Unknown')
+                    func_name = parent_func.get('function_name', 'unknown')
+                    logger.info(f"      └─ {parent_name}.{func_name}()")
+                    source_code_section += f"*From {parent_name}.{func_name}():*\n"
+                    source_code_section += f"```\n{parent_func['body']}\n```\n\n"
+
             if source_code.get('libraries'):
                 source_code_section += "**Libraries used:**\n"
                 for library in source_code['libraries']:
@@ -167,6 +182,56 @@ def generate_clear_signing_audit(
 
             if source_code.get('truncated'):
                 source_code_section += "⚠️ **Note:** Source code was truncated to fit within limits. Focus on the main function.\n\n"
+
+        # Build ERC4626 context section if applicable
+        erc4626_section = ""
+        if erc4626_context and erc4626_context.get('is_erc4626_vault'):
+            logger.info("\n🏦 Adding ERC4626 context to AI prompt:")
+            logger.info(f"   Detection source: {erc4626_context.get('detection_source', 'unknown')}")
+
+            erc4626_section = "\n\n---\n\n**🏦 ERC4626 TOKENIZED VAULT DETECTED**\n\n"
+            erc4626_section += "This contract implements the ERC4626 tokenized vault standard.\n\n"
+
+            if erc4626_context.get('underlying_token'):
+                erc4626_section += f"**Underlying asset token (from metadata):** `{erc4626_context['underlying_token']}`\n"
+                logger.info(f"   Underlying token (metadata): {erc4626_context['underlying_token']}")
+
+            if erc4626_context.get('asset_from_chain'):
+                erc4626_section += f"**Underlying asset token (from on-chain asset()):** `{erc4626_context['asset_from_chain']}`\n"
+                logger.info(f"   Asset token (on-chain): {erc4626_context['asset_from_chain']}")
+
+            if erc4626_context.get('detected_patterns'):
+                erc4626_section += f"\n**Detection evidence:** {', '.join(erc4626_context['detected_patterns'])}\n"
+                logger.info(f"   Patterns: {', '.join(erc4626_context['detected_patterns'][:3])}...")
+
+            erc4626_section += "\n*Note: Refer to validation rule `erc4626_vault_share_token` for ERC4626-specific evaluation criteria.*\n"
+            erc4626_section += "\n---\n"
+            logger.info("   ✓ ERC4626 context section added to prompt")
+
+        # Build ERC20 context section if applicable (only if not ERC4626, since ERC4626 extends ERC20)
+        erc20_section = ""
+        if erc20_context and erc20_context.get('is_erc20_token') and not erc4626_section:
+            logger.info("\n🪙 Adding ERC20 context to AI prompt:")
+            logger.info(f"   Detection source: {erc20_context.get('detection_source', 'unknown')}")
+
+            erc20_section = "\n\n---\n\n**🪙 ERC20 TOKEN CONTRACT DETECTED**\n\n"
+            erc20_section += "This contract implements the ERC20 token standard.\n\n"
+
+            if erc20_context.get('contract_name'):
+                erc20_section += f"**Contract name:** `{erc20_context['contract_name']}`\n"
+                logger.info(f"   Contract name: {erc20_context['contract_name']}")
+
+            if erc20_context.get('detected_patterns'):
+                erc20_section += f"\n**Detection evidence:** {', '.join(erc20_context['detected_patterns'])}\n"
+                logger.info(f"   Patterns: {', '.join(erc20_context['detected_patterns'][:3]) if len(erc20_context['detected_patterns']) > 3 else ', '.join(erc20_context['detected_patterns'])}...")
+
+            erc20_section += "\n**IMPORTANT IMPLICATION FOR @.to PATH:**\n"
+            erc20_section += "- When the contract IS an ERC20 token, using `@.to` to reference the token address is CORRECT\n"
+            erc20_section += "- The contract address (where the function is called) is the same as the token address\n"
+            erc20_section += "- Example: In a `transfer(address to, uint256 amount)` function, if the descriptor shows 'Amount: X TOKEN', where TOKEN uses `@.to` as the contract address, this is correct because the contract itself is the token\n"
+            erc20_section += "- DO NOT flag `@.to` usage as incorrect when the contract is an ERC20 token\n"
+            erc20_section += "\n---\n"
+            logger.info("   ✓ ERC20 context section added to prompt")
 
         # Extract enums from ERC-7730 descriptor for context
         erc7730_enums_section = "\n\n**ERC-7730 Enum Definitions (from descriptor):**\n\n"
@@ -207,7 +272,7 @@ This analysis supports both Solidity and Vyper contracts. Vyper uses Python-like
 
 INPUTS:
 **Function:** {function_signature}
-**Selector:** {selector}{source_code_section}
+**Selector:** {selector}{source_code_section}{erc4626_section}{erc20_section}
 
 **ERC-7730 Format Definition:**
 ```json

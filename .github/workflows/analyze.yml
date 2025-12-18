@@ -156,7 +156,7 @@ jobs:
           fi
 
           # Find SUMMARY report
-          SUMMARY_FILE=$(ls output/SUMMARY_*.md 2>/dev/null | head -1)
+          SUMMARY_FILE=$(ls output/FULL_REPORT_*.md 2>/dev/null | head -1)
           if [ -f "$SUMMARY_FILE" ]; then
             echo "### 📋 Detailed Summary" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY

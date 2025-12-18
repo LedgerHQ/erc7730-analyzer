@@ -12,8 +12,9 @@ This module handles:
 import json
 import logging
 import re
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any, Optional, Set, Tuple
 import requests
+from eth_utils import keccak
 
 logger = logging.getLogger(__name__)
 
@@ -309,9 +310,16 @@ class SolidityCodeParser:
             elif 'private' in visibility_block:
                 visibility = 'private'
 
+            # Check if function is virtual or override
+            is_virtual = 'virtual' in visibility_block
+            is_override = 'override' in visibility_block
+
             # Extract full function body
             start_pos = match.start()
             body_start = match.end() - 1  # Position of opening brace
+
+            # Find which contract this function belongs to
+            contract_name = self._find_contract_for_position(start_pos)
 
             # Find matching closing brace
             open_braces = 0
@@ -350,6 +358,9 @@ class SolidityCodeParser:
                 'body': function_body,
                 'docstring': docstring,
                 'modifiers': modifiers_used,  # NEW: List of modifier names
+                'is_virtual': is_virtual,
+                'is_override': is_override,
+                'contract_name': contract_name,
                 'start_line': start_line,
                 'end_line': end_line,
                 'line_count': end_line - start_line + 1
@@ -361,6 +372,48 @@ class SolidityCodeParser:
                 logger.debug(f"Found function: {function_name} ({visibility}) at lines {start_line}-{end_line}")
 
         return functions
+
+    def _find_contract_for_position(self, position: int) -> Optional[str]:
+        """
+        Find which contract a given position in source code belongs to.
+
+        Args:
+            position: Character position in source code
+
+        Returns:
+            Contract name or None if not found
+        """
+        code_before = self.source_code[:position]
+
+        # Find all contract declarations before this position
+        # Pattern matches: contract Name, contract Name is Parent1, Parent2
+        contract_pattern = r'(?:abstract\s+)?contract\s+(\w+)(?:\s+is\s+[^{]+)?\s*\{'
+
+        last_contract = None
+        last_contract_pos = -1
+
+        for match in re.finditer(contract_pattern, code_before):
+            contract_start = match.start()
+            # Find the closing brace for this contract
+            open_braces = 0
+            i = match.end() - 1  # Start at the opening brace
+            while i < len(self.source_code):
+                if self.source_code[i] == '{':
+                    open_braces += 1
+                elif self.source_code[i] == '}':
+                    open_braces -= 1
+                    if open_braces == 0:
+                        contract_end = i
+                        # Check if our position is within this contract
+                        if contract_start < position <= contract_end:
+                            # This is the innermost contract containing our position
+                            if contract_start > last_contract_pos:
+                                last_contract = match.group(1)
+                                last_contract_pos = contract_start
+                        break
+                i += 1
+
+        return last_contract
 
     def _extract_docstring_before_position(self, position: int) -> Optional[str]:
         """Extract NatSpec comment immediately before a given position."""
@@ -479,6 +532,157 @@ class SolidityCodeParser:
                 modifiers.append(modifier_name)
 
         return list(set(modifiers))  # Remove duplicates
+
+    def find_super_calls(self, function_body: str) -> List[str]:
+        """
+        Find super.functionName() calls within a function body.
+
+        Args:
+            function_body: The function body code
+
+        Returns:
+            List of function names called via super (e.g., ["deposit", "withdraw"])
+        """
+        super_calls = []
+
+        # Pattern to match super.functionName(
+        super_pattern = r'super\.(\w+)\s*\('
+
+        for match in re.finditer(super_pattern, function_body):
+            func_name = match.group(1)
+            super_calls.append(func_name)
+            logger.debug(f"Found super call: super.{func_name}()")
+
+        return list(set(super_calls))
+
+    def extract_inheritance_chain(self) -> Dict[str, List[str]]:
+        """
+        Extract inheritance relationships from all contracts in the source code.
+
+        Returns:
+            Dictionary mapping contract name to list of parent contracts
+            e.g., {"MyVault": ["ERC4626", "Ownable"], "ERC4626": ["ERC20"]}
+        """
+        inheritance = {}
+
+        # Pattern to match contract inheritance: contract Name is Parent1, Parent2
+        # Also handles abstract contract
+        contract_pattern = r'(?:abstract\s+)?contract\s+(\w+)\s+is\s+([^{]+)\s*\{'
+
+        for match in re.finditer(contract_pattern, self.cleaned_code):
+            contract_name = match.group(1)
+            parents_str = match.group(2)
+
+            # Parse parent contracts (may include constructor calls)
+            # e.g., "ERC4626(asset_), Ownable(owner)" -> ["ERC4626", "Ownable"]
+            parents = []
+            for parent in parents_str.split(','):
+                parent = parent.strip()
+                # Extract just the contract name (before any parentheses)
+                parent_name = re.match(r'(\w+)', parent)
+                if parent_name:
+                    parents.append(parent_name.group(1))
+
+            inheritance[contract_name] = parents
+            logger.debug(f"Found inheritance: {contract_name} is {parents}")
+
+        return inheritance
+
+    def find_function_in_parent(self, function_name: str, parent_name: str) -> Optional[Dict[str, Any]]:
+        """
+        Find a function definition in a specific parent contract.
+
+        Args:
+            function_name: Name of the function to find
+            parent_name: Name of the parent contract to search in
+
+        Returns:
+            Function data dict or None if not found
+        """
+        # Find the parent contract definition
+        # Pattern: contract ParentName ... { ... }
+        parent_pattern = rf'(?:abstract\s+)?contract\s+{re.escape(parent_name)}\s+(?:is\s+[^{{]+)?\s*\{{'
+
+        match = re.search(parent_pattern, self.source_code)
+        if not match:
+            logger.debug(f"Parent contract {parent_name} not found in source")
+            return None
+
+        # Find the contract body (everything between { and matching })
+        start_pos = match.end() - 1  # Position of opening brace
+        open_braces = 0
+        contract_body_start = start_pos
+        contract_body_end = len(self.source_code)
+
+        i = start_pos
+        while i < len(self.source_code):
+            if self.source_code[i] == '{':
+                open_braces += 1
+            elif self.source_code[i] == '}':
+                open_braces -= 1
+                if open_braces == 0:
+                    contract_body_end = i
+                    break
+            i += 1
+
+        contract_body = self.source_code[contract_body_start:contract_body_end + 1]
+
+        # Search for the function in this contract's body
+        # Pattern: function functionName(
+        func_pattern = rf'function\s+{re.escape(function_name)}\s*\(([^)]*)\)\s+([^{{]+)\{{'
+
+        func_match = re.search(func_pattern, contract_body)
+        if not func_match:
+            logger.debug(f"Function {function_name} not found in {parent_name}")
+            return None
+
+        # Extract the full function body
+        func_start = contract_body_start + func_match.start()
+        body_start = contract_body_start + func_match.end() - 1
+
+        # Find matching closing brace
+        open_braces = 0
+        i = body_start
+        while i < len(self.source_code):
+            if self.source_code[i] == '{':
+                open_braces += 1
+            elif self.source_code[i] == '}':
+                open_braces -= 1
+                if open_braces == 0:
+                    body_end = i + 1
+                    break
+            i += 1
+        else:
+            body_end = len(self.source_code)
+
+        function_body = self.source_code[func_start:body_end]
+
+        # Determine visibility
+        visibility_block = func_match.group(2).strip()
+        visibility = 'internal'
+        if 'public' in visibility_block:
+            visibility = 'public'
+        elif 'external' in visibility_block:
+            visibility = 'external'
+        elif 'private' in visibility_block:
+            visibility = 'private'
+
+        params_clean = self._clean_comments_from_params(func_match.group(1).strip())
+        start_line = self.source_code[:func_start].count('\n') + 1
+        end_line = self.source_code[:body_end].count('\n') + 1
+
+        logger.info(f"  ✓ Found {function_name} in parent {parent_name}")
+
+        return {
+            'name': function_name,
+            'visibility': visibility,
+            'signature': f"{function_name}({params_clean})",
+            'body': function_body,
+            'parent_contract': parent_name,
+            'start_line': start_line,
+            'end_line': end_line,
+            'line_count': end_line - start_line + 1
+        }
 
 
 class SourceCodeExtractor:
@@ -672,6 +876,41 @@ class SourceCodeExtractor:
         except Exception as e:
             logger.debug(f"Failed to fetch from Sourcify: {e}")
             return None
+
+    def get_contract_name_from_etherscan(self, contract_address: str, chain_id: int) -> Optional[str]:
+        """
+        Get the deployed contract name from Etherscan.
+
+        Args:
+            contract_address: Contract address
+            chain_id: Chain ID
+
+        Returns:
+            Contract name or None
+        """
+        try:
+            base_url = f"https://api.etherscan.io/v2/api?chainid={chain_id}"
+            params = {
+                'module': 'contract',
+                'action': 'getsourcecode',
+                'address': contract_address,
+                'apikey': self.etherscan_api_key
+            }
+
+            response = requests.get(base_url, params=params, timeout=10)
+            response.raise_for_status()
+            data = response.json()
+
+            if data['status'] == '1' and data.get('result'):
+                contract_name = data['result'][0].get('ContractName', '')
+                if contract_name:
+                    logger.debug(f"Contract name from Etherscan: {contract_name}")
+                    return contract_name
+
+        except Exception as e:
+            logger.debug(f"Failed to get contract name from Etherscan: {e}")
+
+        return None
 
     def fetch_source_from_etherscan(self, contract_address: str, chain_id: int) -> Optional[str]:
         """
@@ -1186,6 +1425,12 @@ class SourceCodeExtractor:
                     contract_address = impl_address  # Use implementation for source code
                     logger.info(f"Using implementation address: {impl_address}")
 
+        # Fetch contract name from Etherscan (most reliable source)
+        contract_name = self.get_contract_name_from_etherscan(contract_address, chain_id)
+        if contract_name:
+            result['contract_name'] = contract_name
+            logger.info(f"✓ Deployed contract: {contract_name}")
+
         # Fetch source code (try Sourcify first, then Etherscan)
         source_code = self.fetch_source_from_sourcify(contract_address, chain_id)
         if not source_code:
@@ -1399,6 +1644,82 @@ class SourceCodeExtractor:
             base_type = 'fixed128x18'
 
         return base_type + array_suffix
+
+    def _compute_function_selector(
+        self,
+        function_signature: str,
+        custom_type_mapping: Optional[Dict[str, str]] = None,
+        struct_type_mapping: Optional[Dict[str, str]] = None
+    ) -> str:
+        """
+        Compute the 4-byte function selector from a function signature.
+
+        Args:
+            function_signature: Function signature (e.g., "mint(uint256,address)")
+            custom_type_mapping: Optional mapping of custom types to base types
+            struct_type_mapping: Optional mapping of struct types to tuple representations
+
+        Returns:
+            Function selector as hex string (e.g., "0x40c10f19")
+        """
+        # Normalize the signature to handle custom types and structs
+        normalized_sig = self._normalize_signature_for_matching(
+            function_signature,
+            custom_type_mapping or {},
+            struct_type_mapping or {}
+        )
+
+        # Compute keccak256 hash and take first 4 bytes
+        selector = "0x" + keccak(text=normalized_sig).hex()[:8]
+        return selector
+
+    def _build_inheritance_hierarchy(
+        self,
+        contract_name: str,
+        inheritance_map: Dict[str, List[str]]
+    ) -> List[str]:
+        """
+        Build the full inheritance hierarchy for a contract, ordered by priority.
+
+        The order is: [contract_name, direct_parents..., grandparents..., etc.]
+        This follows the C3 linearization (MRO) used by Solidity.
+
+        Args:
+            contract_name: Name of the contract
+            inheritance_map: Dict mapping contract names to their direct parents
+
+        Returns:
+            List of contract names in priority order (from most specific to most general)
+        """
+        if not contract_name:
+            return []
+
+        # Use depth-first search with post-order traversal to build hierarchy
+        visited: Set[str] = set()
+        hierarchy: List[str] = []
+
+        def dfs(current: str):
+            if current in visited:
+                return
+            visited.add(current)
+
+            # Visit parents first (depth-first)
+            parents = inheritance_map.get(current, [])
+            for parent in parents:
+                dfs(parent)
+
+            # Add current contract after visiting all parents (post-order)
+            # This ensures parents come before the contract that inherits from them
+            if current not in hierarchy:
+                hierarchy.append(current)
+
+        dfs(contract_name)
+
+        # Reverse to get priority order: most specific (child) first, most general (base) last
+        hierarchy.reverse()
+
+        logger.debug(f"Built inheritance hierarchy for {contract_name}: {hierarchy}")
+        return hierarchy
 
     @staticmethod
     def _normalize_signature_for_matching(
@@ -1617,41 +1938,121 @@ class SourceCodeExtractor:
             normalized_target_sig = self._normalize_signature_for_matching(function_signature, custom_type_mapping, struct_type_mapping)
             logger.info(f"  Looking for function with normalized signature: {normalized_target_sig}")
 
-        # Track all candidates
-        candidates = []
-        first_candidate = None
+        # Get main contract name and build inheritance hierarchy
+        main_contract_name = extracted_code.get('contract_name')
 
+        # Extract inheritance relationships from source code
+        parser = SolidityCodeParser(extracted_code.get('source_code', ''))
+        inheritance_map = parser.extract_inheritance_chain()
+
+        # Build full inheritance hierarchy (main -> parents -> grandparents -> ...)
+        inheritance_hierarchy = []
+        if main_contract_name:
+            inheritance_hierarchy = self._build_inheritance_hierarchy(main_contract_name, inheritance_map)
+            if len(inheritance_hierarchy) > 1:
+                logger.info(f"  Inheritance hierarchy: {' -> '.join(inheritance_hierarchy)}")
+
+        # Compute target selector if signature is provided
+        target_selector = None
+        if normalized_target_sig:
+            target_selector = self._compute_function_selector(
+                normalized_target_sig,
+                custom_type_mapping,
+                struct_type_mapping
+            )
+            logger.info(f"  Target selector: {target_selector}")
+
+        # Collect all matching candidates (by name and visibility)
+        all_candidates = []
         for func_data in extracted_code['functions'].values():
             if func_data['name'] == function_name and func_data['visibility'] in ['public', 'external']:
-                # Store first candidate as fallback
-                if not first_candidate:
-                    first_candidate = func_data
+                all_candidates.append(func_data)
 
-                # If signature is provided, try smart matching by signature
-                if normalized_target_sig:
-                    # Normalize the extracted signature for comparison
-                    extracted_sig = self._normalize_signature_for_matching(func_data['signature'], custom_type_mapping, struct_type_mapping)
-                    candidates.append((func_data, func_data['signature'], extracted_sig))
-                    logger.debug(f"    Comparing: {extracted_sig} vs {normalized_target_sig}")
-                    if extracted_sig == normalized_target_sig:
-                        target_function = func_data
-                        logger.info(f"  ✓ Smart match by signature: {func_data['signature']} -> {extracted_sig}")
+        # Filter out interface definitions (contract_name = None)
+        contract_candidates = [f for f in all_candidates if f.get('contract_name') is not None]
+
+        if not contract_candidates:
+            logger.warning(f"  All {len(all_candidates)} matching functions are interface definitions")
+            contract_candidates = all_candidates
+
+        logger.info(f"  Found {len(contract_candidates)} candidate functions with name '{function_name}'")
+
+        # PHASE 1: Try to match by EXACT SELECTOR following inheritance hierarchy
+        target_function = None
+        if target_selector and inheritance_hierarchy:
+            logger.info(f"  Phase 1: Searching by selector {target_selector} following inheritance chain...")
+            for contract_name in inheritance_hierarchy:
+                # Find candidates in this contract
+                contract_funcs = [f for f in contract_candidates if f.get('contract_name') == contract_name]
+                if not contract_funcs:
+                    continue
+
+                # Check if any have matching selector
+                for func in contract_funcs:
+                    func_sig = self._normalize_signature_for_matching(
+                        func['signature'],
+                        custom_type_mapping,
+                        struct_type_mapping
+                    )
+                    func_selector = self._compute_function_selector(
+                        func_sig,
+                        custom_type_mapping,
+                        struct_type_mapping
+                    )
+
+                    if func_selector == target_selector:
+                        # Found exact selector match!
+                        target_function = func
+                        logger.info(f"  ✓ Found exact selector match in {contract_name}: {func['signature']}")
                         break
-                else:
-                    # No signature provided, take first match by name
-                    target_function = func_data
-                    logger.info(f"  ✓ Matched function by name only: {func_data['signature']}")
+
+                if target_function:
                     break
 
-        # Fallback: if signature matching failed but we have candidates, use first candidate
-        if not target_function and first_candidate:
-            target_function = first_candidate
-            logger.info(f"  ⚠ Signature matching failed, using first candidate (fallback): {first_candidate['signature']}")
-            if candidates:
-                logger.debug(f"    Target signature: {normalized_target_sig}")
-                logger.debug(f"    Found {len(candidates)} candidate(s):")
-                for func, orig_sig, norm_sig in candidates:
-                    logger.debug(f"      - {orig_sig} -> {norm_sig}")
+        # PHASE 2: If no selector match, try to match by NAME following inheritance hierarchy
+        if not target_function and inheritance_hierarchy:
+            logger.info(f"  Phase 2: Searching by name following inheritance chain...")
+            for contract_name in inheritance_hierarchy:
+                # Find candidates in this contract
+                contract_funcs = [f for f in contract_candidates if f.get('contract_name') == contract_name]
+                if not contract_funcs:
+                    continue
+
+                # Prefer non-virtual functions
+                non_virtual = [f for f in contract_funcs if not f.get('is_virtual', False)]
+                if non_virtual:
+                    target_function = non_virtual[0]
+                    logger.info(f"  ✓ Found by name in {contract_name}: {target_function['signature']} (non-virtual)")
+                else:
+                    target_function = contract_funcs[0]
+                    logger.info(f"  ✓ Found by name in {contract_name}: {target_function['signature']} (virtual)")
+                break
+
+        # PHASE 3: Fallback - if still not found, use old logic (prefer non-virtual, latest line)
+        if not target_function and contract_candidates:
+            logger.info(f"  Phase 3: Fallback - using non-inheritance matching...")
+            non_virtual = [f for f in contract_candidates if not f.get('is_virtual', False)]
+            if non_virtual:
+                # Sort by line number (later = more likely to be the actual implementation)
+                non_virtual.sort(key=lambda f: f.get('start_line', 0), reverse=True)
+                target_function = non_virtual[0]
+                logger.info(f"  ✓ Selected: {target_function.get('contract_name', 'Unknown')}.{target_function['signature']} (line {target_function['start_line']})")
+            else:
+                contract_candidates.sort(key=lambda f: f.get('start_line', 0), reverse=True)
+                target_function = contract_candidates[0]
+                logger.info(f"  ✓ Selected: {target_function.get('contract_name', 'Unknown')}.{target_function['signature']} (line {target_function['start_line']}, virtual)")
+
+        # Log all candidates if multiple were found
+        if target_function and len(contract_candidates) > 1:
+            logger.debug(f"  All {len(contract_candidates)} candidates:")
+            for func in contract_candidates:
+                is_selected = (func == target_function)
+                marker = "✓ SELECTED" if is_selected else "  "
+                contract = func.get('contract_name', 'Unknown')
+                is_override = "override" if func.get('is_override') else ""
+                is_virtual = "virtual" if func.get('is_virtual') else ""
+                modifiers = f"{is_override} {is_virtual}".strip()
+                logger.debug(f"    {marker} {contract}.{func['signature']} {modifiers} (line {func['start_line']})")
 
         if not target_function:
             logger.warning(f"Function {function_name} not found - no matching name or visibility")
@@ -1667,10 +2068,11 @@ class SourceCodeExtractor:
                 'truncated': False
             }
 
-        # Parse function to find internal calls and library calls
+        # Parse function to find internal calls, library calls, and super calls
         parser = SolidityCodeParser(target_function['body'])
         internal_calls = parser.find_internal_functions_used(target_function['body'])
         library_calls = parser.find_library_calls(target_function['body'])
+        super_calls = parser.find_super_calls(target_function['body'])
 
         # Collect dependencies
         result = {
@@ -1680,8 +2082,9 @@ class SourceCodeExtractor:
             'using_statements': [],
             'libraries': [],
             'structs': [],
-            'modifiers': [],  # NEW: Will store modifier code used by this function
+            'modifiers': [],  # Will store modifier code used by this function
             'internal_functions': [],  # Will store dicts with 'body' and 'docstring'
+            'parent_functions': [],  # NEW: Will store parent implementations from super. calls
             'enums': [],
             'constants': [],
             'total_lines': target_function['line_count'],
@@ -1766,11 +2169,17 @@ class SourceCodeExtractor:
                 logger.info(f"    ✓ Including using statement: {using_stmt}")
 
         # Add internal functions that are called - WITH RECURSIVE EXTRACTION
+        # PRIORITY: Search in main contract first, then in parent/other contracts
         # We need to recursively find functions called by internal functions
         processed_internal_calls = set()
         internal_calls_to_process = list(set(internal_calls))  # Start with calls from main function
 
+        # Get main contract name for prioritization
+        main_contract = target_function.get('contract_name')
+
         logger.info(f"  - Initial internal calls found: {internal_calls_to_process}")
+        if main_contract:
+            logger.debug(f"  - Will prioritize functions from main contract: {main_contract}")
 
         while internal_calls_to_process:
             internal_call = internal_calls_to_process.pop(0)
@@ -1781,57 +2190,72 @@ class SourceCodeExtractor:
             processed_internal_calls.add(internal_call)
 
             found = False
+            func_to_use = None
 
-            # First check in internal_functions (private/internal visibility)
-            for func_data in extracted_code['internal_functions'].values():
-                if func_data['name'] == internal_call:
-                    result['internal_functions'].append({
-                        'body': func_data['body'],
-                        'docstring': func_data.get('docstring')
-                    })
-                    all_code_to_scan.append(func_data['body'])  # Scan internal functions for constants too
-                    result['total_lines'] += func_data['line_count']
-                    logger.info(f"    ✓ Including internal function: {internal_call}()")
+            # PRIORITY 1: Check in internal_functions from main contract first
+            if main_contract:
+                for func_data in extracted_code['internal_functions'].values():
+                    if func_data['name'] == internal_call and func_data.get('contract_name') == main_contract:
+                        func_to_use = func_data
+                        logger.info(f"    ✓ Including internal function from main contract: {internal_call}()")
+                        found = True
+                        break
 
-                    # RECURSIVE: Find functions called BY this internal function
-                    nested_calls = parser.find_internal_functions_used(func_data['body'])
-                    for nested_call in nested_calls:
-                        if nested_call not in processed_internal_calls and nested_call not in internal_calls_to_process:
-                            internal_calls_to_process.append(nested_call)
-                            logger.debug(f"      → Found nested call: {nested_call}()")
+            # PRIORITY 2: If not in main contract, check in other internal_functions
+            if not found:
+                for func_data in extracted_code['internal_functions'].values():
+                    if func_data['name'] == internal_call:
+                        func_to_use = func_data
+                        contract_src = func_data.get('contract_name', 'unknown')
+                        logger.info(f"    ✓ Including internal function from {contract_src}: {internal_call}()")
+                        found = True
+                        break
 
-                    # Scan this internal function for library calls too
-                    internal_lib_calls = parser.find_library_calls(func_data['body'])
-                    library_calls.extend(internal_lib_calls)
-                    found = True
-                    break
+            # PRIORITY 3: Check in public/external functions from main contract
+            if not found and main_contract:
+                for func_data in extracted_code['functions'].values():
+                    if func_data['name'] == internal_call and func_data['name'] != function_name:
+                        if func_data.get('contract_name') == main_contract:
+                            func_to_use = func_data
+                            logger.info(f"    ✓ Including public function from main contract: {internal_call}()")
+                            found = True
+                            break
 
-            # If not found in internal functions, check in all functions (public/external)
-            # This handles wrapper functions that call other public functions
+            # PRIORITY 4: If not found, check in all other public/external functions
             if not found:
                 for func_data in extracted_code['functions'].values():
                     if func_data['name'] == internal_call and func_data['name'] != function_name:
-                        # Avoid infinite recursion by not including the function itself
-                        result['internal_functions'].append({
-                            'body': func_data['body'],
-                            'docstring': func_data.get('docstring')
-                        })
-                        all_code_to_scan.append(func_data['body'])
-                        result['total_lines'] += func_data['line_count']
-                        logger.info(f"    ✓ Including called public/external function: {internal_call}()")
-
-                        # RECURSIVE: Find functions called BY this public function
-                        nested_calls = parser.find_internal_functions_used(func_data['body'])
-                        for nested_call in nested_calls:
-                            if nested_call not in processed_internal_calls and nested_call not in internal_calls_to_process:
-                                internal_calls_to_process.append(nested_call)
-                                logger.debug(f"      → Found nested call: {nested_call}()")
-
-                        # Scan this function for library calls too
-                        public_lib_calls = parser.find_library_calls(func_data['body'])
-                        library_calls.extend(public_lib_calls)
+                        func_to_use = func_data
+                        contract_src = func_data.get('contract_name', 'unknown')
+                        logger.info(f"    ✓ Including public/external function from {contract_src}: {internal_call}()")
                         found = True
                         break
+
+            # Process the found function
+            if func_to_use:
+                result['internal_functions'].append({
+                    'body': func_to_use['body'],
+                    'docstring': func_to_use.get('docstring')
+                })
+                all_code_to_scan.append(func_to_use['body'])  # Scan internal functions for constants too
+                result['total_lines'] += func_to_use['line_count']
+
+                # RECURSIVE: Find functions called BY this function
+                nested_calls = parser.find_internal_functions_used(func_to_use['body'])
+                for nested_call in nested_calls:
+                    if nested_call not in processed_internal_calls and nested_call not in internal_calls_to_process:
+                        internal_calls_to_process.append(nested_call)
+                        logger.debug(f"      → Found nested call: {nested_call}()")
+
+                # Check for super. calls in this function
+                nested_super_calls = parser.find_super_calls(func_to_use['body'])
+                if nested_super_calls:
+                    logger.info(f"      → Found super. calls in {internal_call}(): {nested_super_calls}")
+                    super_calls.extend(nested_super_calls)  # Add to the main super_calls list
+
+                # Scan this function for library calls too
+                lib_calls_in_func = parser.find_library_calls(func_to_use['body'])
+                library_calls.extend(lib_calls_in_func)
 
             if not found:
                 logger.debug(f"    ⚠ Internal call {internal_call}() not found in extracted functions")
@@ -1955,6 +2379,53 @@ class SourceCodeExtractor:
 
         if constants_found:
             logger.info(f"  - Constants extracted: {', '.join(constants_found)}")
+
+        # Handle super. calls - extract inheritance chain and find parent implementations
+        # Do this AFTER collecting all internal functions so we catch super calls in nested functions
+        if super_calls and extracted_code.get('source_code'):
+            # Deduplicate super calls
+            super_calls = list(set(super_calls))
+            logger.info(f"\n🔗 INHERITANCE CHAIN FOLLOWING")
+            logger.info(f"   Found {len(super_calls)} unique super. call(s): {', '.join(super_calls)}")
+
+            # Create a full parser to get inheritance info
+            full_parser = SolidityCodeParser(extracted_code['source_code'])
+            inheritance_chain = full_parser.extract_inheritance_chain()
+
+            if inheritance_chain:
+                logger.info(f"   Extracted inheritance relationships:")
+                for contract, parents in inheritance_chain.items():
+                    logger.info(f"      {contract} → {', '.join(parents)}")
+
+                # For each super call, search in all parent contracts
+                for super_func_name in super_calls:
+                    logger.info(f"\n   Searching for super.{super_func_name}() in parent contracts...")
+                    found = False
+                    # Search through all contracts that have parents
+                    for contract_name, parents in inheritance_chain.items():
+                        for parent_name in parents:
+                            logger.debug(f"      Checking {parent_name}...")
+                            parent_func = full_parser.find_function_in_parent(super_func_name, parent_name)
+                            if parent_func:
+                                result['parent_functions'].append({
+                                    'body': parent_func['body'],
+                                    'parent_contract': parent_name,
+                                    'function_name': super_func_name
+                                })
+                                result['total_lines'] += parent_func['line_count']
+                                logger.info(f"      ✓ Found in {parent_name}.{super_func_name}() ({parent_func['line_count']} lines)")
+                                found = True
+                                break
+                        if found:
+                            break
+
+                    if not found:
+                        logger.warning(f"      ⚠ Could not find parent implementation for super.{super_func_name}()")
+            else:
+                logger.warning(f"   ⚠ No inheritance chain found in source code")
+                logger.warning(f"   Cannot resolve super. calls: {super_calls}")
+        elif super_calls:
+            logger.warning(f"  ⚠ Found super. calls but no source code available: {super_calls}")
 
         # Check if we need to truncate
         if result['total_lines'] > max_lines:

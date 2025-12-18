@@ -619,6 +619,15 @@ def format_source_code_section(source_code: Dict) -> str:
                 code_block += f"{internal_func['docstring']}\n"
             code_block += f"{internal_func['body']}\n\n"
 
+    # Add parent functions (from super. calls) if available
+    if source_code.get('parent_functions'):
+        code_block += "\n\n// Parent contract implementations (from super. calls):\n"
+        for parent_func in source_code['parent_functions']:
+            parent_name = parent_func.get('parent_contract', 'Unknown')
+            func_name = parent_func.get('function_name', 'unknown')
+            code_block += f"// From {parent_name}.{func_name}():\n"
+            code_block += f"{parent_func['body']}\n\n"
+
     # Add libraries if available (LOWEST PRIORITY - shown last)
     if source_code.get('libraries'):
         code_block += "\n// Libraries:\n"
@@ -859,6 +868,18 @@ def generate_summary_file(results: Dict, summary_file: Path):
         report += f"**Selector:** `{selector}` | **Signature:** `{function_sig}`\n\n"
         report += f"**Contract Address:** `{contract_addr}` | **Chain ID:** {chain_id}\n\n"
 
+        # Add ERC4626 context if available
+        erc4626_context = results.get('erc4626_context')
+        if erc4626_context and erc4626_context.get('is_erc4626_vault'):
+            report += "**🏦 ERC4626 Tokenized Vault Detected**\n\n"
+            if erc4626_context.get('underlying_token'):
+                report += f"- **Underlying Asset (metadata):** `{erc4626_context['underlying_token']}`\n"
+            if erc4626_context.get('asset_from_chain'):
+                report += f"- **Asset Token (on-chain asset()):** `{erc4626_context['asset_from_chain']}`\n"
+            if erc4626_context.get('detection_source'):
+                report += f"- **Detection:** {erc4626_context['detection_source']}\n"
+            report += "\n"
+
         # Add ERC-7730 format definition (collapsible) with expanded refs
         report += "<details>\n<summary><b>📋 ERC-7730 Format Definition</b></summary>\n\n"
         report += "```json\n"
@@ -1061,6 +1082,18 @@ def generate_criticals_report(results: Dict, criticals_file: Path):
 
         report += f"**Selector:** `{func['selector']}`\n\n"
         report += f"**Contract Address:** `{func['contract_address']}` | **Chain ID:** {func['chain_id']}\n\n"
+
+        # Add ERC4626 context if available
+        erc4626_context = results.get('erc4626_context')
+        if erc4626_context and erc4626_context.get('is_erc4626_vault'):
+            report += "**🏦 ERC4626 Tokenized Vault Detected**\n\n"
+            if erc4626_context.get('underlying_token'):
+                report += f"- **Underlying Asset (metadata):** `{erc4626_context['underlying_token']}`\n"
+            if erc4626_context.get('asset_from_chain'):
+                report += f"- **Asset Token (on-chain asset()):** `{erc4626_context['asset_from_chain']}`\n"
+            if erc4626_context.get('detection_source'):
+                report += f"- **Detection:** {erc4626_context['detection_source']}\n"
+            report += "\n"
 
         # Add ERC-7730 Format Definition (collapsible) with expanded refs
         report += "<details>\n<summary><b>📋 ERC-7730 Format Definition</b></summary>\n\n"

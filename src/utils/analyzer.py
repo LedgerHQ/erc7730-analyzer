@@ -28,6 +28,24 @@ logger = logging.getLogger(__name__)
 class ERC7730Analyzer:
     """Analyzer for ERC-7730 clear signing files with Etherscan integration."""
 
+    # ERC4626 detection patterns
+    ERC4626_INCLUDE_PATTERNS = [
+        'erc4626',
+        'erc-4626',
+        '4626-vault',
+        '4626vault',
+    ]
+
+    ERC4626_SOURCE_PATTERNS = [
+        r'ERC4626',
+        r'IERC4626',
+        r'function\s+asset\s*\(\s*\)',
+        r'function\s+deposit\s*\([^)]*\)\s*(?:public|external)',
+        r'function\s+mint\s*\([^)]*\)\s*(?:public|external)',
+        r'function\s+withdraw\s*\([^)]*\)\s*(?:public|external)',
+        r'function\s+redeem\s*\([^)]*\)\s*(?:public|external)',
+    ]
+
     def __init__(self, etherscan_api_key: Optional[str] = None, lookback_days: int = 20, enable_source_code: bool = True, use_smart_referencing: bool = True):
         """
         Initialize the analyzer.
@@ -48,6 +66,8 @@ class ERC7730Analyzer:
         self.source_extractor = SourceCodeExtractor(etherscan_api_key) if enable_source_code else None
         self.selector_to_format_key = {}
         self.extracted_codes = {}  # Will store extracted code for each chain deployment (keyed by chainId)
+        self.erc4626_context = None  # Will store ERC4626 vault context if detected
+        self.erc20_context = None  # Will store ERC20 token context if detected
 
     def parse_erc7730_file(self, file_path: Path) -> Dict[str, Any]:
         """
@@ -75,6 +95,322 @@ class ERC7730Analyzer:
             logger.error(f"Failed to parse {file_path}: {e}")
             raise
 
+    def _detect_erc4626_from_includes(self, includes_path: str) -> bool:
+        """
+        Detect if descriptor is an ERC4626 vault based on includes path.
+
+        Args:
+            includes_path: The includes path from the descriptor
+
+        Returns:
+            True if ERC4626 pattern detected
+        """
+        logger.debug(f"Checking includes path for ERC4626 patterns: {includes_path}")
+        includes_lower = includes_path.lower()
+        for pattern in self.ERC4626_INCLUDE_PATTERNS:
+            if pattern in includes_lower:
+                logger.info(f"🏦 ERC4626 pattern '{pattern}' found in includes: {includes_path}")
+                return True
+        return False
+
+    def _detect_erc4626_from_source(self, source_code: str, contract_name: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Detect ERC4626 pattern from contract source code.
+
+        IMPORTANT: Only detects if the DEPLOYED contract inherits from ERC4626,
+        not if ERC4626 exists anywhere in the source.
+
+        Args:
+            source_code: The contract source code
+            contract_name: Name of the deployed contract from Etherscan (if available)
+
+        Returns:
+            Dict with detection results:
+            {
+                'is_erc4626': bool,
+                'detected_patterns': List[str],
+                'inherits_erc4626': bool,
+                'has_asset_function': bool,
+                'main_contract': str  # Name of the deployed contract
+            }
+        """
+        logger.debug("Analyzing source code for ERC4626 patterns...")
+
+        result = {
+            'is_erc4626': False,
+            'detected_patterns': [],
+            'inherits_erc4626': False,
+            'has_asset_function': False,
+            'main_contract': contract_name
+        }
+
+        if not source_code:
+            logger.debug("No source code provided for ERC4626 detection")
+            return result
+
+        import re
+        from .source_code import SolidityCodeParser
+
+        # Parse inheritance chain
+        parser = SolidityCodeParser(source_code)
+        inheritance_chain = parser.extract_inheritance_chain()
+
+        if not inheritance_chain:
+            logger.debug("   ✗ No contracts with inheritance found")
+            return result
+
+        # If contract_name not provided by Etherscan, use heuristic
+        if not contract_name:
+            logger.debug("   Contract name not provided, using heuristic...")
+            contract_pattern = r'(?:abstract\s+)?contract\s+(\w+)(?:\s+is\s+[^{]+)?\s*\{'
+            all_contracts = []
+            for match in re.finditer(contract_pattern, source_code):
+                is_abstract = 'abstract' in match.group(0)
+                contract_name_match = match.group(1)
+                position = match.start()
+                all_contracts.append((contract_name_match, is_abstract, position))
+
+            # Sort by position (last in file)
+            all_contracts.sort(key=lambda x: x[2], reverse=True)
+
+            # Find first non-abstract contract (from the end of file)
+            for contract_name_candidate, is_abstract, _ in all_contracts:
+                if not is_abstract:
+                    contract_name = contract_name_candidate
+                    break
+
+        if not contract_name:
+            logger.debug(f"   ✗ Could not determine deployed contract name")
+            return result
+
+        result['main_contract'] = contract_name
+        logger.info(f"   📝 Deployed contract: {contract_name}")
+
+        # Check if the main contract (or its ancestors) inherits from ERC4626
+        def inherits_from_erc4626(contract_name, chain):
+            """Recursively check if contract inherits from ERC4626."""
+            if contract_name not in chain:
+                return False
+
+            parents = chain[contract_name]
+            for parent in parents:
+                if 'ERC4626' in parent or 'IERC4626' in parent:
+                    return True
+                # Recursively check parent's inheritance
+                if inherits_from_erc4626(parent, chain):
+                    return True
+            return False
+
+        if inherits_from_erc4626(contract_name, inheritance_chain):
+            result['inherits_erc4626'] = True
+            parents = inheritance_chain.get(contract_name, [])
+            result['detected_patterns'].append(f'inheritance: contract {contract_name} is {", ".join(parents)}')
+            logger.info(f"   ✓ {contract_name} inherits from ERC4626")
+
+        # Check for asset() function in the main contract specifically
+        # Extract just the main contract's code
+        main_contract_match = re.search(
+            rf'(?:abstract\s+)?contract\s+{re.escape(contract_name)}\s+(?:is\s+[^{{]+)?\s*\{{',
+            source_code
+        )
+        if main_contract_match:
+            # Find the contract body
+            start = main_contract_match.end() - 1  # Start at opening brace
+            open_braces = 0
+            i = start
+            while i < len(source_code):
+                if source_code[i] == '{':
+                    open_braces += 1
+                elif source_code[i] == '}':
+                    open_braces -= 1
+                    if open_braces == 0:
+                        contract_body = source_code[start:i+1]
+                        if re.search(r'function\s+asset\s*\(\s*\)', contract_body):
+                            result['has_asset_function'] = True
+                            result['detected_patterns'].append('asset() function')
+                            logger.info(f"   ✓ {contract_name} has asset() function")
+                        break
+                i += 1
+
+        # Determine if it's ERC4626 based on main contract only
+        if result['inherits_erc4626']:
+            result['is_erc4626'] = True
+            logger.info(f"   ✓ Confirmed ERC4626: {contract_name} inherits from ERC4626/IERC4626")
+        else:
+            logger.info(f"   ✗ Not ERC4626: {contract_name} does not inherit from ERC4626")
+
+        return result
+
+    def _detect_erc20_from_source(self, source_code: str, contract_name: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Detect if the deployed contract is an ERC20 token.
+
+        Args:
+            source_code: The contract source code
+            contract_name: Name of the deployed contract from Etherscan (if available)
+
+        Returns:
+            Dict with detection results:
+            {
+                'is_erc20': bool,
+                'detected_patterns': List[str],
+                'inherits_erc20': bool,
+                'main_contract': str
+            }
+        """
+        logger.debug("Analyzing source code for ERC20 patterns...")
+
+        result = {
+            'is_erc20': False,
+            'detected_patterns': [],
+            'inherits_erc20': False,
+            'main_contract': contract_name
+        }
+
+        if not source_code:
+            logger.debug("No source code provided for ERC20 detection")
+            return result
+
+        import re
+        from .source_code import SolidityCodeParser
+
+        # Parse inheritance chain
+        parser = SolidityCodeParser(source_code)
+        inheritance_chain = parser.extract_inheritance_chain()
+
+        if not inheritance_chain:
+            logger.debug("   ✗ No contracts with inheritance found")
+            return result
+
+        # If contract_name not provided by Etherscan, use heuristic
+        if not contract_name:
+            logger.debug("   Contract name not provided, using heuristic...")
+            contract_pattern = r'(?:abstract\s+)?contract\s+(\w+)(?:\s+is\s+[^{]+)?\s*\{'
+            all_contracts = []
+            for match in re.finditer(contract_pattern, source_code):
+                is_abstract = 'abstract' in match.group(0)
+                contract_name_match = match.group(1)
+                position = match.start()
+                all_contracts.append((contract_name_match, is_abstract, position))
+
+            # Sort by position (last in file)
+            all_contracts.sort(key=lambda x: x[2], reverse=True)
+
+            # Find first non-abstract contract (from the end of file)
+            for contract_name_candidate, is_abstract, _ in all_contracts:
+                if not is_abstract:
+                    contract_name = contract_name_candidate
+                    break
+
+        if not contract_name:
+            logger.debug(f"   ✗ Could not determine deployed contract name")
+            return result
+
+        result['main_contract'] = contract_name
+        logger.info(f"   📝 Checking if {contract_name} is ERC20...")
+
+        # Check if the main contract (or its ancestors) inherits from ERC20
+        def inherits_from_erc20(contract_name, chain):
+            """Recursively check if contract inherits from ERC20."""
+            if contract_name not in chain:
+                return False
+
+            parents = chain[contract_name]
+            for parent in parents:
+                # Common ERC20 patterns
+                if any(pattern in parent for pattern in ['ERC20', 'IERC20', 'BEP20', 'IBEP20']):
+                    return True
+                # Recursively check parent's inheritance
+                if inherits_from_erc20(parent, chain):
+                    return True
+            return False
+
+        if inherits_from_erc20(contract_name, inheritance_chain):
+            result['inherits_erc20'] = True
+            parents = inheritance_chain.get(contract_name, [])
+            result['detected_patterns'].append(f'inheritance: contract {contract_name} is {", ".join(parents)}')
+            logger.info(f"   ✓ {contract_name} inherits from ERC20")
+
+        # Determine if it's ERC20 based on main contract only
+        if result['inherits_erc20']:
+            result['is_erc20'] = True
+            logger.info(f"   ✓ Confirmed ERC20: {contract_name} inherits from ERC20/IERC20")
+        else:
+            logger.debug(f"   ✗ Not ERC20: {contract_name} does not inherit from ERC20")
+
+        return result
+
+    def _query_erc4626_asset(self, contract_address: str, chain_id: int) -> Optional[str]:
+        """
+        Query the asset() function on-chain for ERC4626 vaults.
+
+        Args:
+            contract_address: The vault contract address
+            chain_id: Chain ID
+
+        Returns:
+            The underlying asset address or None if query fails
+        """
+        try:
+            logger.info(f"🏦 Querying asset() for ERC4626 vault {contract_address} on chain {chain_id}...")
+
+            # asset() selector: 0x38d52e0f
+            asset_selector = '0x38d52e0f'
+
+            params = {
+                'module': 'proxy',
+                'action': 'eth_call',
+                'to': contract_address,
+                'data': asset_selector,
+                'tag': 'latest',
+                'apikey': self.etherscan_api_key
+            }
+
+            base_url = f"https://api.etherscan.io/v2/api?chainid={chain_id}"
+            response = requests.get(base_url, params=params)
+            data = response.json()
+
+            if (data.get('result') and
+                'error' not in data and
+                data.get('status') != '0' and
+                data['result'] != '0x' and
+                len(data['result']) >= 42):
+                # Extract address from result (last 20 bytes / 40 hex chars)
+                asset_address = '0x' + data['result'][-40:].lower()
+                if asset_address != '0x' + '0' * 40:
+                    logger.info(f"   ✓ ERC4626 asset() returned: {asset_address}")
+                    return asset_address
+                else:
+                    logger.warning(f"   ⚠ asset() returned zero address")
+            else:
+                logger.warning(f"   ⚠ asset() call failed or returned empty result")
+
+            return None
+        except Exception as e:
+            logger.warning(f"   ⚠ Failed to query asset(): {e}")
+            return None
+
+    def _build_erc4626_context(self, includes_detected: bool, source_detection: Dict[str, Any], underlying_token: str = None, asset_from_chain: str = None) -> Dict[str, Any]:
+        """
+        Build ERC4626 context information for the AI prompt.
+
+        Args:
+            includes_detected: Whether ERC4626 was detected from includes
+            source_detection: Detection results from source code analysis
+            underlying_token: The underlying asset token address (from metadata constants)
+            asset_from_chain: The underlying asset address queried from on-chain asset()
+
+        Returns:
+            Dict with ERC4626 context for AI prompt
+        """
+        return {
+            'is_erc4626_vault': includes_detected or source_detection.get('is_erc4626', False),
+            'detection_source': 'includes' if includes_detected else ('source_code' if source_detection.get('is_erc4626') else 'none'),
+            'detected_patterns': source_detection.get('detected_patterns', []),
+            'underlying_token': underlying_token,
+            'asset_from_chain': asset_from_chain
+        }
+
     def _merge_includes(self, data: Dict[str, Any], base_path: Path) -> Dict[str, Any]:
         """
         Merge ERC-7730 includes into the main file.
@@ -91,6 +427,17 @@ class ERC7730Analyzer:
 
         include_file = data['includes']
         include_path = base_path / include_file
+
+        # Check for ERC4626 pattern in includes path BEFORE merging
+        if self._detect_erc4626_from_includes(include_file):
+            logger.info(f"🏦 ERC4626 vault detected from includes: {include_file}")
+            # Get underlying token from metadata constants if available
+            underlying_token = data.get('metadata', {}).get('constants', {}).get('underlyingToken')
+            self.erc4626_context = self._build_erc4626_context(
+                includes_detected=True,
+                source_detection={},
+                underlying_token=underlying_token
+            )
 
         logger.info(f"Merging include file: {include_path}")
 
@@ -455,6 +802,8 @@ class ERC7730Analyzer:
             'deployments': deployments,
             'context': erc7730_data.get('context', {}),
             'erc7730_full': erc7730_data,  # Store full ERC-7730 data for reference expansion
+            'erc4626_context': self.erc4626_context,  # Include ERC4626 vault context if detected
+            'erc20_context': self.erc20_context,  # Include ERC20 token context if detected
             'selectors': {}
         }
 
@@ -629,6 +978,90 @@ class ERC7730Analyzer:
 
             if self.extracted_codes:
                 logger.info(f"\n✓ Successfully extracted source code from {len(self.extracted_codes)} chain(s): {list(self.extracted_codes.keys())}")
+
+                # Detect ERC4626 from source code if not already detected from includes
+                if not self.erc4626_context:
+                    logger.info("\n🔍 Checking source code for ERC4626 patterns...")
+                    for chain_id, extracted_code in self.extracted_codes.items():
+                        if extracted_code.get('source_code') and isinstance(extracted_code['source_code'], str):
+                            contract_name = extracted_code.get('contract_name')
+                            source_detection = self._detect_erc4626_from_source(
+                                extracted_code['source_code'],
+                                contract_name=contract_name
+                            )
+                            if source_detection['is_erc4626']:
+                                logger.info(f"🏦 ERC4626 vault confirmed from source code on chain {chain_id}")
+                                logger.info(f"   Detection method: {source_detection.get('detection_patterns', [])}")
+
+                                # Get underlying token from metadata constants if available
+                                underlying_token = erc7730_data.get('metadata', {}).get('constants', {}).get('underlyingToken')
+                                if underlying_token:
+                                    logger.info(f"   Underlying token from metadata: {underlying_token}")
+
+                                # Query on-chain asset() value
+                                asset_from_chain = self._query_erc4626_asset(
+                                    extracted_code['address'],
+                                    chain_id
+                                )
+
+                                self.erc4626_context = self._build_erc4626_context(
+                                    includes_detected=False,
+                                    source_detection=source_detection,
+                                    underlying_token=underlying_token,
+                                    asset_from_chain=asset_from_chain
+                                )
+                                logger.info(f"   ✓ ERC4626 context built successfully")
+                                break  # Found ERC4626, no need to check other chains
+
+                # Detect ERC20 from source code (if not ERC4626, since ERC4626 extends ERC20)
+                if not self.erc20_context and not self.erc4626_context:
+                    logger.info("\n🔍 Checking source code for ERC20 patterns...")
+                    for chain_id, extracted_code in self.extracted_codes.items():
+                        if extracted_code.get('source_code') and isinstance(extracted_code['source_code'], str):
+                            contract_name = extracted_code.get('contract_name')
+                            source_detection = self._detect_erc20_from_source(
+                                extracted_code['source_code'],
+                                contract_name=contract_name
+                            )
+                            if source_detection['is_erc20']:
+                                logger.info(f"🪙 ERC20 token confirmed from source code on chain {chain_id}")
+                                logger.info(f"   Detection method: {source_detection.get('detected_patterns', [])}")
+
+                                self.erc20_context = {
+                                    'is_erc20_token': True,
+                                    'contract_name': source_detection['main_contract'],
+                                    'detected_patterns': source_detection['detected_patterns'],
+                                    'detection_source': 'source_code'
+                                }
+                                logger.info(f"   ✓ ERC20 context built successfully")
+                                break  # Found ERC20, no need to check other chains
+
+                    if not self.erc4626_context:
+                        logger.debug("   ✗ No ERC4626 patterns detected in source code")
+
+                # If detected from includes but no on-chain query yet, do it now
+                if self.erc4626_context and not self.erc4626_context.get('asset_from_chain'):
+                    logger.info("🔍 Querying on-chain asset() for ERC4626 vault...")
+                    for deployment in deployments:
+                        asset_from_chain = self._query_erc4626_asset(
+                            deployment['address'],
+                            deployment['chainId']
+                        )
+                        if asset_from_chain:
+                            self.erc4626_context['asset_from_chain'] = asset_from_chain
+                            logger.info(f"   ✓ Updated ERC4626 context with on-chain asset")
+                            break
+
+                if self.erc4626_context:
+                    logger.info(f"\n{'='*60}")
+                    logger.info(f"🏦 ERC4626 VAULT CONTEXT ACTIVE")
+                    logger.info(f"   Detection: {self.erc4626_context.get('detection_source', 'unknown')}")
+                    if self.erc4626_context.get('underlying_token'):
+                        logger.info(f"   Underlying token (metadata): {self.erc4626_context['underlying_token']}")
+                    if self.erc4626_context.get('asset_from_chain'):
+                        logger.info(f"   Asset token (on-chain): {self.erc4626_context['asset_from_chain']}")
+                    logger.info(f"   AI will be informed about ERC4626 vault semantics")
+                    logger.info(f"{'='*60}\n")
             else:
                 logger.warning("Could not extract source code from any deployment, continuing without it")
 
@@ -756,6 +1189,10 @@ class ERC7730Analyzer:
                         logger.info(f"  - Structs: {len(function_source['structs'])}")
                         logger.info(f"  - Enums: {len(function_source['enums'])}")
                         logger.info(f"  - Internal functions: {len(function_source['internal_functions'])}")
+                        if function_source.get('parent_functions'):
+                            logger.info(f"  - Parent functions (from super.): {len(function_source['parent_functions'])}")
+                            for pf in function_source['parent_functions']:
+                                logger.info(f"      └─ {pf['parent_contract']}.{pf['function_name']}()")
                         if function_source['truncated']:
                             logger.info(f"  ⚠ Code was truncated to fit within line limit")
                         break  # Stop searching once found
@@ -823,7 +1260,16 @@ class ERC7730Analyzer:
                                 code_block += f"{internal_func['docstring']}\n"
                             code_block += f"{internal_func['body']}\n\n"
 
-                    # 8. Libraries (lowest priority)
+                    # 8. Parent functions (from super. calls)
+                    if function_source.get('parent_functions'):
+                        code_block += "\n\n// Parent contract implementations (from super. calls):\n"
+                        for parent_func in function_source['parent_functions']:
+                            parent_name = parent_func.get('parent_contract', 'Unknown')
+                            func_name = parent_func.get('function_name', 'unknown')
+                            code_block += f"// From {parent_name}.{func_name}():\n"
+                            code_block += f"{parent_func['body']}\n\n"
+
+                    # 9. Libraries (lowest priority)
                     if function_source.get('libraries'):
                         code_block += "\n// Libraries:\n"
                         for library in function_source['libraries']:
@@ -853,7 +1299,9 @@ class ERC7730Analyzer:
                     erc7730_format_expanded,  # Use expanded format with metadata and display.definitions
                     function_data['signature'],
                     source_code=function_source,
-                    use_smart_referencing=self.use_smart_referencing
+                    use_smart_referencing=self.use_smart_referencing,
+                    erc4626_context=self.erc4626_context,  # Pass ERC4626 vault context if detected
+                    erc20_context=self.erc20_context  # Pass ERC20 token context if detected
                 )
 
                 audit_report_critical = critical_report

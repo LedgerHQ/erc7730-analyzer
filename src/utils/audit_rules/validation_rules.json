@@ -499,6 +499,39 @@
         "action": "NOT critical - intermediate routing doesn't affect final outcome users see"
       },
       {
+        "id": "erc4626_vault_share_token",
+        "title": "ERC4626 vault: @.to used for share token amounts",
+        "description": "In ERC4626 tokenized vaults, the vault contract itself IS the share token (it's an ERC20). Using `tokenPath: @.to` for displaying shares in deposit/mint/withdraw/redeem is CORRECT.",
+        "detection": "Check if contract implements ERC4626 standard (inheritance, asset() function, or descriptor includes erc4626 reference)",
+        "erc4626_semantics": {
+          "vault_is_share_token": "The vault contract address = share token address. @.to correctly resolves to the share token.",
+          "underlying_asset": "The underlying asset is a DIFFERENT token (returned by asset() function)",
+          "function_behavior": {
+            "deposit": "Input: assets (underlying) → Output: shares (vault token)",
+            "mint": "Input: shares (vault token) → Output: assets withdrawn",
+            "withdraw": "Input: assets (underlying) → Output: shares burned",
+            "redeem": "Input: shares (vault token) → Output: assets received"
+          },
+          "computed_amounts": "In ERC4626, one amount is input, the other is computed on-chain during execution. ERC-7730 can only show the input amount, not the computed output."
+        },
+        "NOT_critical_patterns": [
+          "`tokenPath: @.to` for shares parameter in deposit/mint/withdraw/redeem",
+          "Using vault contract address as token for shares amounts",
+          "Share amount displayed with vault contract as the token",
+          "Missing display of computed amounts (e.g., assets in mint(), shares in deposit())"
+        ],
+        "ONLY_critical_if": [
+          "`@.to` used for the underlying asset amount (should use the asset() address)",
+          "Underlying asset amount shown with wrong token address",
+          "Both share and asset amounts missing (at least the input amount should be shown)"
+        ],
+        "computed_amounts_are_spec_limitation": {
+          "explanation": "ERC-7730 cannot display computed amounts - only input parameters. In ERC4626: deposit(assets)→shares computed, mint(shares)→assets computed, withdraw(assets)→shares computed, redeem(shares)→assets computed.",
+          "action": "Do NOT flag missing computed amounts as critical. Add to spec limitations: 'Exact [computed amount type] is calculated on-chain and cannot be pre-computed from calldata.'"
+        },
+        "action": "NOT CRITICAL - @.to for shares in ERC4626 vaults is correct. Only flag if @.to used incorrectly for underlying asset or if critical context is missing."
+      },
+      {
         "id": "missing_msg_value_when_tokenAmount_has_nativeCurrencyAddress",
         "title": "Missing @.value when tokenAmount field already displays native ETH",
         "description": "If a payable function has a tokenAmount field with nativeCurrencyAddress that displays ETH amounts via token parameter, adding @.value would create DUPLICATE display",

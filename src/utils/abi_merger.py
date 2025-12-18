@@ -76,11 +76,9 @@ class ABIMerger:
                 # Recursively build tuple type
                 component_types = [self._get_canonical_type(c) for c in components]
                 tuple_str = f"({','.join(component_types)})"
-                # Handle arrays of tuples
-                if param_type.endswith('[]'):
-                    return tuple_str + '[]'
-                elif '[' in param_type:
-                    # Fixed-size array
+                # Handle arrays of tuples - extract full array suffix
+                if '[' in param_type:
+                    # Extract everything after 'tuple' (e.g., '[]', '[][]', '[5]', etc.)
                     array_part = param_type[5:]  # Remove 'tuple' prefix
                     return tuple_str + array_part
                 else:

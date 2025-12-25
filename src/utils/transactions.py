@@ -27,11 +27,15 @@ logger = logging.getLogger(__name__)
 BLOCKSCOUT_URLS = {
         56: "https://api.bscscan.com/api",           # BNB Smart Chain
         97: "https://api-testnet.bscscan.com/api",   # BNB Testnet
-        100: "https://gnosis.blockscout.com/api",    # Gnosis Chain
-        137: "https://polygon.blockscout.com/api",   # Polygon PoS (alternative)
         42220: "https://explorer.celo.org/api",      # Celo Mainnet
-        44787: "https://explorer.celo.org/alfajores/api"  # Celo Alfajores Testnet
-    # Add more as needed
+        44787: "https://explorer.celo.org/alfajores/api",  # Celo Alfajores Testnet
+        14: "https://flare-explorer.flare.network",           # Flare Mainnet
+        8453: "https://base.blockscout.com",                    # Base Mainnet
+        84532: "https://base-sepolia.blockscout.com",           # Base Sepolia
+        10: "https://explorer.optimism.io",                     # Optimism Mainnet (official explorer)
+        11155420: "https://testnet-explorer.optimism.io",          # Optimism Sepolia
+        100: "https://gnosis.blockscout.com",                   # Gnosis Chain
+        137: "https://polygon.blockscout.com",                  # Polygon PoS
 }
 
 
@@ -781,7 +785,7 @@ class TransactionFetcher:
         max_pages = 10000 // page_size
         total_txs_scanned = 0
         consecutive_failures = 0  # Track consecutive API failures for early abort
-        MAX_CONSECUTIVE_FAILURES = 5  # Abort after 5 consecutive failures
+        MAX_CONSECUTIVE_FAILURES = 3  # Abort after 3 consecutive failures (reduced from 5 for faster bailout)
 
         def all_done() -> bool:
             """Check if we have enough samples for all selectors"""

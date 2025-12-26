@@ -10,6 +10,30 @@
 
   "critical_requirements": [
     {
+      "requirement": "CRITICAL: Understanding $ references (ERC-7730 variable references)",
+      "rule": "ANY field value starting with $ is a VALID reference to metadata.constants, metadata.enums, or display.definitions",
+      "description": "$ references are ERC-7730's variable/constant system. They resolve at runtime by wallets.",
+      "valid_references": [
+        "$.metadata.constants.tokenAddress - references a constant",
+        "$.metadata.constants.vaultTicker - references a constant",
+        "$.metadata.enums.swapType - references an enum",
+        "$.display.definitions.amount - references a definition"
+      ],
+      "validation_steps": [
+        "1. Does the value start with $? → It's a reference, NOT a literal",
+        "2. Does metadata/definitions contain the referenced key? → Valid reference",
+        "3. Does the referenced value make sense for the field? → Correct usage"
+      ],
+      "DO_NOT_FLAG_AS_CRITICAL": [
+        "\"token\": \"$.metadata.constants.underlyingToken\" - VALID (not broken)",
+        "\"value\": \"$.metadata.constants.vaultTicker\" - VALID (not broken)",
+        "\"nativeCurrencyAddress\": [\"$.metadata.constants.addressAsEth\"] - VALID (not broken)",
+        "\"$ref\": \"$.display.definitions.amount\" - VALID (not broken)"
+      ],
+      "when_to_flag": "ONLY flag as critical if: (1) The $ reference points to a non-existent key, OR (2) The referenced value is wrong type (e.g., references a number when expecting an address)",
+      "important": "NEVER flag a $ reference as 'literal string' or 'not an address' - $ references RESOLVE at runtime!"
+    },
+    {
       "requirement": "Array indexing validation",
       "description": "When ERC-7730 uses array indexing, verify the index points to actual data relevant to the user (not sentinel values)"
     },
@@ -210,9 +234,11 @@
           "condition": "Field has \"format\": \"tokenAmount\" but missing BOTH \"tokenPath\" AND \"token\" in params",
           "token_specification_options": [
             "Dynamic (from parameter): \"tokenPath\": \"paramName\" - token address comes from function input",
-            "Fixed (hardcoded): \"token\": \"0x...\" - for migration contracts or functions operating on single specific token"
+            "Fixed literal address: \"token\": \"0x1234...\" - hardcoded token address",
+            "Fixed constant reference: \"token\": \"$.metadata.constants.tokenAddress\" - reference to constant (VALID)"
           ],
-          "critical_if": "NEITHER is present UNLESS one of these exceptions applies",
+          "important_note": "BOTH literal addresses AND $ references to metadata.constants are VALID for params.token. DO NOT flag $ references as broken!",
+          "critical_if": "NEITHER tokenPath NOR token is present UNLESS one of these exceptions applies",
           "exceptions": [
             "Function ONLY supports native ETH (check source code: no ERC20 support, hardcoded ETH) AND has nativeCurrencyAddress",
             "Token address is NOT in function inputs (computed from pool/DEX, encoded in bytes, determined on-chain) AND has nativeCurrencyAddress - this is VALID and NOT CRITICAL"
@@ -301,6 +327,39 @@
           "action": "Flag as CRITICAL: 'Field uses date format with timestamp encoding, but the actual value is unreasonably large (not a valid Unix timestamp). User will see meaningless date instead of actual expiration time.'",
           "note": "This requires checking actual transaction data - cannot be detected from descriptor alone",
           "severity": "critical"
+        },
+        {
+          "type": "Transaction envelope paths in required/excluded arrays",
+          "description": "Using @ paths (like @.from, @.value, @.to) in required or excluded arrays",
+          "explanation": "The required/excluded arrays are meant for ABI parameters (# paths), not transaction envelope fields (@ paths). While technically imprecise, this is NOT critical because:",
+          "reasons": [
+            "Transaction envelope fields are always available (from, value, to are on every transaction)",
+            "Hardware wallets can still display these fields correctly",
+            "This doesn't cause display failures or mislead users about amounts/tokens/recipients"
+          ],
+          "severity": "recommendation_not_critical",
+          "action": "Add to RECOMMENDATIONS (NOT critical issues): 'The required/excluded arrays contain transaction envelope references (@.from, @.value, @.to). These arrays should only reference ABI parameters. Transaction envelope fields are always available and don't need to be in required/excluded.'",
+          "examples": {
+            "imprecise_but_not_critical": "\"required\": [\"@.value\", \"baseRequest.fromToken\"]",
+            "correct": "\"required\": [\"baseRequest.fromToken\", \"baseRequest.fromTokenAmount\"]"
+          }
+        },
+        {
+          "type": "$ references in params.token or params.value - VALID, NOT BROKEN",
+          "description": "Using $ references like \"$.metadata.constants.tokenAddress\" in params.token, params.value, or other param fields",
+          "rule": "$ references to metadata.constants are VALID and should resolve correctly. DO NOT flag these as broken or invalid.",
+          "valid_examples": [
+            "\"token\": \"$.metadata.constants.underlyingToken\" - VALID (references constant)",
+            "\"value\": \"$.metadata.constants.vaultTicker\" - VALID (references constant)",
+            "\"nativeCurrencyAddress\": [\"$.metadata.constants.addressAsEth\"] - VALID (references constant)"
+          ],
+          "invalid_examples": [
+            "\"token\": \"underlyingToken\" - INVALID (missing $ or 0x prefix)",
+            "\"token\": \"paramName\" - INVALID (should use tokenPath for parameters)"
+          ],
+          "check_before_flagging": "Before flagging params.token as broken, verify: (1) Does the value start with $? If YES, it's a valid reference. (2) Does metadata.constants contain the referenced key? If YES, it's valid. (3) Does the constant resolve to a valid address? If YES, it's correct.",
+          "severity": "NOT_CRITICAL",
+          "action": "DO NOT flag $ references as critical. They are valid ERC-7730 syntax."
         }
       ]
     },

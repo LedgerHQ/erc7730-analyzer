@@ -14,6 +14,7 @@ Performance Impact:
 import json
 import logging
 from typing import Dict, List, Any, Optional
+from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
 
@@ -40,21 +41,55 @@ def _risk_emoji(level: str) -> str:
 
 
 def _format_code_snippet(snippet: Any) -> str:
-    """Render a code snippet object/string as a JSON code block."""
+    """
+    Render a code snippet object/string as a JSON code block.
+    Handles both Pydantic models (CodeSnippet with JSON string fields) and raw strings.
+    """
     if snippet is None:
         return ""
 
     # Try to pretty print JSON-like content; otherwise fall back to plain string
     try:
-        if isinstance(snippet, str):
+        # Convert Pydantic models to dict first, then parse JSON string fields
+        if isinstance(snippet, BaseModel):
+            snippet_dict = snippet.model_dump(exclude_none=True)
+            # Parse JSON strings in the dict
+            formatted_dict = {}
+            for key, value in snippet_dict.items():
+                if isinstance(value, str):
+                    # Try to parse as JSON
+                    try:
+                        formatted_dict[key] = json.loads(value)
+                    except Exception:
+                        formatted_dict[key] = value
+                else:
+                    formatted_dict[key] = value
+            snippet_str = json.dumps(formatted_dict, indent=2, ensure_ascii=False)
+        elif isinstance(snippet, dict):
+            # If it's a dict, recursively format nested JSON strings
+            formatted_dict = {}
+            for key, value in snippet.items():
+                if isinstance(value, str):
+                    # Always try to parse strings as JSON (not just ones starting with {)
+                    try:
+                        parsed = json.loads(value)
+                        formatted_dict[key] = parsed
+                    except Exception:
+                        formatted_dict[key] = value
+                else:
+                    formatted_dict[key] = value
+            snippet_str = json.dumps(formatted_dict, indent=2, ensure_ascii=False)
+        elif isinstance(snippet, str):
+            # String input - try to parse as JSON
             candidate = snippet.strip()
             try:
                 parsed = json.loads(candidate)
-                snippet_str = json.dumps(parsed, indent=2)
+                snippet_str = json.dumps(parsed, indent=2, ensure_ascii=False)
             except Exception:
+                # Not JSON, return as-is
                 snippet_str = candidate
-        elif isinstance(snippet, (dict, list)):
-            snippet_str = json.dumps(snippet, indent=2)
+        elif isinstance(snippet, list):
+            snippet_str = json.dumps(snippet, indent=2, ensure_ascii=False)
         else:
             snippet_str = str(snippet)
     except Exception:
@@ -195,44 +230,101 @@ def format_critical_report(data: Dict) -> str:
 
         # Fixes for critical issues
         if recs.get('fixes'):
-            for fix in recs['fixes']:
+            md += "#### 🔧 Fixes for Critical Issues\n\n"
+            for idx, fix in enumerate(recs['fixes'], 1):
                 title = fix.get('title', 'Fix')
                 description = fix.get('description', '')
-                md += f"- **{title}:** {description}\n"
+                md += f"**{idx}. {title}**\n\n"
+                md += f"{description}\n\n"
 
                 code_snippet = fix.get('code_snippet')
                 if code_snippet:
-                    md += _format_code_snippet(code_snippet)
+                    # Convert to dict if it's a Pydantic model
+                    if isinstance(code_snippet, BaseModel):
+                        snippet_dict = code_snippet.model_dump(exclude_none=True)
+                    else:
+                        snippet_dict = code_snippet
+
+                    # Parse and display each field separately for clarity
+                    # Each field may be a JSON string that needs parsing
+                    for field_name, field_label in [
+                        ('field_to_add', 'Field to add'),
+                        ('changes_to_make', 'Changes to make'),
+                        ('full_example', 'Full example')
+                    ]:
+                        field_value = snippet_dict.get(field_name)
+                        if field_value:
+                            md += f"**{field_label}:**\n"
+                            # Parse JSON string if needed
+                            if isinstance(field_value, str):
+                                try:
+                                    parsed = json.loads(field_value)
+                                    md += f"\n```json\n{json.dumps(parsed, indent=2, ensure_ascii=False)}\n```\n\n"
+                                except Exception:
+                                    # Not JSON or invalid, show as-is
+                                    md += f"\n```\n{field_value}\n```\n\n"
+                            else:
+                                # Already an object
+                                md += f"\n```json\n{json.dumps(field_value, indent=2, ensure_ascii=False)}\n```\n\n"
+
+                md += "\n"
 
         # Spec limitations
         if recs.get('spec_limitations'):
-            for lim in recs['spec_limitations']:
+            md += "#### ⚠️ Spec Limitations\n\n"
+            for idx, lim in enumerate(recs['spec_limitations'], 1):
                 param = lim.get('parameter', 'Parameter')
                 explanation = lim.get('explanation', '')
                 impact = lim.get('impact', '')
                 detected_pattern = lim.get('detected_pattern')
 
-                md += f"- **{param} cannot be clear signed:** {explanation}"
+                md += f"**{idx}. {param} cannot be clear signed**\n\n"
+                md += f"**Explanation:** {explanation}\n\n"
                 if impact:
-                    md += f" **Why this matters:** {impact}"
+                    md += f"**Impact:** {impact}\n\n"
                 if detected_pattern:
-                    md += f" **Detected pattern:** {detected_pattern}"
-                md += "\n"
+                    md += f"**Detected pattern:** `{detected_pattern}`\n\n"
 
         # Optional improvements
         if recs.get('optional_improvements'):
-            for opt in recs['optional_improvements']:
+            md += "#### 💡 Optional Improvements\n\n"
+            for idx, opt in enumerate(recs['optional_improvements'], 1):
                 title = opt.get('title', 'Improvement')
                 description = opt.get('description', '')
-                # Avoid double "Optional" if the title already includes it
-                prefix = "(Optional) "
-                if title.lower().startswith('optional'):
-                    prefix = ""
-                md += f"- **{prefix}{title}:** {description}\n"
+                md += f"**{idx}. {title}**\n\n"
+                md += f"{description}\n\n"
 
                 code_snippet = opt.get('code_snippet')
                 if code_snippet:
-                    md += _format_code_snippet(code_snippet)
+                    # Convert to dict if it's a Pydantic model
+                    if isinstance(code_snippet, BaseModel):
+                        snippet_dict = code_snippet.model_dump(exclude_none=True)
+                    else:
+                        snippet_dict = code_snippet
+
+                    # Parse and display each field separately for clarity
+                    # Each field may be a JSON string that needs parsing
+                    for field_name, field_label in [
+                        ('field_to_add', 'Field to add'),
+                        ('changes_to_make', 'Changes to make'),
+                        ('full_example', 'Full example')
+                    ]:
+                        field_value = snippet_dict.get(field_name)
+                        if field_value:
+                            md += f"**{field_label}:**\n"
+                            # Parse JSON string if needed
+                            if isinstance(field_value, str):
+                                try:
+                                    parsed = json.loads(field_value)
+                                    md += f"\n```json\n{json.dumps(parsed, indent=2, ensure_ascii=False)}\n```\n\n"
+                                except Exception:
+                                    # Not JSON or invalid, show as-is
+                                    md += f"\n```\n{field_value}\n```\n\n"
+                            else:
+                                # Already an object
+                                md += f"\n```json\n{json.dumps(field_value, indent=2, ensure_ascii=False)}\n```\n\n"
+
+                md += "\n"
 
         # Additional suggested snippets for optional improvements (if provided)
         optional_snippets = recs.get('suggested_code_snippets_for_optional_improvements') or []

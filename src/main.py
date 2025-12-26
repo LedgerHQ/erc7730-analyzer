@@ -33,12 +33,14 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Environment Variables (can also be set in .env file):
-  ERC7730_FILE          Path to ERC-7730 JSON file
-  ABI_FILE              Path to contract ABI JSON file (optional)
-  RAW_TXS_FILE          Path to JSON file with raw transactions (optional)
-  ETHERSCAN_API_KEY     Etherscan API key
-  OPENAI_API_KEY        OpenAI API key for AI-powered audits (optional)
-  LOOKBACK_DAYS         Number of days to look back (default: 20)
+  ERC7730_FILE             Path to ERC-7730 JSON file
+  ABI_FILE                 Path to contract ABI JSON file (optional)
+  RAW_TXS_FILE             Path to JSON file with raw transactions (optional)
+  ETHERSCAN_API_KEY        Etherscan API key
+  OPENAI_API_KEY           OpenAI API key for AI-powered audits (optional)
+  LOOKBACK_DAYS            Number of days to look back (default: 20)
+  MAX_CONCURRENT_API_CALLS Maximum concurrent API calls (default: 10)
+  MAX_API_RETRIES          Maximum retry attempts per API call (default: 3)
 
 Priority: Command-line arguments > Environment variables > Defaults
         """
@@ -71,6 +73,18 @@ Priority: Command-line arguments > Environment variables > Defaults
         type=int,
         default=int(os.getenv('LOOKBACK_DAYS') or '20'),
         help='Number of days to look back for transaction history (env: LOOKBACK_DAYS, default: 20)'
+    )
+    parser.add_argument(
+        '--max-concurrent',
+        type=int,
+        default=int(os.getenv('MAX_CONCURRENT_API_CALLS') or '8'),
+        help='Maximum number of concurrent API calls (env: MAX_CONCURRENT_API_CALLS, default: 8)'
+    )
+    parser.add_argument(
+        '--max-retries',
+        type=int,
+        default=int(os.getenv('MAX_API_RETRIES') or '3'),
+        help='Maximum retry attempts per API call (env: MAX_API_RETRIES, default: 3)'
     )
     parser.add_argument(
         '--debug',
@@ -115,7 +129,9 @@ Priority: Command-line arguments > Environment variables > Defaults
     # Initialize analyzer
     analyzer = ERC7730Analyzer(
         etherscan_api_key=args.api_key,
-        lookback_days=args.lookback_days
+        lookback_days=args.lookback_days,
+        max_concurrent_api_calls=args.max_concurrent,
+        max_api_retries=args.max_retries
     )
 
     # Run analysis

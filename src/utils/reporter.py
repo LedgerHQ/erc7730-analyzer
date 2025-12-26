@@ -366,6 +366,7 @@ def extract_recommendations(audit_report: str) -> list:
 def _format_code_snippet(snippet: Any) -> str:
     """
     Render a code snippet (dict/str) as a fenced JSON block for readability.
+    Handles JSON strings within dicts (e.g., {"field_to_add": "{\\"key\\": \\"value\\"}"})
     """
     if snippet is None:
         return ""
@@ -375,11 +376,24 @@ def _format_code_snippet(snippet: Any) -> str:
             candidate = snippet.strip()
             try:
                 parsed = json_lib.loads(candidate)
-                snippet_str = json_lib.dumps(parsed, indent=2)
+                snippet_str = json_lib.dumps(parsed, indent=2, ensure_ascii=False)
             except Exception:
                 snippet_str = candidate
-        elif isinstance(snippet, (dict, list)):
-            snippet_str = json_lib.dumps(snippet, indent=2)
+        elif isinstance(snippet, dict):
+            # Parse JSON strings within the dict
+            formatted_dict = {}
+            for key, value in snippet.items():
+                if isinstance(value, str):
+                    # Try to parse as JSON
+                    try:
+                        formatted_dict[key] = json_lib.loads(value)
+                    except Exception:
+                        formatted_dict[key] = value
+                else:
+                    formatted_dict[key] = value
+            snippet_str = json_lib.dumps(formatted_dict, indent=2, ensure_ascii=False)
+        elif isinstance(snippet, list):
+            snippet_str = json_lib.dumps(snippet, indent=2, ensure_ascii=False)
         else:
             snippet_str = str(snippet)
     except Exception:

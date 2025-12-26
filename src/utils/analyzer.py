@@ -19,7 +19,12 @@ from web3 import Web3
 from .abi import ABI, fetch_contract_abi
 from .abi_merger import merge_abis_from_deployments
 from .transactions import TransactionFetcher
-from .prompts import generate_clear_signing_audit
+from .prompts import (
+    prepare_audit_task,
+    generate_clear_signing_audits_batch,
+    AuditTask,
+    AuditResult
+)
 from .source_code import SourceCodeExtractor
 
 logger = logging.getLogger(__name__)
@@ -46,7 +51,15 @@ class ERC7730Analyzer:
         r'function\s+redeem\s*\([^)]*\)\s*(?:public|external)',
     ]
 
-    def __init__(self, etherscan_api_key: Optional[str] = None, lookback_days: int = 20, enable_source_code: bool = True, use_smart_referencing: bool = True):
+    def __init__(
+        self,
+        etherscan_api_key: Optional[str] = None,
+        lookback_days: int = 20,
+        enable_source_code: bool = True,
+        use_smart_referencing: bool = True,
+        max_concurrent_api_calls: int = 8,
+        max_api_retries: int = 3
+    ):
         """
         Initialize the analyzer.
 
@@ -55,11 +68,15 @@ class ERC7730Analyzer:
             lookback_days: Number of days to look back for transaction history (default: 20)
             enable_source_code: Whether to extract and include source code in analysis (default: True)
             use_smart_referencing: Whether to use smart rule referencing to reduce token usage (default: True)
+            max_concurrent_api_calls: Maximum number of concurrent API calls (default: 10)
+            max_api_retries: Maximum number of retry attempts per API call (default: 3)
         """
         self.etherscan_api_key = etherscan_api_key
         self.lookback_days = lookback_days
         self.enable_source_code = enable_source_code
         self.use_smart_referencing = use_smart_referencing
+        self.max_concurrent_api_calls = max_concurrent_api_calls
+        self.max_api_retries = max_api_retries
         self.w3 = Web3()
         self.abi_helper = None
         self.tx_fetcher = TransactionFetcher(etherscan_api_key, lookback_days)
@@ -405,7 +422,7 @@ class ERC7730Analyzer:
         """
         return {
             'is_erc4626_vault': includes_detected or source_detection.get('is_erc4626', False),
-            'detection_source': 'includes' if includes_detected else ('source_code' if source_detection.get('is_erc4626') else 'none'),
+            'detection_source': 'Detected from ERC-7730 includes (references eip4626.schema.json)' if includes_detected else ('Detected from source code analysis' if source_detection.get('is_erc4626') else 'Not detected'),
             'detected_patterns': source_detection.get('detected_patterns', []),
             'underlying_token': underlying_token,
             'asset_from_chain': asset_from_chain
@@ -1065,10 +1082,22 @@ class ERC7730Analyzer:
             else:
                 logger.warning("Could not extract source code from any deployment, continuing without it")
 
-        # Analyze each selector with its pre-fetched transactions
+        # ====================================================================
+        # PHASE 1: PRE-PROCESSING (Sequential - maintains log coherence)
+        # ====================================================================
+        # Prepare all data and audit tasks before making any API calls.
+        # This keeps the preparation logs in order and allows batch API calls.
+
+        logger.info(f"\n{'='*60}")
+        logger.info(f"PHASE 1: Preparing audit tasks for {len(selectors)} selectors...")
+        logger.info(f"{'='*60}")
+
+        # Store prepared data for each selector
+        prepared_selectors = []  # List of dicts with all pre-processed data
+
         for selector in selectors:
             logger.info(f"\n{'='*60}")
-            logger.info(f"Analyzing selector: {selector}")
+            logger.info(f"Preparing selector: {selector}")
             logger.info(f"{'='*60}")
 
             # Get function metadata
@@ -1161,8 +1190,6 @@ class ERC7730Analyzer:
             # Import the expand function to get full context for AI
             from .reporter import expand_erc7730_format_with_refs
             erc7730_format_expanded = expand_erc7730_format_with_refs(erc7730_format, erc7730_data)
-
-            audit_report = None
 
             # Extract source code for this specific function (search across all chains)
             function_source = None
@@ -1280,37 +1307,117 @@ class ERC7730Analyzer:
                     # Single log call for entire code block
                     logger.info(code_block)
 
-            # Generate clear signing audit report
-            audit_report_critical = None
-            audit_report_detailed = None
-            has_no_transactions = not decoded_txs
-
+            # Prepare the audit task if we have a format
+            audit_task = None
             if erc7730_format:
-                logger.info(f"\n{'='*60}")
+                has_no_transactions = not decoded_txs
                 if has_no_transactions:
-                    logger.info(f"Generating STATIC AI audit report for {selector} (no transactions)...")
+                    logger.info(f"Preparing STATIC audit task for {selector} (no transactions)")
                 else:
-                    logger.info(f"Generating AI audit report for {selector}...")
-                logger.info(f"{'='*60}")
+                    logger.info(f"Preparing audit task for {selector}")
 
-                critical_report, detailed_report, report_json = generate_clear_signing_audit(
-                    selector,
-                    decoded_txs,  # Will be empty list if no transactions
-                    erc7730_format_expanded,  # Use expanded format with metadata and display.definitions
-                    function_data['signature'],
+                audit_task = prepare_audit_task(
+                    selector=selector,
+                    decoded_transactions=decoded_txs,
+                    erc7730_format=erc7730_format_expanded,
+                    function_signature=function_data['signature'],
                     source_code=function_source,
                     use_smart_referencing=self.use_smart_referencing,
-                    erc4626_context=self.erc4626_context,  # Pass ERC4626 vault context if detected
-                    erc20_context=self.erc20_context  # Pass ERC20 token context if detected
+                    erc4626_context=self.erc4626_context,
+                    erc20_context=self.erc20_context
                 )
 
-                audit_report_critical = critical_report
-                audit_report_detailed = detailed_report
-                audit_report_json = report_json
+            # Store all prepared data for this selector
+            prepared_selectors.append({
+                'selector': selector,
+                'function_name': function_name,
+                'function_data': function_data,
+                'selector_deployment': selector_deployment,
+                'decoded_txs': decoded_txs,
+                'erc7730_format': erc7730_format,
+                'function_source': function_source,
+                'audit_task': audit_task
+            })
 
-                logger.info(f"\nCritical Report:\n{critical_report}\n")
-                logger.info(f"\nDetailed Report:\n{detailed_report}\n")
+        logger.info(f"\n{'='*60}")
+        logger.info(f"PHASE 1 COMPLETE: Prepared {len(prepared_selectors)} audit tasks")
+        logger.info(f"{'='*60}")
 
+        # ====================================================================
+        # PHASE 2: BATCH API CALLS (Concurrent - maximum efficiency)
+        # ====================================================================
+        # Execute all API calls concurrently using asyncio.
+
+        # Collect all audit tasks that need API calls
+        audit_tasks = [p['audit_task'] for p in prepared_selectors if p['audit_task'] is not None]
+
+        audit_results = []
+        if audit_tasks:
+            logger.info(f"\n{'='*60}")
+            logger.info(f"PHASE 2: Executing {len(audit_tasks)} API calls concurrently...")
+            logger.info(f"{'='*60}")
+
+            # Execute batch API calls with concurrency limit and retry logic
+            audit_results = generate_clear_signing_audits_batch(
+                tasks=audit_tasks,
+                max_concurrent=self.max_concurrent_api_calls,
+                max_retries=self.max_api_retries
+            )
+
+            logger.info(f"\n{'='*60}")
+            logger.info(f"PHASE 2 COMPLETE: All API calls finished")
+            logger.info(f"{'='*60}")
+        else:
+            logger.info(f"\n{'='*60}")
+            logger.info(f"PHASE 2 SKIPPED: No audit tasks to process")
+            logger.info(f"{'='*60}")
+
+        # Create a map from selector to audit result for easy lookup
+        audit_results_map = {r.selector: r for r in audit_results}
+
+        # ====================================================================
+        # PHASE 3: POST-PROCESSING (Sequential - maintains log coherence)
+        # ====================================================================
+        # Process results in order, logging each report to maintain coherent output.
+
+        logger.info(f"\n{'='*60}")
+        logger.info(f"PHASE 3: Processing results for {len(prepared_selectors)} selectors...")
+        logger.info(f"{'='*60}")
+
+        for prepared in prepared_selectors:
+            selector = prepared['selector']
+            function_name = prepared['function_name']
+            function_data = prepared['function_data']
+            selector_deployment = prepared['selector_deployment']
+            decoded_txs = prepared['decoded_txs']
+            erc7730_format = prepared['erc7730_format']
+            function_source = prepared['function_source']
+
+            logger.info(f"\n{'='*60}")
+            logger.info(f"Processing results for: {selector} ({function_name})")
+            logger.info(f"{'='*60}")
+
+            # Get the audit result for this selector
+            audit_result = audit_results_map.get(selector)
+
+            audit_report_critical = None
+            audit_report_detailed = None
+            audit_report_json = {}
+
+            if audit_result:
+                audit_report_critical = audit_result.critical_report
+                audit_report_detailed = audit_result.detailed_report
+                audit_report_json = audit_result.report_data
+
+                if audit_result.success:
+                    logger.info(f"\nCritical Report:\n{audit_report_critical}\n")
+                    logger.info(f"\nDetailed Report:\n{audit_report_detailed}\n")
+                else:
+                    logger.error(f"Audit failed for {selector}: {audit_result.error}")
+            else:
+                logger.warning(f"No audit result found for selector {selector}")
+
+            # Store results
             results['selectors'][selector] = {
                 'function_name': function_name,
                 'function_signature': function_data['signature'],
@@ -1323,6 +1430,10 @@ class ERC7730Analyzer:
                 'audit_report_json': audit_report_json,
                 'source_code': function_source  # Store source code for reports
             }
+
+        logger.info(f"\n{'='*60}")
+        logger.info(f"PHASE 3 COMPLETE: All results processed")
+        logger.info(f"{'='*60}")
 
         logger.info(f"\n{'='*60}")
         logger.info("Analysis complete!")

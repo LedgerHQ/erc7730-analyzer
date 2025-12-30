@@ -208,6 +208,7 @@ def format_critical_report(data: Dict) -> str:
                         md += f"**Evidence:** {details['evidence']}\n\n"
 
                     md += "</details>\n\n"
+                    md += "<br>\n\n"  # Add visual spacing after collapsible section
                 else:
                     # Fallback to simple format for backward compatibility
                     md += f"- {issue_summary}\n"
@@ -464,6 +465,7 @@ def _format_critical_issues_section(critical_issues: List[Dict]) -> str:
                     md += f"**Evidence:** {details['evidence']}\n\n"
 
                 md += "</details>\n\n"
+                md += "<br>\n\n"  # Add visual spacing after collapsible section
             else:
                 # Fallback to simple format for backward compatibility
                 md += f"- {issue_summary}\n"

@@ -2,7 +2,7 @@
 Source code extraction and management for ERC-7730 analyzer.
 
 This module handles:
-- Fetching contract source code from Sourcify/Etherscan
+- Fetching contract source code from Sourcify/Etherscan/Blockscout
 - Parsing Solidity and Vyper code to extract functions, structs, and internal functions
 - Proxy detection and implementation fetching
 - Diamond proxy facet resolution
@@ -15,8 +15,23 @@ import re
 from typing import Dict, List, Any, Optional, Set, Tuple
 import requests
 from eth_utils import keccak
+from web3 import Web3
+
+# Import Blockscout URLs from transactions module to avoid duplication
+from .transactions import BLOCKSCOUT_URLS
 
 logger = logging.getLogger(__name__)
+
+# Public RPC endpoints for chains
+RPC_URLS = {
+    1: "https://eth.llamarpc.com",
+    14: "https://flare-api.flare.network/ext/C/rpc",
+    8453: "https://mainnet.base.org",
+    10: "https://mainnet.optimism.io",
+    137: "https://polygon-rpc.com",
+    100: "https://rpc.gnosischain.com",
+    1116: "https://rpc.coredao.org",  # Core DAO Mainnet
+}
 
 
 class SolidityCodeParser:
@@ -691,14 +706,16 @@ class SourceCodeExtractor:
     Handles proxies, diamond proxies, and code caching.
     """
 
-    def __init__(self, etherscan_api_key: str):
+    def __init__(self, etherscan_api_key: str, coredao_api_key: Optional[str] = None):
         """
         Initialize the extractor.
 
         Args:
             etherscan_api_key: Etherscan API key
+            coredao_api_key: Core DAO API key (optional)
         """
         self.etherscan_api_key = etherscan_api_key
+        self.coredao_api_key = coredao_api_key
         self.code_cache = {}  # Cache: contract_address -> extracted code dict
 
     def is_vyper_code(self, source_code: str) -> bool:
@@ -773,6 +790,51 @@ class SourceCodeExtractor:
 
             logger.info(f"  Found {visibility} function: {func_name}")
 
+            # Extract parameters to build signature
+            # Find closing parenthesis for parameters (handle multi-line and nested parens)
+            paren_start = match.end() - 1  # Position of opening (
+            paren_count = 1
+            paren_end = paren_start + 1
+            while paren_end < len(source_code) and paren_count > 0:
+                if source_code[paren_end] == '(':
+                    paren_count += 1
+                elif source_code[paren_end] == ')':
+                    paren_count -= 1
+                paren_end += 1
+
+            # Extract parameter text
+            params_text = source_code[paren_start + 1:paren_end - 1].strip()
+
+            # Parse Vyper parameters: "param_name: param_type, ..."
+            # Extract just the types for signature
+            param_types = []
+            if params_text:
+                # Split by comma (handle nested types)
+                params = []
+                current_param = []
+                bracket_depth = 0
+                for char in params_text:
+                    if char == ',' and bracket_depth == 0:
+                        params.append(''.join(current_param).strip())
+                        current_param = []
+                    else:
+                        if char in '([{':
+                            bracket_depth += 1
+                        elif char in ')]}':
+                            bracket_depth -= 1
+                        current_param.append(char)
+                if current_param:
+                    params.append(''.join(current_param).strip())
+
+                # Extract type from each parameter (format: name: type)
+                for param in params:
+                    if ':' in param:
+                        param_type = param.split(':', 1)[1].strip()
+                        param_types.append(param_type)
+
+            # Build signature
+            signature = f"{func_name}({','.join(param_types)})"
+
             # Extract function body from source
             start_pos = match.start()
             end_pos = len(source_code)
@@ -791,6 +853,7 @@ class SourceCodeExtractor:
             functions[func_key] = {
                 'name': func_name,
                 'visibility': visibility,
+                'signature': signature,
                 'body': body,
                 'line_count': line_count,
                 'start_line': start_line
@@ -804,6 +867,51 @@ class SourceCodeExtractor:
 
         for match in special_matches:
             func_name = match.group(1)
+
+            # Extract parameters to build signature
+            # Find closing parenthesis for parameters (handle multi-line and nested parens)
+            paren_start = match.end() - 1  # Position of opening (
+            paren_count = 1
+            paren_end = paren_start + 1
+            while paren_end < len(source_code) and paren_count > 0:
+                if source_code[paren_end] == '(':
+                    paren_count += 1
+                elif source_code[paren_end] == ')':
+                    paren_count -= 1
+                paren_end += 1
+
+            # Extract parameter text
+            params_text = source_code[paren_start + 1:paren_end - 1].strip()
+
+            # Parse Vyper parameters: "param_name: param_type, ..."
+            # Extract just the types for signature
+            param_types = []
+            if params_text:
+                # Split by comma (handle nested types)
+                params = []
+                current_param = []
+                bracket_depth = 0
+                for char in params_text:
+                    if char == ',' and bracket_depth == 0:
+                        params.append(''.join(current_param).strip())
+                        current_param = []
+                    else:
+                        if char in '([{':
+                            bracket_depth += 1
+                        elif char in ')]}':
+                            bracket_depth -= 1
+                        current_param.append(char)
+                if current_param:
+                    params.append(''.join(current_param).strip())
+
+                # Extract type from each parameter (format: name: type)
+                for param in params:
+                    if ':' in param:
+                        param_type = param.split(':', 1)[1].strip()
+                        param_types.append(param_type)
+
+            # Build signature
+            signature = f"{func_name}({','.join(param_types)})"
 
             # Extract function body
             start_pos = match.start()
@@ -826,6 +934,7 @@ class SourceCodeExtractor:
                 functions[func_key] = {
                     'name': func_name,
                     'visibility': visibility,
+                    'signature': signature,
                     'body': body,
                     'line_count': line_count,
                     'start_line': start_line
@@ -979,6 +1088,140 @@ class SourceCodeExtractor:
             logger.error(f"Failed to fetch from Etherscan: {e}")
             return None
 
+    def fetch_source_from_blockscout(self, contract_address: str, chain_id: int) -> Optional[str]:
+        """
+        Fetch source code from Blockscout v2 API or Core DAO API.
+
+        Args:
+            contract_address: Contract address
+            chain_id: Chain ID
+
+        Returns:
+            Combined source code or None
+        """
+        if chain_id not in BLOCKSCOUT_URLS:
+            logger.debug(f"Chain {chain_id} not in Blockscout URLs")
+            return None
+
+        try:
+            base_url = BLOCKSCOUT_URLS[chain_id]
+
+            # Special handling for Core DAO (chain 1116) - uses different API structure
+            if chain_id == 1116:
+                url = f"{base_url}/contracts/source_code_of_verified_contract/{contract_address}"
+                params = {}
+                if self.coredao_api_key:
+                    params['apikey'] = self.coredao_api_key
+
+                logger.info(f"Fetching from Core DAO API: {url}")
+                try:
+                    response = requests.get(url, params=params, timeout=10)
+                    logger.info(f"Core DAO API response status: {response.status_code}")
+
+                    if response.status_code == 401:
+                        logger.error(f"Core DAO API authentication failed - check API key")
+                        return None
+
+                    response.raise_for_status()
+                    data = response.json()
+                    logger.info(f"Core DAO API response keys: {list(data.keys()) if isinstance(data, dict) else 'not a dict'}")
+
+                    # Core DAO API uses Etherscan-style response format
+                    if data and data.get('status') == '1' and 'result' in data:
+                        result = data['result']
+                        if isinstance(result, list) and len(result) > 0:
+                            contract_data = result[0]
+                            source_code = contract_data.get('SourceCode', '')
+
+                            if source_code:
+                                # Parse multi-file format (JSON string starting with {{)
+                                if source_code.startswith('{{'):
+                                    import json
+                                    # Remove outer braces and parse
+                                    source_json = json.loads(source_code[1:-1])
+                                    sources = source_json.get('sources', {})
+
+                                    combined_code = []
+                                    for filename, file_data in sources.items():
+                                        content = file_data.get('content', '')
+                                        if content:
+                                            combined_code.append(f"// File: {filename}\n{content}")
+
+                                    if combined_code:
+                                        final_source = '\n\n'.join(combined_code)
+                                        logger.info(f"Fetched source code from Core DAO API ({len(final_source)} chars, {len(combined_code)} files)")
+                                        return final_source
+                                else:
+                                    # Single file source code
+                                    logger.info(f"Fetched source code from Core DAO API ({len(source_code)} chars)")
+                                    return source_code
+                            else:
+                                logger.info(f"Core DAO API returned empty SourceCode")
+                        else:
+                            logger.info(f"Core DAO API result is not a list or is empty")
+                    else:
+                        logger.info(f"Core DAO API response: status={data.get('status')}, message={data.get('message')}")
+                    return None
+                except Exception as e:
+                    logger.error(f"Failed to fetch from Core DAO API: {e}")
+                    return None
+
+            # Standard Blockscout v2 API
+            url = f"{base_url}/api/v2/smart-contracts/{contract_address}"
+
+            response = requests.get(url, timeout=10)
+            response.raise_for_status()
+            data = response.json()
+
+            # Check if source code is available
+            if not data or 'source_code' not in data:
+                logger.debug(f"No source code found on Blockscout")
+                return None
+
+            source_code = data['source_code']
+
+            if not source_code:
+                return None
+
+            # Check for 'additional_sources' which contains imported files
+            additional_sources = data.get('additional_sources', [])
+
+            # Handle multi-file format
+            if isinstance(source_code, dict):
+                combined_code = []
+                for filename, content in source_code.items():
+                    if isinstance(content, str):
+                        combined_code.append(f"// File: {filename}\n{content}")
+
+                if combined_code:
+                    logger.info(f"Fetched {len(combined_code)} files from Blockscout")
+                    return '\n\n'.join(combined_code)
+
+            # Single file - check if we need to add additional sources
+            combined_code = []
+            if isinstance(source_code, str):
+                # Add main source
+                combined_code.append(f"// Main Contract\n{source_code}")
+
+                # Add additional sources (imported files)
+                if additional_sources:
+                    logger.info(f"Found {len(additional_sources)} additional source files")
+                    for source in additional_sources:
+                        filename = source.get('file_path', 'unknown')
+                        content = source.get('source_code', '')
+                        if content:
+                            combined_code.append(f"// File: {filename}\n{content}")
+
+                final_source = '\n\n'.join(combined_code)
+                logger.info(f"Fetched source code from Blockscout ({len(final_source)} chars, {len(combined_code)} files)")
+                return final_source
+
+            return None
+
+        except Exception as e:
+            logger.debug(f"Failed to fetch from Blockscout: {e}")
+            return None
+
     def detect_proxy_implementation(self, contract_address: str, chain_id: int) -> Optional[str]:
         """
         Detect if contract is a proxy and return implementation address.
@@ -995,61 +1238,163 @@ class SourceCodeExtractor:
         Returns:
             Implementation address or None
         """
+        logger.info(f"Checking if {contract_address} is a proxy contract...")
         try:
             # EIP-1967 implementation slot
             # keccak256("eip1967.proxy.implementation") - 1
             impl_slot = '0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc'
 
-            params = {
-                'module': 'proxy',
-                'action': 'eth_getStorageAt',
-                'address': contract_address,
-                'position': impl_slot,
-                'tag': 'latest',
-                'apikey': self.etherscan_api_key
-            }
+            # Try RPC FIRST (most reliable) if we have an RPC URL
+            if chain_id in RPC_URLS:
+                logger.info(f"  Trying direct RPC call to read storage slot...")
+                try:
+                    w3 = Web3(Web3.HTTPProvider(RPC_URLS[chain_id], request_kwargs={'timeout': 10}))
+                    if w3.is_connected():
+                        # Read the EIP-1967 implementation storage slot
+                        storage_value = w3.eth.get_storage_at(
+                            Web3.to_checksum_address(contract_address),
+                            int(impl_slot, 16)
+                        )
 
-            base_url = f"https://api.etherscan.io/v2/api?chainid={chain_id}"
-            response = requests.get(base_url, params=params)
-            response.raise_for_status()
-            data = response.json()
+                        # Convert bytes to hex string
+                        storage_hex = storage_value.hex() if isinstance(storage_value, bytes) else hex(storage_value)
+                        if not storage_hex.startswith('0x'):
+                            storage_hex = '0x' + storage_hex
 
-            # Check for API errors first
-            if 'error' in data or data.get('status') == '0' or data.get('message') == 'NOTOK':
-                logger.debug(f"API error when checking EIP-1967 implementation slot")
-                # Continue to next detection method
-            elif data.get('result') and data['result'] != '0x' + '0' * 64:
-                # Ensure result is valid hex before extracting address
-                result = data['result']
-                if result.startswith('0x') and len(result) == 66:  # 0x + 64 hex chars
-                    # Extract address from storage slot (last 20 bytes)
-                    impl_address = '0x' + result[-40:]
-                    if impl_address != '0x' + '0' * 40:
-                        logger.info(f"Detected EIP-1967 proxy, implementation: {impl_address}")
-                        return impl_address
+                        logger.info(f"  RPC storage slot result: {storage_hex}")
+
+                        # Check if non-zero
+                        if storage_hex != '0x' + '0' * 64 and int(storage_hex, 16) != 0:
+                            # Extract address from storage slot (last 20 bytes)
+                            impl_address = '0x' + storage_hex[-40:]
+                            if impl_address != '0x' + '0' * 40:
+                                logger.info(f"Detected EIP-1967 proxy via RPC, implementation: {impl_address}")
+                                return impl_address
+                            else:
+                                logger.info(f"  RPC storage slot is empty (all zeros)")
+                        else:
+                            logger.info(f"  RPC storage slot is empty or all zeros")
+                    else:
+                        logger.info(f"  Could not connect to RPC endpoint")
+                except Exception as e:
+                    logger.info(f"  Error reading storage via RPC: {e}")
+
+            # Try Etherscan and Blockscout APIs as fallback
+            for use_blockscout in [False, True]:
+                if use_blockscout and chain_id not in BLOCKSCOUT_URLS:
+                    logger.debug(f"Chain {chain_id} not in Blockscout URLs, skipping")
+                    continue
+
+                # Skip Blockscout API for Core DAO (chain 1116) - uses different API structure
+                if use_blockscout and chain_id == 1116:
+                    logger.info(f"  Skipping Blockscout API for Core DAO (chain 1116) - incompatible API structure")
+                    continue
+
+                api_name = "Blockscout" if use_blockscout else "Etherscan"
+                logger.info(f"  Trying {api_name} for EIP-1967 storage slot...")
+
+                if use_blockscout:
+                    # Use Blockscout API
+                    base_url = BLOCKSCOUT_URLS[chain_id]
+                    params = {
+                        'module': 'proxy',
+                        'action': 'eth_getStorageAt',
+                        'address': contract_address,
+                        'position': impl_slot,
+                        'tag': 'latest'
+                    }
+                else:
+                    # Use Etherscan API
+                    base_url = f"https://api.etherscan.io/v2/api?chainid={chain_id}"
+                    params = {
+                        'module': 'proxy',
+                        'action': 'eth_getStorageAt',
+                        'address': contract_address,
+                        'position': impl_slot,
+                        'tag': 'latest',
+                        'apikey': self.etherscan_api_key
+                    }
+
+                try:
+                    response = requests.get(base_url, params=params, timeout=10)
+                    response.raise_for_status()
+                    data = response.json()
+
+                    # Check for API errors first
+                    if 'error' in data or data.get('status') == '0' or data.get('message') == 'NOTOK':
+                        logger.info(f"  {api_name} API error: {data.get('message', 'unknown error')}")
+                        # Continue to next detection method
+                        continue
+                    elif data.get('result') and data['result'] != '0x' + '0' * 64:
+                        # Ensure result is valid hex before extracting address
+                        result = data['result']
+                        logger.info(f"  {api_name} storage slot result: {result}")
+                        if result.startswith('0x') and len(result) == 66:  # 0x + 64 hex chars
+                            # Extract address from storage slot (last 20 bytes)
+                            impl_address = '0x' + result[-40:]
+                            if impl_address != '0x' + '0' * 40:
+                                logger.info(f"Detected EIP-1967 proxy, implementation: {impl_address}")
+                                return impl_address
+                            else:
+                                logger.info(f"  {api_name} storage slot is empty (all zeros)")
+                        else:
+                            logger.info(f"  {api_name} storage slot has invalid format (length: {len(result)})")
+                    else:
+                        logger.info(f"  {api_name} storage slot is empty or all zeros")
+                except Exception as e:
+                    logger.info(f"  Error checking proxy via {api_name}: {e}")
+                    continue
 
             # Try Etherscan's built-in proxy detection
-            params = {
-                'module': 'contract',
-                'action': 'getsourcecode',
-                'address': contract_address,
-                'apikey': self.etherscan_api_key
-            }
+            try:
+                base_url_etherscan = f"https://api.etherscan.io/v2/api?chainid={chain_id}"
+                params = {
+                    'module': 'contract',
+                    'action': 'getsourcecode',
+                    'address': contract_address,
+                    'apikey': self.etherscan_api_key
+                }
 
-            response = requests.get(base_url, params=params)
-            data = response.json()
+                response = requests.get(base_url_etherscan, params=params, timeout=10)
+                data = response.json()
 
-            if data.get('result') and len(data['result']) > 0:
-                result = data['result'][0]
-                impl = result.get('Implementation')
-                if impl:
-                    logger.info(f"Detected proxy via Etherscan, implementation: {impl}")
-                    return impl
+                if data.get('result') and len(data['result']) > 0:
+                    result = data['result'][0]
+                    impl = result.get('Implementation')
+                    if impl:
+                        logger.info(f"Detected proxy via Etherscan, implementation: {impl}")
+                        return impl
+            except Exception as e:
+                logger.debug(f"Etherscan proxy detection failed: {e}")
 
+            # Try Blockscout's smart-contracts API for proxy info (skip for Core DAO)
+            if chain_id in BLOCKSCOUT_URLS and chain_id != 1116:
+                logger.info(f"  Trying Blockscout smart-contracts API...")
+                try:
+                    base_url_blockscout = BLOCKSCOUT_URLS[chain_id]
+                    url = f"{base_url_blockscout}/api/v2/smart-contracts/{contract_address}"
+                    response = requests.get(url, timeout=10)
+                    response.raise_for_status()
+                    data = response.json()
+
+                    # Check for proxy information in Blockscout response
+                    if data and isinstance(data, dict):
+                        # Blockscout might have 'implementations' or 'proxy_type' fields
+                        implementations = data.get('implementations') or []
+                        logger.info(f"  Blockscout returned {len(implementations)} implementation(s)")
+                        if implementations and len(implementations) > 0:
+                            impl = implementations[0].get('address')
+                            if impl:
+                                logger.info(f"Detected proxy via Blockscout smart-contracts API, implementation: {impl}")
+                                return impl
+                except Exception as e:
+                    logger.info(f"  Blockscout smart-contracts API failed: {e}")
+
+            logger.info(f"No proxy implementation detected for {contract_address}")
             return None
 
         except Exception as e:
-            logger.debug(f"Proxy detection failed: {e}")
+            logger.warning(f"Proxy detection failed with exception: {e}")
             return None
 
     def _detect_diamond_via_sourcecode(self, contract_address: str, chain_id: int) -> Dict[str, str]:
@@ -1271,6 +1616,7 @@ class SourceCodeExtractor:
             Dictionary with extracted code:
             {
                 'address': str,
+                'chain_id': int,
                 'is_proxy': bool,
                 'implementation': Optional[str],
                 'is_diamond': bool,
@@ -1292,6 +1638,7 @@ class SourceCodeExtractor:
 
         result = {
             'address': contract_address,
+            'chain_id': chain_id,
             'is_proxy': False,
             'implementation': None,
             'is_diamond': False,
@@ -1345,10 +1692,12 @@ class SourceCodeExtractor:
                 for facet_addr in unique_facet_addresses:
                     logger.info(f"  Fetching source code for facet {facet_addr}...")
 
-                    # Fetch source code (try Sourcify first, then Etherscan)
+                    # Fetch source code (try Sourcify first, then Etherscan, then Blockscout)
                     source_code = self.fetch_source_from_sourcify(facet_addr, chain_id)
                     if not source_code:
                         source_code = self.fetch_source_from_etherscan(facet_addr, chain_id)
+                    if not source_code:
+                        source_code = self.fetch_source_from_blockscout(facet_addr, chain_id)
 
                     if source_code:
                         # Detect if facet code is Vyper or Solidity
@@ -1431,10 +1780,13 @@ class SourceCodeExtractor:
             result['contract_name'] = contract_name
             logger.info(f"✓ Deployed contract: {contract_name}")
 
-        # Fetch source code (try Sourcify first, then Etherscan)
+        # Fetch source code (try Sourcify first, then Etherscan, then Blockscout)
         source_code = self.fetch_source_from_sourcify(contract_address, chain_id)
         if not source_code:
             source_code = self.fetch_source_from_etherscan(contract_address, chain_id)
+        if not source_code and chain_id in BLOCKSCOUT_URLS:
+            logger.info(f"Chain {chain_id} has Blockscout support - trying Blockscout...")
+            source_code = self.fetch_source_from_blockscout(contract_address, chain_id)
 
         if not source_code:
             logger.warning(f"Could not fetch source code for {contract_address}")
@@ -1870,7 +2222,8 @@ class SourceCodeExtractor:
         function_name: str,
         extracted_code: Dict[str, Any],
         function_signature: Optional[str] = None,
-        max_lines: int = 300
+        max_lines: int = 300,
+        selector_only: bool = False
     ) -> Dict[str, Any]:
         """
         Get a function's code along with its dependencies (structs, internal functions, libraries, etc.).
@@ -1881,6 +2234,7 @@ class SourceCodeExtractor:
             function_signature: Optional function signature with parameter types (e.g., "approve(uint256,uint256)")
                                 to disambiguate overloaded functions. If not provided, matches by name only.
             max_lines: Maximum number of lines to include (truncate if exceeded)
+            selector_only: If True, only match by exact selector (skip name-based fallback)
 
         Returns:
             Dictionary with:
@@ -1989,6 +2343,10 @@ class SourceCodeExtractor:
 
                 # Check if any have matching selector
                 for func in contract_funcs:
+                    # Skip functions without signature (interface definitions)
+                    if 'signature' not in func:
+                        continue
+
                     func_sig = self._normalize_signature_for_matching(
                         func['signature'],
                         custom_type_mapping,
@@ -2010,7 +2368,7 @@ class SourceCodeExtractor:
                     break
 
         # PHASE 2: If no selector match, try to match by NAME following inheritance hierarchy
-        if not target_function and inheritance_hierarchy:
+        if not target_function and not selector_only and inheritance_hierarchy:
             logger.info(f"  Phase 2: Searching by name following inheritance chain...")
             for contract_name in inheritance_hierarchy:
                 # Find candidates in this contract
@@ -2022,25 +2380,25 @@ class SourceCodeExtractor:
                 non_virtual = [f for f in contract_funcs if not f.get('is_virtual', False)]
                 if non_virtual:
                     target_function = non_virtual[0]
-                    logger.info(f"  ✓ Found by name in {contract_name}: {target_function['signature']} (non-virtual)")
+                    logger.info(f"  ✓ Found by name in {contract_name}: {target_function.get('signature', target_function.get('name', 'unknown'))} (non-virtual)")
                 else:
                     target_function = contract_funcs[0]
-                    logger.info(f"  ✓ Found by name in {contract_name}: {target_function['signature']} (virtual)")
+                    logger.info(f"  ✓ Found by name in {contract_name}: {target_function.get('signature', target_function.get('name', 'unknown'))} (virtual)")
                 break
 
         # PHASE 3: Fallback - if still not found, use old logic (prefer non-virtual, latest line)
-        if not target_function and contract_candidates:
+        if not target_function and not selector_only and contract_candidates:
             logger.info(f"  Phase 3: Fallback - using non-inheritance matching...")
             non_virtual = [f for f in contract_candidates if not f.get('is_virtual', False)]
             if non_virtual:
                 # Sort by line number (later = more likely to be the actual implementation)
                 non_virtual.sort(key=lambda f: f.get('start_line', 0), reverse=True)
                 target_function = non_virtual[0]
-                logger.info(f"  ✓ Selected: {target_function.get('contract_name', 'Unknown')}.{target_function['signature']} (line {target_function['start_line']})")
+                logger.info(f"  ✓ Selected: {target_function.get('contract_name', 'Unknown')}.{target_function.get('name', 'unknown')} (line {target_function.get('start_line', 0)})")
             else:
                 contract_candidates.sort(key=lambda f: f.get('start_line', 0), reverse=True)
                 target_function = contract_candidates[0]
-                logger.info(f"  ✓ Selected: {target_function.get('contract_name', 'Unknown')}.{target_function['signature']} (line {target_function['start_line']}, virtual)")
+                logger.info(f"  ✓ Selected: {target_function.get('contract_name', 'Unknown')}.{target_function.get('name', 'unknown')} (line {target_function.get('start_line', 0)}, virtual)")
 
         # Log all candidates if multiple were found
         if target_function and len(contract_candidates) > 1:
@@ -2052,10 +2410,14 @@ class SourceCodeExtractor:
                 is_override = "override" if func.get('is_override') else ""
                 is_virtual = "virtual" if func.get('is_virtual') else ""
                 modifiers = f"{is_override} {is_virtual}".strip()
-                logger.debug(f"    {marker} {contract}.{func['signature']} {modifiers} (line {func['start_line']})")
+                func_sig = func.get('signature', func.get('name', 'unknown'))
+                logger.debug(f"    {marker} {contract}.{func_sig} {modifiers} (line {func.get('start_line', 0)})")
 
         if not target_function:
-            logger.warning(f"Function {function_name} not found - no matching name or visibility")
+            if selector_only:
+                logger.info(f"  No exact selector match found (selector_only mode)")
+            else:
+                logger.warning(f"Function {function_name} not found - no matching name or visibility")
             return {
                 'function': None,
                 'custom_types': [],

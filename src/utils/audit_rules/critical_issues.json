@@ -34,6 +34,27 @@
       "important": "NEVER flag a $ reference as 'literal string' or 'not an address' - $ references RESOLVE at runtime!"
     },
     {
+      "requirement": "CRITICAL: Understanding null values in ERC-7730",
+      "rule": "null is a VALID value in JSON and ERC-7730 - it means 'explicitly not set' (different from omitting the field)",
+      "description": "Fields set to null are valid according to the ERC-7730 spec and JSON Schema. They will not cause validation failures.",
+      "examples": [
+        "\"$id\": null - VALID (field is explicitly not set)",
+        "\"value\": null - VALID (no default value)",
+        "\"sources\": null - VALID (no custom address sources)",
+        "\"excluded\": null - VALID (no excluded fields)",
+        "\"screens\": null - VALID (using default single-screen layout)"
+      ],
+      "DO_NOT_FLAG_AS_CRITICAL": [
+        "Fields with null values - this is valid JSON and valid ERC-7730",
+        "\"params.sources\": null - VALID (uses default address sources)",
+        "Top-level null fields like $id, excluded, screens - VALID",
+        "Any field explicitly set to null - VALID"
+      ],
+      "when_to_flag": "NEVER flag null values as critical. They are completely valid.",
+      "optional_improvement": "While null is valid, some fields could optionally be removed entirely instead of setting to null (style preference only, NOT critical)",
+      "severity": "not_critical"
+    },
+    {
       "requirement": "Array indexing validation",
       "description": "When ERC-7730 uses array indexing, verify the index points to actual data relevant to the user (not sentinel values)"
     },
@@ -327,6 +348,20 @@
           "action": "Flag as CRITICAL: 'Field uses date format with timestamp encoding, but the actual value is unreasonably large (not a valid Unix timestamp). User will see meaningless date instead of actual expiration time.'",
           "note": "This requires checking actual transaction data - cannot be detected from descriptor alone",
           "severity": "critical"
+        },
+        {
+          "type": "Decimals parameter in unit format - string vs number",
+          "description": "The params.decimals field in unit formatting accepts BOTH string and numeric values - they are equivalent",
+          "examples": [
+            "{\"format\": \"unit\", \"params\": {\"decimals\": \"18\", \"prefix\": \"false\"}} - VALID",
+            "{\"format\": \"unit\", \"params\": {\"decimals\": 18, \"prefix\": \"false\"}} - VALID (same as string)",
+            "{\"format\": \"unit\", \"params\": {\"decimals\": \"6\", \"prefix\": true}} - VALID",
+            "{\"format\": \"unit\", \"params\": {\"decimals\": 6, \"prefix\": false}} - VALID (same as string)"
+          ],
+          "rule": "DO NOT flag as critical or incorrect if decimals is a string instead of a number (or vice versa). The ERC-7730 spec accepts both formats and treats them identically.",
+          "important": "Both \"18\" and 18 decode to the same value. This is NOT a type mismatch or validation error.",
+          "action": "NEVER flag this as an issue. Both formats are correct and equivalent.",
+          "severity": "not_an_issue"
         },
         {
           "type": "Transaction envelope paths in required/excluded arrays",

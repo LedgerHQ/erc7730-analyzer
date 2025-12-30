@@ -37,6 +37,7 @@ Environment Variables (can also be set in .env file):
   ABI_FILE                 Path to contract ABI JSON file (optional)
   RAW_TXS_FILE             Path to JSON file with raw transactions (optional)
   ETHERSCAN_API_KEY        Etherscan API key
+  COREDAO_API_KEY          Core DAO API key (optional, for chain 1116)
   OPENAI_API_KEY           OpenAI API key for AI-powered audits (optional)
   LOOKBACK_DAYS            Number of days to look back (default: 20)
   MAX_CONCURRENT_API_CALLS Maximum concurrent API calls (default: 10)
@@ -67,6 +68,11 @@ Priority: Command-line arguments > Environment variables > Defaults
         '--api-key',
         default=os.getenv('ETHERSCAN_API_KEY'),
         help='Etherscan API key (env: ETHERSCAN_API_KEY)'
+    )
+    parser.add_argument(
+        '--coredao-api-key',
+        default=os.getenv('COREDAO_API_KEY'),
+        help='Core DAO API key for chain 1116 (env: COREDAO_API_KEY, optional)'
     )
     parser.add_argument(
         '--lookback-days',
@@ -129,6 +135,7 @@ Priority: Command-line arguments > Environment variables > Defaults
     # Initialize analyzer
     analyzer = ERC7730Analyzer(
         etherscan_api_key=args.api_key,
+        coredao_api_key=args.coredao_api_key,
         lookback_days=args.lookback_days,
         max_concurrent_api_calls=args.max_concurrent,
         max_api_retries=args.max_retries
@@ -150,7 +157,29 @@ Priority: Command-line arguments > Environment variables > Defaults
 
     # Generate timestamp for filenames
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    context_id = (results.get('context', {}).get('$id') or 'unknown').replace(' ', '_')
+
+    # Extract protocol name from descriptor (try multiple fields)
+    context = results.get('context', {})
+    protocol_name = None
+
+    # Try $id first
+    if context.get('$id'):
+        protocol_name = context['$id']
+    # Try owner
+    elif context.get('owner'):
+        protocol_name = context['owner']
+    # Try legalname
+    elif context.get('legalname'):
+        protocol_name = context['legalname']
+    # Fallback to filename (remove "calldata-" prefix if present)
+    else:
+        filename = Path(args.erc7730_file).stem  # Get filename without extension
+        if filename.startswith('calldata-'):
+            protocol_name = filename[9:]  # Remove "calldata-" prefix (9 chars)
+        else:
+            protocol_name = filename
+
+    context_id = protocol_name.replace(' ', '_') if protocol_name else 'unknown'
 
     # Generate full report file
     summary_file = output_dir / f"FULL_REPORT_{context_id}_{timestamp}.md"

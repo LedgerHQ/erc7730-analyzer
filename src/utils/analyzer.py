@@ -30,6 +30,50 @@ from .source_code import SourceCodeExtractor
 logger = logging.getLogger(__name__)
 
 
+def truncate_byte_arrays(obj, max_bytes_length=100):
+    """
+    Recursively truncate byte array representations in decoded parameters.
+
+    Only truncates nested calldata (hex strings that look like encoded function calls).
+    Keeps normal parameters (addresses, amounts, etc.) unchanged.
+
+    Args:
+        obj: The object to process (dict, list, tuple, str, bytes, or primitive)
+        max_bytes_length: Maximum length for nested calldata hex representations
+
+    Returns:
+        Processed object with truncated nested calldata
+    """
+    if isinstance(obj, dict):
+        return {k: truncate_byte_arrays(v, max_bytes_length) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [truncate_byte_arrays(item, max_bytes_length) for item in obj]
+    elif isinstance(obj, tuple):
+        # Process tuple elements and return as tuple
+        return tuple(truncate_byte_arrays(item, max_bytes_length) for item in obj)
+    elif isinstance(obj, bytes):
+        # Convert bytes to hex string with length indicator if too long
+        if len(obj) > max_bytes_length:
+            preview = obj[:max_bytes_length].hex()
+            return f"0x{preview}... (truncated {len(obj)} bytes total)"
+        return f"0x{obj.hex()}"
+    elif isinstance(obj, str):
+        # Only truncate if this looks like nested calldata:
+        # 1. Starts with 0x (hex string)
+        # 2. Is very long (>200 chars = >100 bytes)
+        # 3. After removing 0x prefix, has enough data to be meaningful calldata
+        if obj.startswith('0x') and len(obj) > 200:
+            # This is likely nested calldata - truncate it
+            bytes_count = (len(obj) - 2) // 2  # Calculate original byte count
+            # Show function selector (8 hex chars) + some parameters (92 more chars = ~50 bytes)
+            preview_chars = min(100, len(obj) - 2)
+            return f"{obj[:preview_chars + 2]}... (truncated {bytes_count} bytes total)"
+        return obj
+    else:
+        # Primitive types (int, float, bool, None) - return as-is
+        return obj
+
+
 class ERC7730Analyzer:
     """Analyzer for ERC-7730 clear signing files with Etherscan integration."""
 
@@ -54,6 +98,7 @@ class ERC7730Analyzer:
     def __init__(
         self,
         etherscan_api_key: Optional[str] = None,
+        coredao_api_key: Optional[str] = None,
         lookback_days: int = 20,
         enable_source_code: bool = True,
         use_smart_referencing: bool = True,
@@ -65,6 +110,7 @@ class ERC7730Analyzer:
 
         Args:
             etherscan_api_key: Etherscan API key for fetching transaction data
+            coredao_api_key: Core DAO API key for fetching data from Core DAO chain
             lookback_days: Number of days to look back for transaction history (default: 20)
             enable_source_code: Whether to extract and include source code in analysis (default: True)
             use_smart_referencing: Whether to use smart rule referencing to reduce token usage (default: True)
@@ -72,6 +118,7 @@ class ERC7730Analyzer:
             max_api_retries: Maximum number of retry attempts per API call (default: 3)
         """
         self.etherscan_api_key = etherscan_api_key
+        self.coredao_api_key = coredao_api_key
         self.lookback_days = lookback_days
         self.enable_source_code = enable_source_code
         self.use_smart_referencing = use_smart_referencing
@@ -80,11 +127,12 @@ class ERC7730Analyzer:
         self.w3 = Web3()
         self.abi_helper = None
         self.tx_fetcher = TransactionFetcher(etherscan_api_key, lookback_days)
-        self.source_extractor = SourceCodeExtractor(etherscan_api_key) if enable_source_code else None
+        self.source_extractor = SourceCodeExtractor(etherscan_api_key, coredao_api_key) if enable_source_code else None
         self.selector_to_format_key = {}
-        self.extracted_codes = {}  # Will store extracted code for each chain deployment (keyed by chainId)
+        self.extracted_codes = {}  # Will store extracted code for each deployment (keyed by "{chainId}_{address}")
         self.erc4626_context = None  # Will store ERC4626 vault context if detected
         self.erc20_context = None  # Will store ERC20 token context if detected
+        self.protocol_name = None  # Will store protocol name from descriptor ($id, owner, or legalname)
 
     def parse_erc7730_file(self, file_path: Path) -> Dict[str, Any]:
         """
@@ -746,6 +794,23 @@ class ERC7730Analyzer:
         # Parse ERC-7730 file
         erc7730_data = self.parse_erc7730_file(erc7730_file)
 
+        # Extract protocol name from descriptor (try multiple fields)
+        context = erc7730_data.get('context', {})
+        protocol_name = None
+
+        # Try $id first
+        if context.get('$id'):
+            protocol_name = context['$id']
+        # Try owner
+        elif context.get('owner'):
+            protocol_name = context['owner']
+        # Try legalname
+        elif context.get('legalname'):
+            protocol_name = context['legalname']
+
+        # Store protocol name for use in audit tasks
+        self.protocol_name = protocol_name
+
         # Extract contract deployments
         deployments = self.get_contract_deployments(erc7730_data)
         if not deployments:
@@ -958,16 +1023,17 @@ class ERC7730Analyzer:
             logger.info("Extracting contract source code from all deployments...")
             logger.info(f"{'='*60}")
 
-            # Track which chains we've already extracted from to avoid duplicates
-            extracted_chains = set()
+            # Track which (chain_id, address) pairs we've already extracted to avoid duplicates
+            extracted_contracts = set()
 
             for deployment in deployments:
                 chain_id = deployment['chainId']
-                address = deployment['address']
+                address = deployment['address'].lower()  # Normalize to lowercase
 
-                # Skip if we already extracted from this chain
-                if chain_id in extracted_chains:
-                    logger.info(f"Skipping chain {chain_id} - already extracted")
+                # Skip if we already extracted this specific contract
+                contract_key = (chain_id, address)
+                if contract_key in extracted_contracts:
+                    logger.info(f"Skipping {address} on chain {chain_id} - already extracted")
                     continue
 
                 logger.info(f"\n📦 Extracting from chain {chain_id} at {address}")
@@ -979,10 +1045,12 @@ class ERC7730Analyzer:
                 )
 
                 if extracted_code['source_code']:
-                    self.extracted_codes[chain_id] = extracted_code
-                    extracted_chains.add(chain_id)
+                    # Store with unique key combining chain_id and address
+                    storage_key = f"{chain_id}_{address}"
+                    self.extracted_codes[storage_key] = extracted_code
+                    extracted_contracts.add(contract_key)
 
-                    logger.info(f"✓ Source code extracted successfully for chain {chain_id}")
+                    logger.info(f"✓ Source code extracted successfully for {address} on chain {chain_id}")
                     logger.info(f"  - Functions: {len(extracted_code['functions'])}")
                     logger.info(f"  - Structs: {len(extracted_code['structs'])}")
                     logger.info(f"  - Enums: {len(extracted_code['enums'])}")
@@ -991,15 +1059,15 @@ class ERC7730Analyzer:
                     if extracted_code['is_diamond']:
                         logger.info(f"  - Diamond proxy detected with {len(set(extracted_code['facets'].values()))} facets")
                 else:
-                    logger.warning(f"Could not extract source code for chain {chain_id}")
+                    logger.warning(f"Could not extract source code for {address} on chain {chain_id}")
 
             if self.extracted_codes:
-                logger.info(f"\n✓ Successfully extracted source code from {len(self.extracted_codes)} chain(s): {list(self.extracted_codes.keys())}")
+                logger.info(f"\n✓ Successfully extracted source code from {len(self.extracted_codes)} contract(s): {list(self.extracted_codes.keys())}")
 
                 # Detect ERC4626 from source code if not already detected from includes
                 if not self.erc4626_context:
                     logger.info("\n🔍 Checking source code for ERC4626 patterns...")
-                    for chain_id, extracted_code in self.extracted_codes.items():
+                    for deployment_key, extracted_code in self.extracted_codes.items():
                         if extracted_code.get('source_code') and isinstance(extracted_code['source_code'], str):
                             contract_name = extracted_code.get('contract_name')
                             source_detection = self._detect_erc4626_from_source(
@@ -1007,7 +1075,9 @@ class ERC7730Analyzer:
                                 contract_name=contract_name
                             )
                             if source_detection['is_erc4626']:
-                                logger.info(f"🏦 ERC4626 vault confirmed from source code on chain {chain_id}")
+                                chain_id = extracted_code['chain_id']
+                                address = extracted_code['address']
+                                logger.info(f"🏦 ERC4626 vault confirmed from source code at {address} on chain {chain_id}")
                                 logger.info(f"   Detection method: {source_detection.get('detection_patterns', [])}")
 
                                 # Get underlying token from metadata constants if available
@@ -1017,7 +1087,7 @@ class ERC7730Analyzer:
 
                                 # Query on-chain asset() value
                                 asset_from_chain = self._query_erc4626_asset(
-                                    extracted_code['address'],
+                                    address,
                                     chain_id
                                 )
 
@@ -1033,7 +1103,7 @@ class ERC7730Analyzer:
                 # Detect ERC20 from source code (if not ERC4626, since ERC4626 extends ERC20)
                 if not self.erc20_context and not self.erc4626_context:
                     logger.info("\n🔍 Checking source code for ERC20 patterns...")
-                    for chain_id, extracted_code in self.extracted_codes.items():
+                    for deployment_key, extracted_code in self.extracted_codes.items():
                         if extracted_code.get('source_code') and isinstance(extracted_code['source_code'], str):
                             contract_name = extracted_code.get('contract_name')
                             source_detection = self._detect_erc20_from_source(
@@ -1041,7 +1111,9 @@ class ERC7730Analyzer:
                                 contract_name=contract_name
                             )
                             if source_detection['is_erc20']:
-                                logger.info(f"🪙 ERC20 token confirmed from source code on chain {chain_id}")
+                                chain_id = extracted_code['chain_id']
+                                address = extracted_code['address']
+                                logger.info(f"🪙 ERC20 token confirmed from source code at {address} on chain {chain_id}")
                                 logger.info(f"   Detection method: {source_detection.get('detected_patterns', [])}")
 
                                 self.erc20_context = {
@@ -1132,6 +1204,16 @@ class ERC7730Analyzer:
                     self.abi_helper
                 )
                 if decoded is not None:
+                    # Extract _raw_fallback before truncation (keep it intact for AI)
+                    raw_fallback = decoded.pop('_raw_fallback', None)
+
+                    # Truncate large byte arrays to reduce token usage
+                    decoded_clean = truncate_byte_arrays(decoded, max_bytes_length=100)
+
+                    # Re-add raw fallback if it existed (untruncated)
+                    if raw_fallback:
+                        decoded_clean['_raw_fallback'] = raw_fallback
+
                     tx_data = {
                         'hash': tx['hash'],
                         'block': tx['blockNumber'],
@@ -1139,7 +1221,7 @@ class ERC7730Analyzer:
                         'from': tx['from'],
                         'to': tx.get('to', ''),
                         'value': tx['value'],
-                        'decoded_input': decoded
+                        'decoded_input': decoded_clean
                     }
 
                     # Fetch transaction receipt and decode logs
@@ -1180,7 +1262,7 @@ class ERC7730Analyzer:
                     time.sleep(0.2)
 
                     logger.info(f"Decoded parameters:")
-                    for param_name, param_value in decoded.items():
+                    for param_name, param_value in decoded_clean.items():
                         logger.info(f"  {param_name}: {param_value}")
 
             # Generate clear signing audit report
@@ -1191,26 +1273,32 @@ class ERC7730Analyzer:
             from .reporter import expand_erc7730_format_with_refs
             erc7730_format_expanded = expand_erc7730_format_with_refs(erc7730_format, erc7730_data)
 
-            # Extract source code for this specific function (search across all chains)
+            # Extract source code for this specific function (search across all deployments)
             function_source = None
             if self.extracted_codes:
-                logger.info(f"Searching for function '{function_name}' ({function_data['signature']}) across {len(self.extracted_codes)} chain(s)...")
+                logger.info(f"Searching for function '{function_name}' ({function_data['signature']}) across {len(self.extracted_codes)} contract(s)...")
 
-                # Try each chain until we find the function
-                for chain_id, extracted_code in self.extracted_codes.items():
+                # PHASE 1: Search ALL contracts for EXACT SELECTOR match first
+                logger.info(f"  Phase 1: Searching for exact selector match across all {len(self.extracted_codes)} contracts...")
+                for deployment_key, extracted_code in self.extracted_codes.items():
                     if not extracted_code['source_code']:
                         continue
 
-                    logger.info(f"  Checking chain {chain_id}...")
+                    chain_id = extracted_code['chain_id']
+                    address = extracted_code['address']
+                    logger.info(f"  Checking {address} on chain {chain_id} (selector only)...")
+
+                    # Try to find by EXACT SELECTOR only (no name fallback)
                     function_source = self.source_extractor.get_function_with_dependencies(
                         function_name,
                         extracted_code,
-                        function_signature=function_data['signature'],  # Try smart matching, fallback to name
-                        max_lines=1000  # Increased from 300 to include more internal functions
+                        function_signature=function_data['signature'],
+                        max_lines=1000,
+                        selector_only=True  # Only match by exact selector, skip name matching
                     )
 
                     if function_source and function_source['function']:
-                        logger.info(f"✓ Found function on chain {chain_id}!")
+                        logger.info(f"✓ Found EXACT SELECTOR MATCH at {address} on chain {chain_id}!")
                         logger.info(f"✓ Extracted function code ({function_source['total_lines']} lines)")
                         logger.info(f"  - Constants: {len(function_source.get('constants', []))}")
                         logger.info(f"  - Structs: {len(function_source['structs'])}")
@@ -1222,12 +1310,50 @@ class ERC7730Analyzer:
                                 logger.info(f"      └─ {pf['parent_contract']}.{pf['function_name']}()")
                         if function_source['truncated']:
                             logger.info(f"  ⚠ Code was truncated to fit within line limit")
-                        break  # Stop searching once found
-                    else:
-                        logger.info(f"  Function not found on chain {chain_id}")
+                        break  # Stop searching - found exact selector match!
+
+                # PHASE 2: If no exact selector match found, try NAME-based matching in first contract
+                if not function_source or not function_source.get('function'):
+                    logger.info(f"  Phase 2: No exact selector match found. Trying name-based matching with inheritance in first contract...")
+
+                    # Get first contract with source code
+                    first_extracted_code = None
+                    first_deployment_key = None
+                    for deployment_key, extracted_code in self.extracted_codes.items():
+                        if extracted_code['source_code']:
+                            first_extracted_code = extracted_code
+                            first_deployment_key = deployment_key
+                            break
+
+                    if first_extracted_code:
+                        chain_id = first_extracted_code['chain_id']
+                        address = first_extracted_code['address']
+                        logger.info(f"  Checking {address} on chain {chain_id} (with name fallback)...")
+
+                        function_source = self.source_extractor.get_function_with_dependencies(
+                            function_name,
+                            first_extracted_code,
+                            function_signature=function_data['signature'],
+                            max_lines=1000,
+                            selector_only=False  # Allow name-based fallback with inheritance
+                        )
+
+                        if function_source and function_source['function']:
+                            logger.info(f"✓ Found by name (with inheritance) at {address} on chain {chain_id}")
+                            logger.info(f"✓ Extracted function code ({function_source['total_lines']} lines)")
+                            logger.info(f"  - Constants: {len(function_source.get('constants', []))}")
+                            logger.info(f"  - Structs: {len(function_source['structs'])}")
+                            logger.info(f"  - Enums: {len(function_source['enums'])}")
+                            logger.info(f"  - Internal functions: {len(function_source['internal_functions'])}")
+                            if function_source.get('parent_functions'):
+                                logger.info(f"  - Parent functions (from super.): {len(function_source['parent_functions'])}")
+                                for pf in function_source['parent_functions']:
+                                    logger.info(f"      └─ {pf['parent_contract']}.{pf['function_name']}()")
+                            if function_source['truncated']:
+                                logger.info(f"  ⚠ Code was truncated to fit within line limit")
 
                 if not function_source or not function_source.get('function'):
-                    logger.warning(f"Function '{function_name}' not found in any of the {len(self.extracted_codes)} chain(s)")
+                    logger.warning(f"Function '{function_name}' not found in any of the {len(self.extracted_codes)} contract(s)")
 
             # Display code in debug mode as a single cohesive block
             if function_source and function_source.get('function'):
@@ -1324,7 +1450,8 @@ class ERC7730Analyzer:
                     source_code=function_source,
                     use_smart_referencing=self.use_smart_referencing,
                     erc4626_context=self.erc4626_context,
-                    erc20_context=self.erc20_context
+                    erc20_context=self.erc20_context,
+                    protocol_name=self.protocol_name
                 )
 
             # Store all prepared data for this selector

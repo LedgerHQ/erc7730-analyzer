@@ -36,6 +36,7 @@ BLOCKSCOUT_URLS = {
         11155420: "https://testnet-explorer.optimism.io",          # Optimism Sepolia
         100: "https://gnosis.blockscout.com",                   # Gnosis Chain
         137: "https://polygon.blockscout.com",                  # Polygon PoS
+        1116: "https://openapi.coredao.org/api",                # Core DAO Mainnet
 }
 
 
@@ -86,6 +87,10 @@ class TransactionFetcher:
         """
         chain_id = int(chain_id)
 
+        # Special handling for Core DAO (chain 1116) - uses Etherscan-style API
+        if chain_id == 1116 and use_blockscout:
+            return self._get_coredao_block_number()
+
         # Use Blockscout v2 API if available
         if use_blockscout and chain_id in BLOCKSCOUT_URLS:
             stats = self._fetch_blockscout_v2_stats(chain_id)
@@ -124,6 +129,42 @@ class TransactionFetcher:
             logger.debug(f"Failed to get current block number: {e}")
             return None
 
+    def _get_coredao_block_number(self) -> Optional[int]:
+        """
+        Get current block number from Core DAO API.
+
+        Returns:
+            Current block number or None if error
+        """
+        try:
+            from dotenv import load_dotenv
+            import os
+            load_dotenv(override=True)
+            coredao_api_key = os.getenv('COREDAO_API_KEY', '')
+
+            base_url = BLOCKSCOUT_URLS[1116]
+            params = {
+                'module': 'proxy',
+                'action': 'eth_blockNumber'
+            }
+
+            if coredao_api_key:
+                params['apikey'] = coredao_api_key
+
+            response = requests.get(base_url, params=params, timeout=10)
+            response.raise_for_status()
+            data = response.json()
+
+            if data.get('result'):
+                # Result is in hex format (0x...)
+                block_number = int(data['result'], 16)
+                logger.info(f"Core DAO current block number: {block_number}")
+                return block_number
+            return None
+        except Exception as e:
+            logger.debug(f"Failed to get Core DAO block number: {e}")
+            return None
+
     def _fetch_blockscout_v2_stats(self, chain_id: int) -> Optional[Dict[str, Any]]:
         """
         Fetch stats from Blockscout v2 API to get current block number.
@@ -148,6 +189,108 @@ class TransactionFetcher:
             logger.debug(f"Failed to fetch Blockscout v2 stats: {e}")
             return None
 
+    def _fetch_coredao_transactions(
+        self,
+        contract_address: str,
+        filter_type: str = "to"
+    ) -> Optional[List[Dict[str, Any]]]:
+        """
+        Fetch transactions from Core DAO API (Etherscan-style) with pagination.
+
+        Args:
+            contract_address: Contract address
+            filter_type: "to", "from", or None for all transactions
+
+        Returns:
+            List of transactions or None if error
+        """
+        try:
+            from dotenv import load_dotenv
+            import os
+            load_dotenv(override=True)
+            coredao_api_key = os.getenv('COREDAO_API_KEY', '')
+
+            base_url = BLOCKSCOUT_URLS[1116]
+            all_transactions = []
+            max_pages = 10  # Fetch up to 10 pages (1000 transactions with 100 per page)
+            page = 1
+
+            logger.info(f"Fetching transactions from Core DAO API for {contract_address}")
+
+            while page <= max_pages:
+                params = {
+                    'module': 'account',
+                    'action': 'txlist',
+                    'address': contract_address,
+                    'sort': 'desc',
+                    'page': page,
+                    'offset': 100  # Core DAO API limit per page
+                }
+
+                if coredao_api_key:
+                    params['apikey'] = coredao_api_key
+
+                response = requests.get(base_url, params=params, timeout=10)
+                response.raise_for_status()
+                data = response.json()
+
+                if data.get('status') == '1' and 'result' in data:
+                    transactions = data['result']
+
+                    if not transactions or len(transactions) == 0:
+                        # No more transactions
+                        break
+
+                    all_transactions.extend(transactions)
+                    logger.info(f"Core DAO API page {page} returned {len(transactions)} transactions (total: {len(all_transactions)})")
+
+                    # If we got fewer than 100, we've reached the end
+                    if len(transactions) < 100:
+                        break
+
+                    page += 1
+                else:
+                    logger.info(f"Core DAO API response on page {page}: status={data.get('status')}, message={data.get('message')}")
+                    break
+
+            if all_transactions:
+                logger.info(f"Core DAO API returned total of {len(all_transactions)} transactions across {page} page(s)")
+                transactions = all_transactions
+
+                # Filter by direction if specified
+                if filter_type == "to":
+                    transactions = [tx for tx in transactions if tx.get('to', '').lower() == contract_address.lower()]
+                elif filter_type == "from":
+                    transactions = [tx for tx in transactions if tx.get('from', '').lower() == contract_address.lower()]
+
+                # Convert Etherscan format to Blockscout v2 format
+                converted_txs = []
+                for tx in transactions:
+                    converted_tx = {
+                        'hash': tx.get('hash', ''),
+                        'from': {'hash': tx.get('from', '')},
+                        'to': {'hash': tx.get('to', '')} if tx.get('to') else None,
+                        'value': tx.get('value', '0'),
+                        'raw_input': tx.get('input', '0x'),  # Blockscout v2 uses 'raw_input'
+                        'block': int(tx.get('blockNumber', 0)),  # Blockscout v2 uses 'block'
+                        'timestamp': tx.get('timeStamp', ''),
+                        'method': None,  # Will be determined later
+                        'status': 'ok' if tx.get('txreceipt_status') == '1' else 'error',
+                        'gas_used': tx.get('gasUsed', '0'),
+                        'gas_price': tx.get('gasPrice', '0')
+                    }
+                    converted_txs.append(converted_tx)
+
+                logger.info(f"Converted {len(converted_txs)} Core DAO transactions to standard format")
+                return converted_txs
+            else:
+                logger.info(f"No transactions found from Core DAO API")
+                return None
+
+        except Exception as e:
+            logger.debug(f"Failed to fetch transactions from Core DAO API: {e}")
+            return None
+
     def _fetch_blockscout_v2_transactions(
         self,
         contract_address: str,
@@ -155,7 +298,7 @@ class TransactionFetcher:
         filter_type: str = "to"
     ) -> Optional[List[Dict[str, Any]]]:
         """
-        Fetch transactions from Blockscout v2 API.
+        Fetch transactions from Blockscout v2 API or Core DAO API.
 
         Args:
             contract_address: Contract address
@@ -168,6 +311,10 @@ class TransactionFetcher:
         chain_id = int(chain_id)
         if chain_id not in BLOCKSCOUT_URLS:
             return None
+
+        # Special handling for Core DAO (chain 1116) - uses Etherscan-style API
+        if chain_id == 1116:
+            return self._fetch_coredao_transactions(contract_address, filter_type)
 
         try:
             base_url = BLOCKSCOUT_URLS[chain_id]
@@ -1020,7 +1167,8 @@ class TransactionFetcher:
         use_blockscout = self.api_type_per_chain.get(chain_id) == "Blockscout"
 
         # For Blockscout v2, get the transaction details which include logs
-        if use_blockscout and chain_id in BLOCKSCOUT_URLS:
+        # Skip Blockscout v2 API for Core DAO (chain 1116) - use Etherscan-style instead
+        if use_blockscout and chain_id in BLOCKSCOUT_URLS and chain_id != 1116:
             try:
                 base_url = BLOCKSCOUT_URLS[chain_id]
                 url = f"{base_url}/api/v2/transactions/{tx_hash}"
@@ -1058,15 +1206,24 @@ class TransactionFetcher:
                 logger.error(f"Failed to fetch receipt from Blockscout v2 for {tx_hash}: {e}")
                 return None
 
-        # Use Etherscan API
+        # Use Etherscan API (or Core DAO Etherscan-style API)
         params = {
             'module': 'proxy',
             'action': 'eth_getTransactionReceipt',
             'txhash': tx_hash,
         }
 
-        # Etherscan requires API key
-        if not use_blockscout:
+        # Add API key
+        if chain_id == 1116:
+            # Core DAO uses its own API key
+            from dotenv import load_dotenv
+            import os
+            load_dotenv(override=True)
+            coredao_api_key = os.getenv('COREDAO_API_KEY', '')
+            if coredao_api_key:
+                params['apikey'] = coredao_api_key
+        elif not use_blockscout:
+            # Etherscan requires API key
             params['apikey'] = self.etherscan_api_key
 
         try:
@@ -1295,6 +1452,109 @@ class TransactionFetcher:
             else:
                 return f"{value} (raw, {token_short})"
 
+    def _convert_decoded_value(self, value, type_info):
+        """
+        Recursively convert decoded ABI values to proper Python types.
+
+        Handles:
+        - bytes → hex strings
+        - tuples (structs) → dicts with component names
+        - tuple[] (array of structs) → list of dicts
+        - Nested structs and arrays
+
+        Args:
+            value: Raw decoded value from web3
+            type_info: ABI type information dict with 'type' and optional 'components'
+
+        Returns:
+            Properly formatted value
+        """
+        type_str = type_info.get('type', '')
+
+        # Handle array of structs (tuple[], tuple[3], tuple[][], etc.)
+        if type_str.startswith('tuple['):
+            components = type_info.get('components', [])
+            result = []
+
+            # Recursively handle each struct in the array
+            for item in value:
+                struct_dict = {}
+                for idx, component in enumerate(components):
+                    comp_name = component.get('name', f'field_{idx}')
+                    comp_value = item[idx] if idx < len(item) else None
+
+                    # Recursively convert based on component type
+                    struct_dict[comp_name] = self._convert_decoded_value(comp_value, component)
+
+                result.append(struct_dict)
+
+            return result
+
+        # Handle single struct (tuple)
+        elif type_str == 'tuple':
+            components = type_info.get('components', [])
+            struct_dict = {}
+
+            for idx, component in enumerate(components):
+                comp_name = component.get('name', f'field_{idx}')
+                comp_value = value[idx] if idx < len(value) else None
+
+                # Recursively convert based on component type
+                struct_dict[comp_name] = self._convert_decoded_value(comp_value, component)
+
+            return struct_dict
+
+        # Handle bytes
+        elif isinstance(value, bytes):
+            return '0x' + value.hex()
+
+        # Handle arrays (of primitives or bytes)
+        elif isinstance(value, (list, tuple)):
+            # For arrays like uint256[], bytes[], address[], etc.
+            # Create a minimal type_info for array elements
+            converted = []
+            for item in value:
+                if isinstance(item, bytes):
+                    converted.append('0x' + item.hex())
+                elif isinstance(item, (list, tuple)):
+                    # Nested array - recurse
+                    converted.append(self._convert_decoded_value(item, {'type': 'unknown'}))
+                else:
+                    converted.append(item)
+            return type(value)(converted)
+
+        # Primitives (int, str, bool, None, address)
+        else:
+            return value
+
+    def _has_complex_types(self, inputs: List[Dict]) -> bool:
+        """
+        Check if function inputs contain complex types that might need fallback.
+
+        Args:
+            inputs: List of ABI input definitions
+
+        Returns:
+            True if complex types detected
+        """
+        def check_type(type_info):
+            type_str = type_info.get('type', '')
+
+            # Multi-dimensional arrays (e.g., uint256[][], bytes[][])
+            if type_str.count('[') > 1:
+                return True
+
+            # Check nested struct components recursively
+            if type_str.startswith('tuple'):
+                components = type_info.get('components', [])
+                for comp in components:
+                    if check_type(comp):
+                        return True
+
+            return False
+
+        return any(check_type(inp) for inp in inputs)
+
     def decode_transaction_input(
         self,
         tx_input: str,
@@ -1304,6 +1564,11 @@ class TransactionFetcher:
         """
         Decode transaction calldata using the function metadata.
 
+        Hybrid approach:
+        - Decodes all standard types (primitives, arrays, structs, nested structs)
+        - Includes raw calldata + ABI for complex edge cases or decoding failures
+        - AI can use decoded data or fall back to raw if needed
+
         Args:
             tx_input: Transaction input data (hex string)
             function_data: Function metadata from ABI helper
@@ -1311,6 +1576,7 @@ class TransactionFetcher:
 
         Returns:
             Dictionary mapping parameter names to decoded values
+            May include '_raw_fallback' with raw calldata + ABI for complex cases
         """
         try:
             # Remove the function selector
@@ -1342,41 +1608,58 @@ class TransactionFetcher:
             # Create a dictionary mapping names to values
             result = {}
             for name, value, input_def in zip(input_names, decoded_values, inputs):
-                # Handle tuple types
-                if input_def.get('type', '').startswith('tuple'):
-                    tuple_result = {}
-                    components = input_def.get('components', [])
+                # Use the comprehensive recursive converter
+                converted_value = self._convert_decoded_value(value, input_def)
 
-                    for comp_idx, component in enumerate(components):
-                        comp_name = component.get('name', f'field_{comp_idx}')
-                        comp_value = value[comp_idx] if comp_idx < len(value) else None
-
-                        if isinstance(comp_value, bytes):
-                            tuple_result[comp_name] = '0x' + comp_value.hex()
-                        elif isinstance(comp_value, list):
-                            tuple_result[comp_name] = str(tuple(
-                                ('0x' + v.hex() if isinstance(v, bytes) else v)
-                                for v in comp_value
-                            ))
-                        else:
-                            tuple_result[comp_name] = str(comp_value)
-
-                    if not name or name == 'params':
-                        result.update(tuple_result)
+                # Special handling for unnamed tuple params (flatten into result)
+                if input_def.get('type') == 'tuple' and (not name or name == 'params'):
+                    # Flatten unnamed struct params into the result dict
+                    if isinstance(converted_value, dict):
+                        result.update(converted_value)
                     else:
-                        result[name] = tuple_result
-                elif isinstance(value, bytes):
-                    result[name] = '0x' + value.hex()
-                elif isinstance(value, list):
-                    result[name] = str(tuple(
-                        ('0x' + v.hex() if isinstance(v, bytes) else v)
-                        for v in value
-                    ))
+                        result[name] = converted_value
                 else:
-                    result[name] = str(value)
+                    result[name] = converted_value
+
+            # Check for complex types that might need AI verification
+            has_complex = self._has_complex_types(inputs)
+
+            if has_complex:
+                # Include raw fallback for AI to cross-check if needed
+                result['_raw_fallback'] = {
+                    'note': 'Complex types detected - raw calldata included for verification',
+                    'raw_calldata': tx_input,
+                    'function_abi': function_abi_entry
+                }
+                logger.info(f"Complex types detected in {function_name} - included raw fallback")
 
             logger.debug(f"Decoded transaction input: {result}")
             return result
+
         except Exception as e:
             logger.error(f"Failed to decode transaction input: {e}")
-            return None
+
+            # Decoding failed - provide raw data for AI to decode
+            try:
+                # Try to get the ABI entry even if decoding failed
+                function_name = function_data['name']
+                function_abi_entry = None
+                for item in abi_helper.abi:
+                    if item.get('type') == 'function' and item.get('name') == function_name:
+                        input_types = [abi_helper._param_abi_type_to_str(inp) for inp in item.get('inputs', [])]
+                        sig = f"{function_name}({','.join(input_types)})"
+                        if sig == function_data['signature']:
+                            function_abi_entry = item
+                            break
+
+                return {
+                    '_decoding_failed': True,
+                    '_error': str(e),
+                    '_raw_fallback': {
+                        'note': 'Decoding failed - AI should decode from raw calldata',
+                        'raw_calldata': tx_input,
+                        'function_abi': function_abi_entry
+                    }
+                }
+            except:
+                return None

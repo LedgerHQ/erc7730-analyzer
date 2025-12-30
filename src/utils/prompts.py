@@ -265,6 +265,19 @@ Supports both Solidity and Vyper contracts. Vyper uses decorators (@external, @i
 - Includes are pre-merged - all $ref point to merged definitions
 - All definitions, constants, formats are available in the provided format
 
+**Transaction Decoding:**
+- Most transactions are automatically decoded from raw calldata
+- If a transaction includes "_raw_fallback", it contains:
+  - "_raw_fallback.raw_calldata": The original hex calldata
+  - "_raw_fallback.function_abi": The function ABI for decoding
+  - "_raw_fallback.note": Explanation (complex types detected OR decoding failed)
+- You may use the decoded parameters directly in most cases
+- Only reference _raw_fallback if:
+  1. Decoded values look suspicious or malformed
+  2. You need to verify complex nested structures
+  3. The note indicates decoding failed
+- If present, _raw_fallback is provided for verification only - decoded parameters are still the primary data source
+
 ---
 
 **ERC-7730 FORMAT SPECIFICATION:**
@@ -391,7 +404,8 @@ def prepare_audit_task(
     source_code: Dict = None,
     use_smart_referencing: bool = True,
     erc4626_context: Dict = None,
-    erc20_context: Dict = None
+    erc20_context: Dict = None,
+    protocol_name: str = None
 ) -> AuditTask:
     """
     Prepare an audit task with ONLY dynamic data for optimal prompt caching.
@@ -406,6 +420,7 @@ def prepare_audit_task(
         use_smart_referencing: Whether to use smart rule referencing
         erc4626_context: Optional ERC4626 vault context
         erc20_context: Optional ERC20 token context
+        protocol_name: Optional protocol name from descriptor ($id, owner, or legalname)
 
     Returns:
         AuditTask with minimal payload (only dynamic data)
@@ -423,6 +438,10 @@ def prepare_audit_task(
         "erc4626_context": erc4626_context if erc4626_context else {},
         "erc20_context": erc20_context if erc20_context else {},
     }
+
+    # Add protocol_name only if it exists (optional field)
+    if protocol_name:
+        audit_payload["protocol_name"] = protocol_name
 
     return AuditTask(
         selector=selector,

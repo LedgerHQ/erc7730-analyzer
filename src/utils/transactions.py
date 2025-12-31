@@ -30,6 +30,7 @@ BLOCKSCOUT_URLS = {
         42220: "https://explorer.celo.org/api",      # Celo Mainnet
         44787: "https://explorer.celo.org/alfajores/api",  # Celo Alfajores Testnet
         14: "https://flare-explorer.flare.network",           # Flare Mainnet
+        19: "https://songbird-explorer.flare.network",        # Songbird Network
         8453: "https://base.blockscout.com",                    # Base Mainnet
         84532: "https://base-sepolia.blockscout.com",           # Base Sepolia
         10: "https://explorer.optimism.io",                     # Optimism Mainnet (official explorer)

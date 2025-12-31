@@ -26,6 +26,7 @@ logger = logging.getLogger(__name__)
 RPC_URLS = {
     1: "https://eth.llamarpc.com",
     14: "https://flare-api.flare.network/ext/C/rpc",
+    19: "https://songbird-api.flare.network/ext/C/rpc",  # Songbird Network
     8453: "https://mainnet.base.org",
     10: "https://mainnet.optimism.io",
     137: "https://polygon-rpc.com",
@@ -303,15 +304,44 @@ class SolidityCodeParser:
         functions = {}
 
         # Pattern to match function declarations
-        # Matches: function name(params) [everything until opening brace]
-        # Uses simple non-backtracking pattern to avoid catastrophic backtracking on complex modifiers
-        # Matches everything between ) and { as visibility_block, then parse it separately
-        function_pattern = r'function\s+(\w+)\s*\(([^)]*)\)\s+([^{]+)\{'
+        # First find: function name(
+        # Then manually balance parentheses to handle nested params
+        function_start_pattern = r'function\s+(\w+)\s*\('
 
-        for match in re.finditer(function_pattern, self.source_code):
+        for match in re.finditer(function_start_pattern, self.source_code):
             function_name = match.group(1)
-            params_raw = match.group(2).strip()
-            visibility_block = match.group(3).strip()
+
+            # Find matching closing parenthesis by balancing
+            paren_start = match.end() - 1  # Position of opening (
+            paren_count = 1
+            i = match.end()
+            params_end = None
+
+            while i < len(self.source_code) and paren_count > 0:
+                if self.source_code[i] == '(':
+                    paren_count += 1
+                elif self.source_code[i] == ')':
+                    paren_count -= 1
+                    if paren_count == 0:
+                        params_end = i
+                        break
+                i += 1
+
+            if params_end is None:
+                continue  # Malformed function, skip
+
+            # Extract parameters
+            params_raw = self.source_code[match.end():params_end].strip()
+
+            # Find visibility block and opening brace
+            # Look for { after the closing )
+            remainder = self.source_code[params_end + 1:]
+            brace_match = re.search(r'^([^{]*)\{', remainder)
+
+            if not brace_match:
+                continue  # No opening brace found, skip
+
+            visibility_block = brace_match.group(1).strip()
 
             # Clean comments from params for signature
             params_clean = self._clean_comments_from_params(params_raw)
@@ -331,7 +361,8 @@ class SolidityCodeParser:
 
             # Extract full function body
             start_pos = match.start()
-            body_start = match.end() - 1  # Position of opening brace
+            # Position of opening brace (after visibility block)
+            body_start = params_end + 1 + len(brace_match.group(1))  # Position of {
 
             # Find which contract this function belongs to
             contract_name = self._find_contract_for_position(start_pos)
@@ -2278,13 +2309,16 @@ class SourceCodeExtractor:
 
         # Get struct mapping for resolving struct types to tuples
         structs = extracted_code.get('structs', {})
+        logger.info(f"  📚 Found {len(structs)} structs to map: {list(structs.keys())}")
         struct_type_mapping = {}
         for struct_name, struct_def in structs.items():
             # Extract tuple representation from struct, resolving custom types and nested structs
             tuple_repr = self._struct_to_tuple(struct_def, custom_type_mapping, structs)
             if tuple_repr:
                 struct_type_mapping[struct_name] = tuple_repr
-                logger.debug(f"  Struct type mapping: {struct_name} -> {tuple_repr}")
+                logger.info(f"  📦 Struct mapping: {struct_name} -> {tuple_repr}")
+            else:
+                logger.warning(f"  ⚠️  Failed to parse struct: {struct_name}")
 
         # If signature is provided, normalize it for comparison
         normalized_target_sig = None
@@ -2299,12 +2333,37 @@ class SourceCodeExtractor:
         parser = SolidityCodeParser(extracted_code.get('source_code', ''))
         inheritance_map = parser.extract_inheritance_chain()
 
+        # DEBUG: Log inheritance extraction results
+        logger.info(f"  🔍 DEBUG: main_contract_name = '{main_contract_name}'")
+        logger.info(f"  🔍 DEBUG: inheritance_map = {inheritance_map}")
+
+        # Auto-detect main contract if not provided
+        # The main contract is the "leaf" - appears in inheritance_map but isn't a parent of others
+        if not main_contract_name and inheritance_map:
+            # Find all contracts that are parents
+            all_parents = set()
+            for parents in inheritance_map.values():
+                all_parents.update(parents)
+
+            # Main contract candidates: in inheritance_map but not a parent of others
+            candidates = [name for name in inheritance_map.keys() if name not in all_parents]
+
+            if candidates:
+                # If multiple candidates, prefer the first one (usually the main contract)
+                main_contract_name = candidates[0]
+                logger.info(f"  Auto-detected main contract: {main_contract_name} (from {len(candidates)} candidates)")
+                if len(candidates) > 1:
+                    logger.info(f"  Other contract candidates: {candidates[1:]}")
+
         # Build full inheritance hierarchy (main -> parents -> grandparents -> ...)
         inheritance_hierarchy = []
         if main_contract_name:
             inheritance_hierarchy = self._build_inheritance_hierarchy(main_contract_name, inheritance_map)
+            logger.info(f"  🔍 DEBUG: Built inheritance_hierarchy = {inheritance_hierarchy}")
             if len(inheritance_hierarchy) > 1:
                 logger.info(f"  Inheritance hierarchy: {' -> '.join(inheritance_hierarchy)}")
+        else:
+            logger.warning(f"  ⚠️  No main_contract_name - cannot build inheritance hierarchy")
 
         # Compute target selector if signature is provided
         target_selector = None
@@ -2330,6 +2389,10 @@ class SourceCodeExtractor:
             contract_candidates = all_candidates
 
         logger.info(f"  Found {len(contract_candidates)} candidate functions with name '{function_name}'")
+
+        # DEBUG: Check Phase 1 condition
+        logger.info(f"  🔍 DEBUG: target_selector={target_selector}, inheritance_hierarchy={inheritance_hierarchy}")
+        logger.info(f"  🔍 DEBUG: Phase 1 condition check - target_selector: {bool(target_selector)}, inheritance_hierarchy: {bool(inheritance_hierarchy)}")
 
         # PHASE 1: Try to match by EXACT SELECTOR following inheritance hierarchy
         target_function = None
@@ -2358,6 +2421,11 @@ class SourceCodeExtractor:
                         struct_type_mapping
                     )
 
+                    # Debug logging to diagnose selector mismatch
+                    logger.info(f"    Checking: {func['signature'][:80]}...")
+                    logger.info(f"      Normalized: {func_sig[:80]}...")
+                    logger.info(f"      Computed selector: {func_selector} (target: {target_selector})")
+
                     if func_selector == target_selector:
                         # Found exact selector match!
                         target_function = func
@@ -2366,6 +2434,8 @@ class SourceCodeExtractor:
 
                 if target_function:
                     break
+        else:
+            logger.info(f"  ⚠️  Phase 1 SKIPPED - target_selector: {bool(target_selector)}, inheritance_hierarchy: {inheritance_hierarchy}")
 
         # PHASE 2: If no selector match, try to match by NAME following inheritance hierarchy
         if not target_function and not selector_only and inheritance_hierarchy:
@@ -2565,6 +2635,12 @@ class SourceCodeExtractor:
 
             # PRIORITY 2: If not in main contract, check in other internal_functions
             if not found:
+                # Debug: Log available internal functions
+                if not found:
+                    available_internal = [f"{fd.get('name')}({fd.get('contract_name', '?')})"
+                                         for fd in extracted_code['internal_functions'].values()]
+                    logger.info(f"    🔍 Searching for '{internal_call}' in {len(available_internal)} internal functions: {available_internal[:10]}")
+
                 for func_data in extracted_code['internal_functions'].values():
                     if func_data['name'] == internal_call:
                         func_to_use = func_data

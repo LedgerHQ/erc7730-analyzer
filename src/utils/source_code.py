@@ -2028,6 +2028,248 @@ class SourceCodeExtractor:
 
         return base_type + array_suffix
 
+    def _extract_struct_types_from_signature(self, signature: str) -> set:
+        """
+        Extract struct type names from a function signature.
+
+        Args:
+            signature: Function signature (e.g., "initialiseWeightBasedClaims(RewardClaimWithProof[] calldata _proofs)")
+
+        Returns:
+            Set of struct type names found in the signature
+        """
+        struct_types = set()
+
+        # Extract parameter types from signature
+        # Pattern: find types before variable names in function signature
+        # Look for capitalized type names that could be structs (not uint256, address, etc.)
+        # Handle arrays: TypeName[], TypeName[5], etc.
+
+        # First, extract the parameters section
+        param_match = re.search(r'\(([^)]*)\)', signature)
+        if not param_match:
+            return struct_types
+
+        params_str = param_match.group(1)
+
+        # Common Solidity primitive types to exclude
+        primitive_types = {
+            'address', 'bool', 'string', 'bytes', 'uint', 'int',
+            'uint8', 'uint16', 'uint24', 'uint32', 'uint64', 'uint128', 'uint256',
+            'int8', 'int16', 'int24', 'int32', 'int64', 'int128', 'int256',
+            'bytes1', 'bytes2', 'bytes3', 'bytes4', 'bytes8', 'bytes16', 'bytes20', 'bytes32',
+            'calldata', 'memory', 'storage'  # Storage modifiers
+        }
+
+        # Split by comma and process each parameter
+        for param in params_str.split(','):
+            param = param.strip()
+            if not param:
+                continue
+
+            # Extract the type (first token before array brackets, storage modifier, or variable name)
+            # Pattern: TypeName[] memory _varName OR TypeName _varName
+            type_match = re.match(r'([A-Za-z_][A-Za-z0-9_\.]*)', param)
+            if type_match:
+                type_name = type_match.group(1)
+
+                # Handle qualified names like IRewardManager.RewardClaimWithProof
+                if '.' in type_name:
+                    type_name = type_name.split('.')[-1]  # Take last part
+
+                # Check if it's likely a struct (capitalized, not a primitive)
+                if type_name and type_name[0].isupper() and type_name.lower() not in primitive_types:
+                    struct_types.add(type_name)
+                    logger.debug(f"Found potential struct type in signature: {type_name}")
+
+        return struct_types
+
+    def _find_struct_in_interfaces(self, struct_name: str, source_code: str, already_found: Optional[set] = None) -> Optional[str]:
+        """
+        Search for a struct definition in interfaces within the source code.
+        Also recursively finds nested structs referenced by the main struct.
+
+        This is used when a struct is defined in a parent interface (inheritance chain)
+        rather than in the main contract.
+
+        Args:
+            struct_name: Name of the struct to find
+            source_code: Full source code including interfaces
+            already_found: Set of struct names already found (to avoid infinite recursion)
+
+        Returns:
+            Struct definition string (may include multiple structs if nested) or None if not found
+        """
+        if already_found is None:
+            already_found = set()
+
+        # Avoid infinite recursion
+        if struct_name in already_found:
+            return None
+
+        # Pattern to match the specific struct definition
+        # Handles multi-line structs with nested braces
+        struct_pattern = rf'struct\s+{re.escape(struct_name)}\s*\{{'
+
+        match = re.search(struct_pattern, source_code)
+        if not match:
+            logger.debug(f"Struct {struct_name} not found in source code")
+            return None
+
+        # Found the start, now find the matching closing brace
+        start_pos = match.start()
+        brace_start = match.end() - 1  # Position of opening brace
+
+        open_braces = 0
+        i = brace_start
+        struct_def = None
+        while i < len(source_code):
+            if source_code[i] == '{':
+                open_braces += 1
+            elif source_code[i] == '}':
+                open_braces -= 1
+                if open_braces == 0:
+                    # Found matching closing brace
+                    struct_def = source_code[start_pos:i + 1].strip()
+                    logger.info(f"Found struct {struct_name} in interfaces")
+                    break
+            i += 1
+
+        if not struct_def:
+            logger.warning(f"Could not find closing brace for struct {struct_name}")
+            return None
+
+        already_found.add(struct_name)
+
+        # Now look for nested structs in this struct's fields
+        # Extract types from struct body and look for nested struct types
+        nested_structs = []
+        body_match = re.search(r'\{([^}]+)\}', struct_def)
+        if body_match:
+            body = body_match.group(1)
+            # Look for capitalized type names that could be nested structs
+            primitive_types = {
+                'address', 'bool', 'string', 'bytes', 'uint', 'int',
+                'uint8', 'uint16', 'uint24', 'uint32', 'uint64', 'uint128', 'uint256',
+                'int8', 'int16', 'int24', 'int32', 'int64', 'int128', 'int256',
+                'bytes1', 'bytes2', 'bytes3', 'bytes4', 'bytes8', 'bytes16', 'bytes20', 'bytes32'
+            }
+
+            for line in body.split(';'):
+                line = line.strip()
+                if not line:
+                    continue
+                # Extract type from line like "RewardClaim body" or "ClaimType claimType"
+                type_match = re.match(r'([A-Za-z_][A-Za-z0-9_\.]*)', line)
+                if type_match:
+                    type_name = type_match.group(1)
+                    # Handle qualified names
+                    if '.' in type_name:
+                        type_name = type_name.split('.')[-1]
+                    # Check if it's likely a nested struct (capitalized, not primitive, not already found)
+                    if (type_name and type_name[0].isupper() and
+                            type_name.lower() not in primitive_types and
+                            type_name not in already_found):
+                        nested_struct_def = self._find_struct_in_interfaces(type_name, source_code, already_found)
+                        if nested_struct_def:
+                            nested_structs.append(nested_struct_def)
+
+        # Combine: nested structs first, then main struct (so dependencies are defined first)
+        if nested_structs:
+            return '\n\n'.join(nested_structs) + '\n\n' + struct_def
+        return struct_def
+
+    def _extract_enum_types_from_structs(self, structs: List[str]) -> set:
+        """
+        Extract potential enum type names from struct definitions.
+
+        Args:
+            structs: List of struct definition strings
+
+        Returns:
+            Set of potential enum type names found in the structs
+        """
+        enum_types = set()
+
+        # Common Solidity primitive types to exclude
+        primitive_types = {
+            'address', 'bool', 'string', 'bytes', 'uint', 'int',
+            'uint8', 'uint16', 'uint24', 'uint32', 'uint64', 'uint128', 'uint256',
+            'int8', 'int16', 'int24', 'int32', 'int64', 'int128', 'int256',
+            'bytes1', 'bytes2', 'bytes3', 'bytes4', 'bytes8', 'bytes16', 'bytes20', 'bytes32'
+        }
+
+        for struct_def in structs:
+            # Extract body from struct
+            body_match = re.search(r'\{([^}]+)\}', struct_def)
+            if not body_match:
+                continue
+
+            body = body_match.group(1)
+
+            for line in body.split(';'):
+                line = line.strip()
+                if not line:
+                    continue
+
+                # Extract type from line like "ClaimType claimType"
+                type_match = re.match(r'([A-Za-z_][A-Za-z0-9_\.]*)', line)
+                if type_match:
+                    type_name = type_match.group(1)
+                    # Handle qualified names
+                    if '.' in type_name:
+                        type_name = type_name.split('.')[-1]
+
+                    # Check if it's likely an enum (capitalized, not primitive)
+                    # Enums in Solidity often end with "Type" or have short names
+                    if (type_name and type_name[0].isupper() and
+                            type_name.lower() not in primitive_types):
+                        enum_types.add(type_name)
+                        logger.debug(f"Found potential enum type in struct: {type_name}")
+
+        return enum_types
+
+    def _find_enum_in_interfaces(self, enum_name: str, source_code: str) -> Optional[str]:
+        """
+        Search for an enum definition in interfaces within the source code.
+
+        Args:
+            enum_name: Name of the enum to find
+            source_code: Full source code including interfaces
+
+        Returns:
+            Enum definition string or None if not found
+        """
+        # Pattern to match the specific enum definition
+        # Handles multi-line enums with nested content
+        enum_pattern = rf'enum\s+{re.escape(enum_name)}\s*\{{'
+
+        match = re.search(enum_pattern, source_code)
+        if not match:
+            logger.debug(f"Enum {enum_name} not found in source code")
+            return None
+
+        # Found the start, now find the matching closing brace
+        start_pos = match.start()
+        brace_start = match.end() - 1  # Position of opening brace
+
+        open_braces = 0
+        i = brace_start
+        while i < len(source_code):
+            if source_code[i] == '{':
+                open_braces += 1
+            elif source_code[i] == '}':
+                open_braces -= 1
+                if open_braces == 0:
+                    # Found matching closing brace
+                    enum_def = source_code[start_pos:i + 1].strip()
+                    logger.info(f"Found enum {enum_name} in interfaces")
+                    return enum_def
+            i += 1
+
+        logger.warning(f"Could not find closing brace for enum {enum_name}")
+        return None
+
     def _compute_function_selector(
         self,
         function_signature: str,
@@ -2526,16 +2768,72 @@ class SourceCodeExtractor:
         # Collect all code to scan for constant references
         all_code_to_scan = [target_function['body']]
 
-        # Add referenced structs and enums (simple heuristic: check if name appears in function)
+        # Add referenced structs and enums (check BOTH function body AND signature for references)
+        # Get function signature to also check for struct types in parameters
+        func_signature = target_function.get('signature', '')
+        func_body = target_function['body']
+        func_text_to_search = f"{func_signature}\n{func_body}"  # Search both signature and body
+
+        # Track which structs we've already added
+        added_structs = set()
+
         for struct_name, struct_code in extracted_code['structs'].items():
-            if struct_name in target_function['body']:
+            if struct_name in func_text_to_search:
                 result['structs'].append(struct_code)
                 result['total_lines'] += struct_code.count('\n') + 1
+                added_structs.add(struct_name)
+                logger.info(f"    ✓ Including struct: {struct_name}")
+
+        # NEW: If struct is referenced but not found in extracted_code['structs'],
+        # search for it in interfaces defined in the source code (inheritance chain)
+        # This handles cases like RewardClaimWithProof defined in a parent interface
+        struct_types_in_signature = self._extract_struct_types_from_signature(func_signature)
+        missing_structs = struct_types_in_signature - added_structs
+
+        if missing_structs:
+            logger.info(f"    🔍 Searching for missing structs in interfaces: {missing_structs}")
+            # Get the source code to search for struct definitions in interfaces
+            source_code = extracted_code.get('source_code', '')
+            if source_code:
+                for missing_struct in missing_structs:
+                    struct_def = self._find_struct_in_interfaces(missing_struct, source_code)
+                    if struct_def:
+                        result['structs'].append(struct_def)
+                        result['total_lines'] += struct_def.count('\n') + 1
+                        added_structs.add(missing_struct)
+                        logger.info(f"    ✓ Found struct in interface: {missing_struct}")
+                    else:
+                        logger.warning(f"    ✗ Struct {missing_struct} not found in interfaces")
+
+        # Check for enums in function body, signature, AND the structs we just added
+        all_text_for_enum_search = func_text_to_search + '\n' + '\n'.join(result['structs'])
+        added_enums = set()
 
         for enum_name, enum_code in extracted_code['enums'].items():
-            if enum_name in target_function['body']:
+            if enum_name in all_text_for_enum_search:
                 result['enums'].append(enum_code)
                 result['total_lines'] += enum_code.count('\n') + 1
+                added_enums.add(enum_name)
+                logger.info(f"    ✓ Including enum: {enum_name}")
+
+        # Also search for enums in interfaces (similar to structs)
+        # Extract potential enum types from structs we've added
+        enum_types_in_structs = self._extract_enum_types_from_structs(result['structs'])
+        missing_enums = enum_types_in_structs - added_enums
+
+        if missing_enums:
+            logger.info(f"    🔍 Searching for missing enums in interfaces: {missing_enums}")
+            source_code = extracted_code.get('source_code', '')
+            if source_code:
+                for missing_enum in missing_enums:
+                    enum_def = self._find_enum_in_interfaces(missing_enum, source_code)
+                    if enum_def:
+                        result['enums'].append(enum_def)
+                        result['total_lines'] += enum_def.count('\n') + 1
+                        added_enums.add(missing_enum)
+                        logger.info(f"    ✓ Found enum in interface: {missing_enum}")
+                    else:
+                        logger.warning(f"    ✗ Enum {missing_enum} not found in interfaces")
 
         # Add modifiers used by this function
         modifiers_used = target_function.get('modifiers', [])

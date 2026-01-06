@@ -294,6 +294,44 @@
           "severity": "critical"
         },
         {
+          "type": "addressName without required params",
+          "condition": "Field has \"format\": \"addressName\" but \"params\" is null or missing entirely",
+          "explanation": "The addressName format requires params to be defined. The 'types' param is required to specify what kind of address is expected. The 'sources' param is optional.",
+          "required_params": {
+            "types": {
+              "description": "Array restricting address types (e.g., 'eoa', 'contract', 'wallet', 'token', 'collection')",
+              "example": ["eoa"],
+              "required": true
+            }
+          },
+          "optional_params": {
+            "sources": {
+              "description": "Array of trusted name sources in order of preference (wallet manufacturer specific)",
+              "example": ["local", "ens"],
+              "required": false
+            },
+            "senderAddress": {
+              "description": "For conditional fallback to sender (@.from) when address equals this value",
+              "example": ["0x0000000000000000000000000000000000000000"],
+              "required": false
+            }
+          },
+          "example_wrong": {
+            "field": {"$id": null, "label": "Claim Owner", "format": "addressName", "params": null, "path": "beneficiary", "value": null},
+            "why_wrong": "params is null - missing required types for address validation"
+          },
+          "example_correct_minimal": {
+            "field": {"path": "pool", "label": "Last pool", "format": "addressName", "params": {"types": ["contract"]}},
+            "why_correct": "params specifies types (contract) - sources is optional"
+          },
+          "example_correct_full": {
+            "field": {"path": "beneficiary", "label": "Claim Owner", "format": "addressName", "params": {"types": ["eoa"], "sources": ["local", "ens"]}},
+            "why_correct": "params specifies types and optional sources for full address resolution"
+          },
+          "error_message": "Field format \"addressName\" requires parameters to be defined, they are missing for field \"{field_path}\".",
+          "severity": "critical"
+        },
+        {
           "type": "calldata without callee",
           "condition": "Field has \"format\": \"calldata\" but missing BOTH \"calleePath\" AND \"callee\" in params",
           "explanation": "Embedded calldata requires knowing which contract is being called to find the correct ERC-7730 descriptor for the nested call",

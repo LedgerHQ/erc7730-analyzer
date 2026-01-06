@@ -180,13 +180,7 @@
     "addressName": {
       "description": "Address parameter with ENS/name resolution",
       "use_case": "Use this format for ALL address parameters",
-      "required_params": [],
-      "optional_params": [
-        {
-          "name": "senderAddress",
-          "type": "string | string[]",
-          "description": "For conditional fallback to sender (@.from). If the address value equals one of the addresses in senderAddress array (typically ['0x0000000000000000000000000000000000000000']), the wallet displays @.from (msg.sender) instead. Common pattern: dstReceiver = (param == address(0)) ? msg.sender : param"
-        },
+      "required_params": [
         {
           "name": "types",
           "type": "string[]",
@@ -197,28 +191,63 @@
             "token",
             "collection"
           ],
-          "description": "Array restricting address types - restricts name sources and may trigger additional wallet checks"
-        },
+          "description": "Array restricting address types - restricts name sources and may trigger additional wallet checks. REQUIRED for proper address validation."
+        }
+      ],
+      "optional_params": [
         {
           "name": "sources",
           "type": "string[]",
-          "description": "Array of trusted name sources in order of preference (wallet manufacturer specific, e.g., ['local', 'ens'])"
+          "description": "Array of trusted name sources in order of preference (wallet manufacturer specific, e.g., ['local', 'ens']). Optional - wallets will use their default resolution if not specified."
+        },
+        {
+          "name": "senderAddress",
+          "type": "string | string[]",
+          "description": "For conditional fallback to sender (@.from). If the address value equals one of the addresses in senderAddress array (typically ['0x0000000000000000000000000000000000000000']), the wallet displays @.from (msg.sender) instead. Common pattern: dstReceiver = (param == address(0)) ? msg.sender : param"
         }
       ],
+      "validation_rule": "Field format 'addressName' requires params to be defined with at least 'types'. If params is null or missing, flag as critical issue. The 'sources' param is optional.",
       "examples": [
         {
-          "description": "Simple address",
+          "description": "WRONG - Missing params (will be flagged as critical issue)",
           "code": {
-            "path": "_recipient",
-            "format": "addressName"
+            "path": "beneficiary",
+            "label": "Claim Owner",
+            "format": "addressName",
+            "params": null
+          },
+          "error": "Field format \"addressName\" requires parameters to be defined, they are missing for field \"beneficiary\"."
+        },
+        {
+          "description": "CORRECT - Minimal with just types (sources is optional)",
+          "code": {
+            "path": "pool",
+            "label": "Last pool",
+            "format": "addressName",
+            "params": {
+              "types": ["contract"]
+            }
           }
         },
         {
-          "description": "With zero-address fallback to msg.sender",
+          "description": "CORRECT - With types and optional sources",
           "code": {
             "path": "_recipient",
             "format": "addressName",
             "params": {
+              "types": ["eoa"],
+              "sources": ["local", "ens"]
+            }
+          }
+        },
+        {
+          "description": "CORRECT - With zero-address fallback to msg.sender",
+          "code": {
+            "path": "_recipient",
+            "format": "addressName",
+            "params": {
+              "types": ["eoa"],
+              "sources": ["local", "ens"],
               "senderAddress": [
                 "0x0000000000000000000000000000000000000000"
               ]

@@ -38,16 +38,17 @@ def extract_coverage_score(audit_report: str) -> str:
     return 'N/A'
 
 
-def expand_erc7730_format_with_refs(selector_format: Dict[str, Any], full_erc7730: Dict[str, Any]) -> Dict[str, Any]:
+def expand_erc7730_format_with_refs(selector_format: Dict[str, Any], full_erc7730: Dict[str, Any], selector: str = None) -> Dict[str, Any]:
     """
     Expand ERC-7730 format to include referenced definitions, constants, and enums.
 
     Args:
         selector_format: The format definition for a specific selector
         full_erc7730: The complete ERC-7730 data with metadata and display sections
+        selector: The function selector (e.g., "0x54840d1a") to use as key in display.formats
 
     Returns:
-        Expanded format with inline definitions, constants, and enums
+        Expanded format with inline definitions, constants, and enums, using proper ERC-7730 structure
     """
     result = {}
 
@@ -123,16 +124,25 @@ def expand_erc7730_format_with_refs(selector_format: Dict[str, Any], full_erc773
                 if enum_name in full_erc7730['metadata']['enums']:
                     result['metadata']['enums'][enum_name] = full_erc7730['metadata']['enums'][enum_name]
 
-    # Build result with display definitions if any are referenced
-    if referenced_defs:
-        result['display'] = {'definitions': {}}
-        if 'display' in full_erc7730 and 'definitions' in full_erc7730['display']:
-            for def_name in referenced_defs:
-                if def_name in full_erc7730['display']['definitions']:
-                    result['display']['definitions'][def_name] = full_erc7730['display']['definitions'][def_name]
+    # Build result with display section (definitions + formats)
+    if referenced_defs or selector_format:
+        if 'display' not in result:
+            result['display'] = {}
 
-    # Add the selector format itself
-    result['format'] = selector_format
+        # Add referenced definitions
+        if referenced_defs:
+            result['display']['definitions'] = {}
+            if 'display' in full_erc7730 and 'definitions' in full_erc7730['display']:
+                for def_name in referenced_defs:
+                    if def_name in full_erc7730['display']['definitions']:
+                        result['display']['definitions'][def_name] = full_erc7730['display']['definitions'][def_name]
+
+        # Add the selector format in proper ERC-7730 structure: display.formats[selector]
+        if selector_format:
+            result['display']['formats'] = {}
+            # Use selector as key if provided, otherwise use $id or fallback
+            format_key = selector or selector_format.get('$id', 'unknown')
+            result['display']['formats'][format_key] = selector_format
 
     return result
 
@@ -901,7 +911,7 @@ def generate_summary_file(results: Dict, summary_file: Path):
         # Expand format to include referenced definitions and constants
         selector_format = selector_data.get('erc7730_format', {})
         full_erc7730 = results.get('erc7730_full', {})
-        expanded_format = expand_erc7730_format_with_refs(selector_format, full_erc7730)
+        expanded_format = expand_erc7730_format_with_refs(selector_format, full_erc7730, selector)
         report += json.dumps(expanded_format, indent=2)
         report += "\n```\n\n</details>\n\n"
 
@@ -1116,7 +1126,7 @@ def generate_criticals_report(results: Dict, criticals_file: Path):
         # Expand format to include referenced definitions and constants
         selector_format = func['erc7730_format']
         full_erc7730 = results.get('erc7730_full', {})
-        expanded_format = expand_erc7730_format_with_refs(selector_format, full_erc7730)
+        expanded_format = expand_erc7730_format_with_refs(selector_format, full_erc7730, func['selector'])
         report += json.dumps(expanded_format, indent=2)
         report += "\n```\n\n</details>\n\n"
 

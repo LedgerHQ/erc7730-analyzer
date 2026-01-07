@@ -294,42 +294,36 @@
           "severity": "critical"
         },
         {
-          "type": "addressName without required params",
-          "condition": "Field has \"format\": \"addressName\" but \"params\" is null or missing entirely",
-          "explanation": "The addressName format requires params to be defined. The 'types' param is required to specify what kind of address is expected. The 'sources' param is optional.",
-          "required_params": {
+          "type": "addressName params info",
+          "condition": "Field has \"format\": \"addressName\"",
+          "explanation": "The addressName format accepts optional params. Omitting params entirely OR providing params with optional fields are both valid.",
+          "optional_params": {
             "types": {
               "description": "Array restricting address types (e.g., 'eoa', 'contract', 'wallet', 'token', 'collection')",
-              "example": ["eoa"],
-              "required": true
-            }
-          },
-          "optional_params": {
+              "example": ["eoa"]
+            },
             "sources": {
               "description": "Array of trusted name sources in order of preference (wallet manufacturer specific)",
-              "example": ["local", "ens"],
-              "required": false
+              "example": ["local", "ens"]
             },
             "senderAddress": {
               "description": "For conditional fallback to sender (@.from) when address equals this value",
-              "example": ["0x0000000000000000000000000000000000000000"],
-              "required": false
+              "example": ["0x0000000000000000000000000000000000000000"]
             }
           },
-          "example_wrong": {
-            "field": {"$id": null, "label": "Claim Owner", "format": "addressName", "params": null, "path": "beneficiary", "value": null},
-            "why_wrong": "params is null - missing required types for address validation"
-          },
           "example_correct_minimal": {
+            "field": {"path": "recipient", "label": "Recipient", "format": "addressName"},
+            "why_correct": "No params - valid (all params are optional)"
+          },
+          "example_correct_with_types": {
             "field": {"path": "pool", "label": "Last pool", "format": "addressName", "params": {"types": ["contract"]}},
-            "why_correct": "params specifies types (contract) - sources is optional"
+            "why_correct": "params with optional types specified"
           },
           "example_correct_full": {
             "field": {"path": "beneficiary", "label": "Claim Owner", "format": "addressName", "params": {"types": ["eoa"], "sources": ["local", "ens"]}},
-            "why_correct": "params specifies types and optional sources for full address resolution"
+            "why_correct": "params with both optional types and sources"
           },
-          "error_message": "Field format \"addressName\" requires parameters to be defined, they are missing for field \"{field_path}\".",
-          "severity": "critical"
+          "severity": "info"
         },
         {
           "type": "calldata without callee",

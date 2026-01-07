@@ -1271,7 +1271,11 @@ class ERC7730Analyzer:
 
             # Import the expand function to get full context for AI
             from .reporter import expand_erc7730_format_with_refs
-            erc7730_format_expanded = expand_erc7730_format_with_refs(erc7730_format, erc7730_data)
+            erc7730_format_expanded = expand_erc7730_format_with_refs(
+                erc7730_format,
+                erc7730_data,
+                format_key
+            )
 
             # Extract source code for this specific function (search across all deployments)
             function_source = None

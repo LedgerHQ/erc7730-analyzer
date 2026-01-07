@@ -180,7 +180,8 @@
     "addressName": {
       "description": "Address parameter with ENS/name resolution",
       "use_case": "Use this format for ALL address parameters",
-      "required_params": [
+      "required_params": [],
+      "optional_params": [
         {
           "name": "types",
           "type": "string[]",
@@ -191,14 +192,12 @@
             "token",
             "collection"
           ],
-          "description": "Array restricting address types - restricts name sources and may trigger additional wallet checks. REQUIRED for proper address validation."
-        }
-      ],
-      "optional_params": [
+          "description": "Array restricting address types - restricts name sources and may trigger additional wallet checks."
+        },
         {
           "name": "sources",
           "type": "string[]",
-          "description": "Array of trusted name sources in order of preference (wallet manufacturer specific, e.g., ['local', 'ens']). Optional - wallets will use their default resolution if not specified."
+          "description": "Array of trusted name sources in order of preference (wallet manufacturer specific, e.g., ['local', 'ens']). Wallets will use their default resolution if not specified."
         },
         {
           "name": "senderAddress",
@@ -206,20 +205,18 @@
           "description": "For conditional fallback to sender (@.from). If the address value equals one of the addresses in senderAddress array (typically ['0x0000000000000000000000000000000000000000']), the wallet displays @.from (msg.sender) instead. Common pattern: dstReceiver = (param == address(0)) ? msg.sender : param"
         }
       ],
-      "validation_rule": "Field format 'addressName' requires params to be defined with at least 'types'. If params is null or missing, flag as critical issue. The 'sources' param is optional.",
+      "validation_rule": "All params for addressName are optional. Omitting params entirely is valid.",
       "examples": [
         {
-          "description": "WRONG - Missing params (will be flagged as critical issue)",
+          "description": "CORRECT - No params (simplest form)",
           "code": {
-            "path": "beneficiary",
-            "label": "Claim Owner",
-            "format": "addressName",
-            "params": null
-          },
-          "error": "Field format \"addressName\" requires parameters to be defined, they are missing for field \"beneficiary\"."
+            "path": "recipient",
+            "label": "Recipient",
+            "format": "addressName"
+          }
         },
         {
-          "description": "CORRECT - Minimal with just types (sources is optional)",
+          "description": "CORRECT - With optional types",
           "code": {
             "path": "pool",
             "label": "Last pool",
@@ -230,7 +227,7 @@
           }
         },
         {
-          "description": "CORRECT - With types and optional sources",
+          "description": "CORRECT - With types and sources",
           "code": {
             "path": "_recipient",
             "format": "addressName",

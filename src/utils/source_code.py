@@ -2817,23 +2817,33 @@ class SourceCodeExtractor:
                 logger.info(f"    ✓ Including enum: {enum_name}")
 
         # Also search for enums in interfaces (similar to structs)
-        # Extract potential enum types from structs we've added
-        enum_types_in_structs = self._extract_enum_types_from_structs(result['structs'])
-        missing_enums = enum_types_in_structs - added_enums
+        # Extract potential enum/struct types from structs we've added
+        # These could be either enums OR nested structs from imported interfaces
+        potential_types_in_structs = self._extract_enum_types_from_structs(result['structs'])
+        missing_types = potential_types_in_structs - added_enums - added_structs
 
-        if missing_enums:
-            logger.info(f"    🔍 Searching for missing enums in interfaces: {missing_enums}")
+        if missing_types:
+            logger.info(f"    🔍 Searching for missing types (structs/enums) in interfaces: {missing_types}")
             source_code = extracted_code.get('source_code', '')
             if source_code:
-                for missing_enum in missing_enums:
-                    enum_def = self._find_enum_in_interfaces(missing_enum, source_code)
-                    if enum_def:
-                        result['enums'].append(enum_def)
-                        result['total_lines'] += enum_def.count('\n') + 1
-                        added_enums.add(missing_enum)
-                        logger.info(f"    ✓ Found enum in interface: {missing_enum}")
+                for missing_type in missing_types:
+                    # First try to find it as a struct (nested structs from imports)
+                    struct_def = self._find_struct_in_interfaces(missing_type, source_code)
+                    if struct_def:
+                        result['structs'].append(struct_def)
+                        result['total_lines'] += struct_def.count('\n') + 1
+                        added_structs.add(missing_type)
+                        logger.info(f"    ✓ Found struct in interface/import: {missing_type}")
                     else:
-                        logger.warning(f"    ✗ Enum {missing_enum} not found in interfaces")
+                        # If not a struct, try as an enum
+                        enum_def = self._find_enum_in_interfaces(missing_type, source_code)
+                        if enum_def:
+                            result['enums'].append(enum_def)
+                            result['total_lines'] += enum_def.count('\n') + 1
+                            added_enums.add(missing_type)
+                            logger.info(f"    ✓ Found enum in interface/import: {missing_type}")
+                        else:
+                            logger.warning(f"    ✗ Type {missing_type} not found in interfaces or imports")
 
         # Add modifiers used by this function
         modifiers_used = target_function.get('modifiers', [])

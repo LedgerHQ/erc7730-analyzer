@@ -130,6 +130,60 @@
           "correct": "\"tokenPath\": \"srcToken.[-20:]\"",
           "why_correct": "Extracts last 20 bytes which is where the address is stored after casting"
         }
+      },
+      "nested_struct_paths": {
+        "title": "CRITICAL: Two valid approaches for nested struct fields",
+        "description": "When constructing paths to fields within nested structs, you can use either flat dot-notation paths OR hierarchical fields nesting",
+        "approach_1_flat_paths": {
+          "rule": "Use complete dot-notation paths starting from the parameter name through all nested struct fields",
+          "when_to_use": "Simpler, more concise for shallow nesting (1-2 levels)",
+          "example": {
+            "function_signature": "approve2(IAllowanceTransfer.PermitSingle calldata permitSingle, ...)",
+            "struct_definition": "struct PermitSingle { PermitDetails details; address spender; } struct PermitDetails { address token; uint160 amount; }",
+            "descriptor": {
+              "fields": [
+                {"path": "permitSingle.details.token", "label": "Token", "format": "addressName"},
+                {"path": "permitSingle.details.amount", "label": "Amount", "format": "tokenAmount", "params": {"tokenPath": "permitSingle.details.token"}}
+              ]
+            }
+          }
+        },
+        "approach_2_hierarchical_fields": {
+          "rule": "Use nested 'fields' arrays where each level specifies only its immediate field name (relative path)",
+          "when_to_use": "Better organization for deep nesting (3+ levels) or complex structs",
+          "example": {
+            "function_signature": "approve2(IAllowanceTransfer.PermitSingle calldata permitSingle, ...)",
+            "struct_definition": "struct PermitSingle { PermitDetails details; address spender; } struct PermitDetails { address token; uint160 amount; }",
+            "descriptor": {
+              "fields": [
+                {
+                  "path": "#.permitSingle",
+                  "fields": [
+                    {
+                      "path": "details",
+                      "fields": [
+                        {"path": "token", "label": "Token", "format": "addressName", "params": {"types": ["token"]}},
+                        {"path": "amount", "label": "Amount", "format": "tokenAmount", "params": {"tokenPath": "token"}}
+                      ]
+                    },
+                    {"path": "spender", "label": "Spender", "format": "addressName"}
+                  ]
+                }
+              ]
+            }
+          },
+          "note_relative_paths": "In hierarchical approach, nested fields use RELATIVE paths (just the field name). The 'tokenPath' in nested context refers to sibling/ancestor fields, e.g., 'tokenPath': 'token' refers to the token field at the same level."
+        },
+        "WRONG_approach": {
+          "example": {
+            "fields": [
+              {"path": "token", "label": "Token"},
+              {"path": "amount", "label": "Amount"}
+            ]
+          },
+          "why_wrong": "Missing parent struct navigation - no way to reach these fields from function parameters"
+        },
+        "validation_check": "Before finalizing code_snippet: (1) If using flat paths, verify full path from parameter name is included, OR (2) If using hierarchical fields, verify proper nesting structure with outer field pointing to parameter"
       }
     },
     {

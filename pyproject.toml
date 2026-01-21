@@ -1,0 +1,28 @@
+[project]
+name = "erc7730-analyzer"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "eth-abi>=4.0.0",
+    "eth-utils>=2.0.0",
+    "openai>=1.0.0",
+    "pydantic>=2.6.0",
+    "python-dotenv>=1.0.0",
+    "requests>=2.31.0",
+    "web3>=6.0.0",
+]
+
+authors = [{ name = "Marouane KHALIFI", email = "marouane.khalifi@ledger.fr" }]
+keywords = ["blockchain", "ethereum", "erc7730"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+]
+
+[project.scripts]
+analyze_7730 = "main:main"
+
+# Specific to uv but previous declaration is enough for setuptools
+[tool.uv]
+package = true

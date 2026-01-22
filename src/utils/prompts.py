@@ -11,35 +11,19 @@ import logging
 from dataclasses import dataclass
 from functools import partial
 from importlib import resources
-from importlib.resources.abc import Traversable
-from typing import Callable, Dict, List, Literal, Optional, TextIO
+from typing import Callable, Dict, List, Literal, Optional
 
 from openai import AsyncOpenAI
 from pydantic import BaseModel, ConfigDict, Field
+
+from utils import audit_rules
 
 logger = logging.getLogger(__name__)
 
 Severity = Literal["high", "medium", "low"]
 RiskLevel = Literal["high", "medium", "low"]
 
-AUDIT_RULES: Traversable = resources.files('utils.audit_rules')
-
-def _open_rule(rules: Traversable, path: str, mode: str) -> TextIO:
-    """
-    Open an audit rule file from a Traversable resource.
-
-    Args:
-        rules: Root Traversable containing audit rule files.
-        path: Relative path to the rule file.
-        mode: File open mode.
-
-    Returns:
-        An open text file object.
-    """
-    return rules.joinpath(path).open(mode)
-
-
-open_rule: Callable[[str, str], TextIO] = partial(_open_rule, AUDIT_RULES)
+read_rule: Callable[[str], str] = partial(resources.read_text, audit_rules)
 
 class CriticalIssueDetails(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -167,28 +151,23 @@ SYSTEM_INSTRUCTIONS = None
 # Load audit rules that are always used in full (not optimized)
 def load_validation_rules() -> Dict:
     """Load validation rules from JSON file."""
-    with open_rule('validation_rules.json', 'r') as f:
-        return json.load(f)
+    return json.loads(read_rule('validation_rules.json'))
 
 def load_critical_issues() -> Dict:
     """Load critical issues criteria from JSON file."""
-    with open_rule('critical_issues.json', 'r') as f:
-        return json.load(f)
+    return json.loads(read_rule('critical_issues.json'))
 
 def load_recommendations() -> Dict:
     """Load recommendations format guidelines from JSON file."""
-    with open_rule('recommendations.json', 'r') as f:
-        return json.load(f)
+    return json.loads(read_rule('recommendations.json'))
 
 def load_spec_limitations() -> Dict:
     """Load spec limitations guidelines from JSON file."""
-    with open_rule('spec_limitations.json', 'r') as f:
-        return json.load(f)
+    return json.loads(read_rule('spec_limitations.json'))
 
 def load_display_issues() -> Dict:
     """Load display issues guidelines from JSON file."""
-    with open_rule('display_issues.json', 'r') as f:
-        return json.load(f)
+    return json.loads(read_rule('display_issues.json'))
 
 # Cache these files to avoid reloading on every call
 _VALIDATION_RULES = None
@@ -242,8 +221,7 @@ def build_system_instructions() -> str:
     byte-for-byte stability for OpenAI's prompt caching.
     """
     # Load the FULL format specification (no optimization)
-    with open_rule('erc7730_format_reference.json', 'r') as f:
-        format_spec = json.load(f)
+    format_spec = json.loads(read_rule('erc7730_format_reference.json'))
 
     validation_rules = get_validation_rules()
     critical_issues = get_critical_issues()

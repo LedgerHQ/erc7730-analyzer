@@ -144,31 +144,20 @@ jobs:
           echo "## 📊 ERC-7730 Analysis Results" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
 
-          # Find CRITICALS report
+          # Find CRITICALS report (only display this in the summary)
           CRITICALS_FILE=$(ls output/CRITICALS_*.md 2>/dev/null | head -1)
           if [ -f "$CRITICALS_FILE" ]; then
             echo "### 🔴 Critical Issues Report" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
             cat "$CRITICALS_FILE" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
-            echo "---" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "✅ No critical issues found." >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
           fi
 
-          # Find SUMMARY report
-          SUMMARY_FILE=$(ls output/FULL_REPORT_*.md 2>/dev/null | head -1)
-          if [ -f "$SUMMARY_FILE" ]; then
-            echo "### 📋 Detailed Summary" >> $GITHUB_STEP_SUMMARY
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "<details>" >> $GITHUB_STEP_SUMMARY
-            echo "<summary>Click to expand full summary</summary>" >> $GITHUB_STEP_SUMMARY
-            echo "" >> $GITHUB_STEP_SUMMARY
-            cat "$SUMMARY_FILE" >> $GITHUB_STEP_SUMMARY
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "</details>" >> $GITHUB_STEP_SUMMARY
-          fi
-
-          # Add download link
+          # Add download link for all reports (CRITICALS + FULL_REPORT)
+          echo "---" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "📥 [Download all reports as artifacts](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})" >> $GITHUB_STEP_SUMMARY
 

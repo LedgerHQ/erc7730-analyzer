@@ -129,6 +129,7 @@ class ERC7730Analyzer:
         self.tx_fetcher = TransactionFetcher(etherscan_api_key, lookback_days)
         self.source_extractor = SourceCodeExtractor(etherscan_api_key, coredao_api_key) if enable_source_code else None
         self.selector_to_format_key = {}
+        self.selector_sources = {}  # Maps selector -> list of {facet_address, chain_id} for Diamond proxies
         self.extracted_codes = {}  # Will store extracted code for each deployment (keyed by "{chainId}_{address}")
         self.erc4626_context = None  # Will store ERC4626 vault context if detected
         self.erc20_context = None  # Will store ERC20 token context if detected
@@ -862,11 +863,15 @@ class ERC7730Analyzer:
         if not abi or not isinstance(abi, list) or len(abi) == 0:
             logger.info("No ABI from ERC-7730 file or ABI file, fetching from API...")
             # Fetch and merge ABIs from all deployments
-            abi, fetch_results = merge_abis_from_deployments(
+            abi, fetch_results, selector_sources = merge_abis_from_deployments(
                 deployments,
                 fetch_contract_abi,
                 self.etherscan_api_key
             )
+            # Store selector sources for efficient Diamond proxy source extraction
+            self.selector_sources = selector_sources
+            if selector_sources:
+                logger.info(f"Stored {len(selector_sources)} selector→facet mappings for source extraction")
 
         if not abi:
             logger.error("Could not obtain contract ABI from any source (ERC-7730, file, or API)")
@@ -878,6 +883,106 @@ class ERC7730Analyzer:
 
         # Extract selectors and their mapping to format keys
         selectors, self.selector_to_format_key = self.extract_selectors(erc7730_data)
+
+        # If selector_sources is empty but we have selectors, try Diamond detection on ALL deployments
+        # This handles the case where ABI came from file/URL
+        logger.info(f"Diamond detection check: selector_sources={len(self.selector_sources)}, selectors={len(selectors)}, deployments={len(deployments)}, has_api_key={bool(self.etherscan_api_key)}")
+        if not self.selector_sources and selectors and deployments and self.etherscan_api_key:
+            logger.info("ABI loaded from file/URL - checking ALL deployments for Diamond proxy pattern...")
+            from .abi import detect_diamond_proxy as detect_diamond_abi
+            from .abi_merger import ABIMerger
+            merger = ABIMerger()
+            
+            for deployment in deployments:
+                dep_address = deployment.get('address', '')
+                dep_chain_id = deployment.get('chainId', 1)
+                
+                logger.info(f"Checking {dep_address} on chain {dep_chain_id} for Diamond proxy...")
+                facet_addresses = detect_diamond_abi(dep_address, dep_chain_id, self.etherscan_api_key)
+                
+                if facet_addresses:
+                    logger.info(f"✓ Diamond proxy detected on chain {dep_chain_id} with {len(facet_addresses)} facets")
+                    logger.info(f"  Facet addresses: {[f[:10]+'...' for f in facet_addresses[:5]]}{'...' if len(facet_addresses) > 5 else ''}")
+                    
+                    # Fetch ABIs from all facets to build selector→facet mapping
+                    success_count = 0
+                    fail_count = 0
+                    total_functions = 0
+                    for facet_addr in facet_addresses:
+                        try:
+                            # Fetch ABI for this facet
+                            params = {
+                                'module': 'contract',
+                                'action': 'getabi',
+                                'address': facet_addr,
+                                'apikey': self.etherscan_api_key
+                            }
+                            base_url = f"https://api.etherscan.io/v2/api?chainid={dep_chain_id}"
+                            response = requests.get(base_url, params=params, timeout=15)
+                            data = response.json()
+                            
+                            if data.get('status') == '1':
+                                facet_abi = json.loads(data['result'])
+                                func_count = len([item for item in facet_abi if item.get('type') == 'function'])
+                                merger.add_abi(facet_abi, dep_chain_id, facet_addr)
+                                success_count += 1
+                                total_functions += func_count
+                                logger.info(f"    ✓ {facet_addr[:10]}...: {func_count} functions")
+                            else:
+                                fail_count += 1
+                                error_msg = data.get('message', data.get('result', 'unknown error'))
+                                logger.warning(f"    ✗ {facet_addr[:10]}...: {error_msg}")
+                        except Exception as e:
+                            fail_count += 1
+                            logger.warning(f"    ✗ {facet_addr[:10]}...: {e}")
+                    
+                    logger.info(f"  Summary: {success_count}/{len(facet_addresses)} facets, {total_functions} total functions (chain {dep_chain_id})")
+                else:
+                    logger.debug(f"Not a Diamond proxy on chain {dep_chain_id}")
+            
+            # Get selector→facet mappings from all deployments
+            self.selector_sources = merger.get_selector_sources()
+            if self.selector_sources:
+                # Log selector count and check if our target selectors are in there
+                logger.info(f"✓ Built {len(self.selector_sources)} selector→facet mappings from all Diamond deployments")
+                # Check how many of our ERC-7730 selectors are mapped
+                mapped_count = sum(1 for s in selectors if s in self.selector_sources)
+                logger.info(f"  Coverage: {mapped_count}/{len(selectors)} ERC-7730 selectors have mappings")
+                if mapped_count < len(selectors):
+                    missing = [s for s in selectors if s not in self.selector_sources][:5]
+                    logger.warning(f"  Missing selectors (first 5): {missing}")
+            
+            # For any selectors not yet mapped, try facetAddress(selector) calls as fallback
+            # facetAddress() is reliable - if it returns a valid address, the bytecode has this selector
+            # The issue may be that the verified source code doesn't match the bytecode
+            missing_selectors = [s for s in selectors if s not in self.selector_sources]
+            if missing_selectors and self.source_extractor:
+                logger.info(f"Attempting facetAddress() fallback for {len(missing_selectors)} unmapped selectors...")
+                for deployment in deployments:
+                    dep_address = deployment.get('address', '')
+                    dep_chain_id = deployment.get('chainId', 1)
+                    
+                    # Use source_code.py's detect_diamond_proxy which calls facetAddress(selector)
+                    facet_mapping = self.source_extractor.detect_diamond_proxy(
+                        dep_address, dep_chain_id, missing_selectors
+                    )
+                    
+                    if facet_mapping and '_is_diamond_but_unmapped' not in facet_mapping:
+                        for selector, facet_addr in facet_mapping.items():
+                            if selector not in self.selector_sources:
+                                self.selector_sources[selector] = [{
+                                    'facet_address': facet_addr,
+                                    'chain_id': dep_chain_id,
+                                    'from_facetAddress': True  # Mark that this came from facetAddress() call
+                                }]
+                        logger.info(f"  Found {len(facet_mapping)} additional mappings via facetAddress() on chain {dep_chain_id}")
+                        # Update missing list
+                        missing_selectors = [s for s in selectors if s not in self.selector_sources]
+                        if not missing_selectors:
+                            break
+                
+                if missing_selectors:
+                    logger.warning(f"Still missing mappings for {len(missing_selectors)} selectors after fallback")
 
         # Analyze each selector
         results = {
@@ -1022,6 +1127,9 @@ class ERC7730Analyzer:
             logger.info(f"\n{'='*60}")
             logger.info("Extracting contract source code from all deployments...")
             logger.info(f"{'='*60}")
+            
+            # Clear cache to ensure fresh extraction with current selector_sources
+            self.source_extractor.clear_cache()
 
             # Track which (chain_id, address) pairs we've already extracted to avoid duplicates
             extracted_contracts = set()
@@ -1037,11 +1145,20 @@ class ERC7730Analyzer:
                     continue
 
                 logger.info(f"\n📦 Extracting from chain {chain_id} at {address}")
+                
+                # Log selector_sources state for debugging
+                if self.selector_sources:
+                    # Show a few sample mappings
+                    sample_sels = list(self.selector_sources.keys())[:3]
+                    logger.info(f"  Using {len(self.selector_sources)} selector→facet mappings (sample: {sample_sels})")
+                else:
+                    logger.warning(f"  No selector_sources available - Diamond detection may have failed")
 
                 extracted_code = self.source_extractor.extract_contract_code(
                     address,
                     chain_id,
-                    selectors=selectors
+                    selectors=selectors,
+                    selector_sources=self.selector_sources  # Pass selector→facet mapping for efficient Diamond extraction
                 )
 
                 if extracted_code['source_code']:
@@ -1292,19 +1409,30 @@ class ERC7730Analyzer:
                     address = extracted_code['address']
                     logger.info(f"  Checking {address} on chain {chain_id} (selector only)...")
 
+                    # Log what we know about this selector's mapping
+                    if selector in self.selector_sources:
+                        sources = self.selector_sources[selector]
+                        source_chains = [s.get('chain_id') for s in sources]
+                        logger.info(f"    Selector {selector} is mapped to chains: {source_chains}")
+                        if chain_id not in source_chains:
+                            logger.info(f"    → Skipping chain {chain_id} (selector not on this chain)")
+                            continue
+                    
                     # Try to find by EXACT SELECTOR only (no name fallback)
                     function_source = self.source_extractor.get_function_with_dependencies(
                         function_name,
                         extracted_code,
                         function_signature=function_data['signature'],
                         max_lines=1000,
-                        selector_only=True  # Only match by exact selector, skip name matching
+                        selector_only=True,  # Only match by exact selector, skip name matching
+                        selector=selector  # Pass selector for Diamond proxy facet-specific lookup
                     )
 
                     if function_source and function_source['function']:
                         logger.info(f"✓ Found EXACT SELECTOR MATCH at {address} on chain {chain_id}!")
                         logger.info(f"✓ Extracted function code ({function_source['total_lines']} lines)")
                         logger.info(f"  - Constants: {len(function_source.get('constants', []))}")
+                        logger.info(f"  - Modifiers: {len(function_source.get('modifiers', []))}")
                         logger.info(f"  - Structs: {len(function_source['structs'])}")
                         logger.info(f"  - Enums: {len(function_source['enums'])}")
                         logger.info(f"  - Internal functions: {len(function_source['internal_functions'])}")
@@ -1319,15 +1447,36 @@ class ERC7730Analyzer:
                 # PHASE 2: If no exact selector match found, try NAME-based matching in first contract
                 if not function_source or not function_source.get('function'):
                     logger.info(f"  Phase 2: No exact selector match found. Trying name-based matching with inheritance in first contract...")
+                    
+                    # IMPORTANT: Check if this selector is in any facet ABI
+                    # If not, the ERC-7730 may refer to an old version that has been upgraded
+                    if selector not in self.selector_sources:
+                        logger.warning(f"  ⚠️  SELECTOR MISMATCH: {selector} is NOT in any facet ABI!")
+                        logger.warning(f"  ⚠️  The ERC-7730 may refer to an OLD function version that has been upgraded.")
+                        logger.warning(f"  ⚠️  Name-based matching may find a DIFFERENT version with different parameters!")
 
-                    # Get first contract with source code
+                    # Get extracted_code from a chain where the selector IS mapped
+                    # This is critical for Diamond proxies - the selector may only exist on certain chains
                     first_extracted_code = None
                     first_deployment_key = None
-                    for deployment_key, extracted_code in self.extracted_codes.items():
-                        if extracted_code['source_code']:
-                            first_extracted_code = extracted_code
-                            first_deployment_key = deployment_key
-                            break
+                    
+                    # First, try to find a chain where this selector has a facet mapping
+                    if selector in self.selector_sources:
+                        mapped_chains = [s.get('chain_id') for s in self.selector_sources[selector]]
+                        for deployment_key, extracted_code in self.extracted_codes.items():
+                            if extracted_code['source_code'] and extracted_code.get('chain_id') in mapped_chains:
+                                first_extracted_code = extracted_code
+                                first_deployment_key = deployment_key
+                                logger.info(f"  Using extracted_code from chain {extracted_code.get('chain_id')} where selector is mapped")
+                                break
+                    
+                    # Fallback: use any contract with source code
+                    if not first_extracted_code:
+                        for deployment_key, extracted_code in self.extracted_codes.items():
+                            if extracted_code['source_code']:
+                                first_extracted_code = extracted_code
+                                first_deployment_key = deployment_key
+                                break
 
                     if first_extracted_code:
                         chain_id = first_extracted_code['chain_id']
@@ -1339,13 +1488,15 @@ class ERC7730Analyzer:
                             first_extracted_code,
                             function_signature=function_data['signature'],
                             max_lines=1000,
-                            selector_only=False  # Allow name-based fallback with inheritance
+                            selector_only=False,  # Allow name-based fallback with inheritance
+                            selector=selector  # Pass selector for Diamond proxy facet-specific lookup
                         )
 
                         if function_source and function_source['function']:
                             logger.info(f"✓ Found by name (with inheritance) at {address} on chain {chain_id}")
                             logger.info(f"✓ Extracted function code ({function_source['total_lines']} lines)")
                             logger.info(f"  - Constants: {len(function_source.get('constants', []))}")
+                            logger.info(f"  - Modifiers: {len(function_source.get('modifiers', []))}")
                             logger.info(f"  - Structs: {len(function_source['structs'])}")
                             logger.info(f"  - Enums: {len(function_source['enums'])}")
                             logger.info(f"  - Internal functions: {len(function_source['internal_functions'])}")
@@ -1389,6 +1540,12 @@ class ERC7730Analyzer:
                         for constant in function_source['constants']:
                             code_block += f"{constant}\n"
                         code_block += "\n"
+
+                    # 3.5. Modifiers used by the main function
+                    if function_source.get('modifiers'):
+                        code_block += "// Modifiers used by main function:\n"
+                        for modifier in function_source['modifiers']:
+                            code_block += f"{modifier}\n\n"
 
                     # 4. Structs
                     if function_source['structs']:

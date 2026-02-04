@@ -618,6 +618,12 @@ def format_source_code_section(source_code: Dict) -> str:
             code_block += f"{constant}\n"
         code_block += "\n"
 
+    # Add modifiers if available
+    if source_code.get('modifiers'):
+        code_block += "// Modifiers:\n"
+        for modifier in source_code['modifiers']:
+            code_block += f"{modifier}\n\n"
+
     # Add structs if available
     if source_code.get('structs'):
         code_block += "// Structs:\n"
@@ -869,7 +875,7 @@ def generate_summary_file(results: Dict, summary_file: Path):
             severity = "✅ None"
             quick_desc = "No critical issues found"
 
-        report += f"| `{issue['function_name']}` | `{issue['selector']}` | {severity} | {quick_desc} | [View](#selector-{issue['selector'][2:]}) |\n"
+        report += f"| `{issue['function_name']}` | `{issue['selector']}` | {severity} | {quick_desc} | [View](#{issue['selector']}) |\n"
 
     report += "\n---\n\n## 📈 Statistics\n\n"
     report += f"| Metric | Count |\n"
@@ -889,8 +895,10 @@ def generate_summary_file(results: Dict, summary_file: Path):
 
         contract_addr = selector_data.get('contract_address', 'N/A')
         chain_id = selector_data.get('chain_id', 'N/A')
-        report += f"## <a id=\"selector-{selector[2:]}\"></a> {function_name}\n\n"
-        report += f"**Selector:** `{selector}` | **Signature:** `{function_sig}`\n\n"
+        # Use selector as header for GitHub-compatible anchor links
+        report += f"## {selector}\n\n"
+        report += f"### {function_name}\n\n"
+        report += f"**Signature:** `{function_sig}`\n\n"
         report += f"**Contract Address:** `{contract_addr}` | **Chain ID:** {chain_id}\n\n"
 
         # Add ERC4626 context if available
@@ -1079,10 +1087,10 @@ def generate_criticals_report(results: Dict, criticals_file: Path):
             first_issue = func['critical_issues'][0]
             status_text = first_issue[:80] + "..." if len(first_issue) > 80 else first_issue
             status = f"🔴 {status_text}"
-            link = f"[View](#critical-{func['selector'][2:]})"
+            link = f"[View](#{func['selector']})"
         else:
             status = "✅ No Critical Issues"
-            link = f"[View](#critical-{func['selector'][2:]})"  # Link to section even if no issues
+            link = f"[View](#{func['selector']})"  # Link to section even if no issues
 
         report += f"| `{func['function_name']}` | `{func['selector']}` | {status} | {link} |\n"
 
@@ -1099,11 +1107,14 @@ def generate_criticals_report(results: Dict, criticals_file: Path):
     report += "---\n\n"
 
     # Detailed sections for ALL functions (with and without critical issues)
+    # Use selector as header for GitHub-compatible anchor links
     for func in all_functions:
         if func.get('has_critical'):
-            report += f"## <a id=\"critical-{func['selector'][2:]}\"></a> 🔴 {func['function_sig']}\n\n"
+            report += f"## {func['selector']}\n\n"
+            report += f"### 🔴 {func['function_sig']}\n\n"
         else:
-            report += f"## <a id=\"critical-{func['selector'][2:]}\"></a> ✅ {func['function_sig']}\n\n"
+            report += f"## {func['selector']}\n\n"
+            report += f"### ✅ {func['function_sig']}\n\n"
 
         report += f"**Selector:** `{func['selector']}`\n\n"
         report += f"**Contract Address:** `{func['contract_address']}` | **Chain ID:** {func['chain_id']}\n\n"

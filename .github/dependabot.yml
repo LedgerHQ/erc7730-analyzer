@@ -1,0 +1,13 @@
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      # Check for updates to GitHub Actions every week
+      interval: "weekly"
+  # uv (Python) – updates for pyproject.toml and uv.lock
+  # Will need an additional operation for pdm.lock
+  - package-ecosystem: "uv"
+    directory: "/"
+    schedule:
+      interval: "weekly"

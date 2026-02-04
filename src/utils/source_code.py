@@ -104,6 +104,18 @@ class SolidityCodeParser:
         for match in re.finditer(struct_pattern, self.cleaned_code):
             struct_name = match.group(1)
             struct_body = match.group(0)
+            
+            # IMPORTANT: Detect duplicate struct definitions (common in flattened source)
+            if struct_name in structs:
+                old_def = structs[struct_name][:100]
+                new_def = struct_body[:100]
+                if old_def != new_def:
+                    logger.warning(f"⚠️  DUPLICATE STRUCT '{struct_name}' - definitions differ!")
+                    logger.warning(f"   OLD: {old_def}...")
+                    logger.warning(f"   NEW: {new_def}...")
+                    logger.warning(f"   Using FIRST definition (ignoring later duplicate)")
+                    continue  # Skip the duplicate - keep first definition
+            
             structs[struct_name] = struct_body.strip()
             logger.debug(f"Found struct: {struct_name}")
 
@@ -745,9 +757,18 @@ class SourceCodeExtractor:
             etherscan_api_key: Etherscan API key
             coredao_api_key: Core DAO API key (optional)
         """
+        import threading
         self.etherscan_api_key = etherscan_api_key
         self.coredao_api_key = coredao_api_key
         self.code_cache = {}  # Cache: contract_address -> extracted code dict
+        self._cache_lock = threading.Lock()  # Thread-safe cache access
+
+    def clear_cache(self):
+        """Clear the source code cache to force fresh extraction."""
+        with self._cache_lock:
+            cache_size = len(self.code_cache)
+            self.code_cache = {}
+            logger.info(f"🧹 CLEARED source code cache ({cache_size} entries) - will extract fresh")
 
     def is_vyper_code(self, source_code: str) -> bool:
         """
@@ -1633,7 +1654,8 @@ class SourceCodeExtractor:
         self,
         contract_address: str,
         chain_id: int,
-        selectors: Optional[List[str]] = None
+        selectors: Optional[List[str]] = None,
+        selector_sources: Optional[Dict[str, List[Dict]]] = None
     ) -> Dict[str, Any]:
         """
         Extract and parse contract source code.
@@ -1642,6 +1664,8 @@ class SourceCodeExtractor:
             contract_address: Contract address
             chain_id: Chain ID
             selectors: Optional list of selectors to filter diamond facets
+            selector_sources: Optional dict mapping selector -> list of {facet_address, chain_id} 
+                             from ABI detection (for efficient Diamond proxy extraction)
 
         Returns:
             Dictionary with extracted code:
@@ -1659,11 +1683,22 @@ class SourceCodeExtractor:
                 'internal_functions': Dict
             }
         """
-        # Check cache
+        # Check cache (thread-safe)
         cache_key = f"{chain_id}:{contract_address.lower()}"
-        if cache_key in self.code_cache:
-            logger.debug(f"Using cached code for {contract_address}")
-            return self.code_cache[cache_key]
+        # Include selectors in cache key to avoid stale/partial diamond facet data
+        if selectors:
+            cache_key = f"{cache_key}:{','.join(sorted(selectors))}"
+        # Include selector_sources in cache key - if we have facet mappings, include them
+        if selector_sources:
+            # Hash the facet addresses to detect when mappings change
+            facet_hash = hash(frozenset((sel, sources[0]['facet_address'] if sources else '') 
+                                        for sel, sources in selector_sources.items() if sources))
+            cache_key = f"{cache_key}:ss{facet_hash}"
+        
+        with self._cache_lock:
+            if cache_key in self.code_cache:
+                logger.debug(f"Using cached code for {contract_address}")
+                return self.code_cache[cache_key]
 
         logger.info(f"Extracting source code for {contract_address} on chain {chain_id}")
 
@@ -1687,29 +1722,74 @@ class SourceCodeExtractor:
         original_address = contract_address
 
         # Check for diamond proxy FIRST (before checking EIP-1967 proxy)
+        # If selector_sources provided, use them directly (already detected during ABI fetch)
+        facets = {}
+        use_selector_sources = False
+        
+        if selector_sources and selectors:
+            logger.info(f"🔍 Building facets from selector_sources for chain {chain_id}...")
+            logger.info(f"   selector_sources has {len(selector_sources)} total mappings")
+            # Build facets mapping from selector_sources - FILTER BY CURRENT CHAIN_ID
+            found_count = 0
+            missing_selectors = []
+            for selector in selectors:
+                sources = selector_sources.get(selector, [])
+                # Find a source that matches the current chain_id
+                matching_source = None
+                for source in sources:
+                    if source.get('chain_id') == chain_id:
+                        matching_source = source
+                        break
+                
+                if matching_source:
+                    facet_addr = matching_source.get('facet_address', '')
+                    if facet_addr:
+                        facets[selector] = facet_addr.lower()
+                        found_count += 1
+                else:
+                    missing_selectors.append(selector)
+            
+            if facets:
+                logger.info(f"Using pre-detected selector→facet mapping for chain {chain_id} ({found_count}/{len(selectors)} selectors mapped)")
+                if missing_selectors:
+                    logger.debug(f"  Selectors not on this chain: {len(missing_selectors)}")
+                use_selector_sources = True
+            else:
+                logger.info(f"No selector→facet mappings found for chain {chain_id}, falling back to detection")
+        
         # Diamond proxies should be detected using the original proxy address
-        if selectors:
+        if not use_selector_sources and selectors:
             logger.info(f"Checking for Diamond proxy with {len(selectors)} selectors: {selectors[:3]}...")
             facets = self.detect_diamond_proxy(original_address, chain_id, selectors)
             if facets and '_is_diamond_but_unmapped' in facets:
                 # Detected as Diamond but couldn't map facets
+                # This means the selectors don't exist on this contract/chain
+                # Return empty so caller can try next contract/chain
                 result['is_diamond'] = True
                 result['facets'] = {}
                 logger.info(f"✓ Detected Diamond proxy (but cannot map selectors to facets)")
-                # For Diamond proxies, DON'T extract source code from any single implementation
-                # The source code is distributed across multiple facets
-                logger.warning(f"Skipping source code extraction for Diamond proxy - source is distributed across facets")
-                self.code_cache[cache_key] = result
+                logger.warning(f"Selectors not found on this Diamond - caller should try next contract/chain")
+                with self._cache_lock:
+                    self.code_cache[cache_key] = result
                 return result
-            elif facets:
+        
+        # If we have facets (from selector_sources OR from detect_diamond_proxy), extract from them
+        logger.info(f"🔍 Facet check for chain {chain_id}: {len(facets)} selector→facet mappings, use_selector_sources={use_selector_sources}")
+        if facets and not facets.get('_is_diamond_but_unmapped'):
                 # Successfully mapped selectors to facets
                 result['is_diamond'] = True
                 result['facets'] = facets
                 unique_facet_addresses = set(facets.values())
-                logger.info(f"✓ Detected Diamond proxy with {len(unique_facet_addresses)} unique facets")
+                logger.info(f"✓ Diamond proxy on chain {chain_id} - will extract from {len(unique_facet_addresses)} unique facets:")
+                for fa in list(unique_facet_addresses)[:10]:
+                    logger.info(f"   - {fa}")
 
-                # Extract source code from each unique facet
-                logger.info(f"Extracting source code from {len(unique_facet_addresses)} unique facets...")
+                # Extract source code from each unique facet IN PARALLEL for speed
+                from concurrent.futures import ThreadPoolExecutor, as_completed
+                import time
+                
+                logger.info(f"Extracting source code from {len(unique_facet_addresses)} unique facets (parallel)...")
+                
                 all_functions = {}
                 all_custom_types = {}
                 all_using_statements = []
@@ -1719,66 +1799,120 @@ class SourceCodeExtractor:
                 all_constants = {}
                 all_modifiers = {}
                 all_internal_functions = {}
-
-                for facet_addr in unique_facet_addresses:
-                    logger.info(f"  Fetching source code for facet {facet_addr}...")
-
-                    # Fetch source code (try Sourcify first, then Etherscan, then Blockscout)
-                    source_code = self.fetch_source_from_sourcify(facet_addr, chain_id)
+                per_facet_codes = {}  # Store per-facet parsed code for efficient lookups
+                
+                def fetch_and_parse_facet(facet_addr):
+                    """Fetch and parse a single facet's source code."""
+                    short_addr = facet_addr[:10] + "..."
+                    t0 = time.time()
+                    
+                    # Fetch source code with retry logic (up to 3 attempts)
+                    source_code = None
+                    max_retries = 3
+                    for attempt in range(max_retries):
+                        # Try Sourcify first, then Etherscan, then Blockscout
+                        source_code = self.fetch_source_from_sourcify(facet_addr, chain_id)
+                        if not source_code:
+                            source_code = self.fetch_source_from_etherscan(facet_addr, chain_id)
+                        if not source_code:
+                            source_code = self.fetch_source_from_blockscout(facet_addr, chain_id)
+                        
+                        if source_code:
+                            break
+                        
+                        if attempt < max_retries - 1:
+                            wait_time = (attempt + 1) * 2  # 2s, 4s backoff
+                            logger.warning(f"  [{short_addr}] Fetch failed, retrying in {wait_time}s (attempt {attempt + 1}/{max_retries})...")
+                            time.sleep(wait_time)
+                    
                     if not source_code:
-                        source_code = self.fetch_source_from_etherscan(facet_addr, chain_id)
-                    if not source_code:
-                        source_code = self.fetch_source_from_blockscout(facet_addr, chain_id)
-
-                    if source_code:
-                        # Detect if facet code is Vyper or Solidity
-                        is_vyper = self.is_vyper_code(source_code)
-
-                        if is_vyper:
-                            logger.info(f"    Detected Vyper code in facet - using Vyper parser")
-                            facet_functions = self.extract_vyper_functions(source_code)
-                            facet_structs = {}
-                            facet_enums = {}
-                            facet_constants = {}
-                            facet_modifiers = {}  # Vyper doesn't have modifiers
-                            facet_internal = {
-                                k: v for k, v in facet_functions.items()
-                                if v['visibility'] == 'internal'
-                            }
-                        else:
-                            logger.info(f"    Detected Solidity code in facet - using Solidity parser")
-                            # Parse the source code
-                            parser = SolidityCodeParser(source_code)
-
-                            facet_custom_types = parser.extract_custom_types()
-                            facet_using_statements = parser.extract_using_statements()
-                            facet_libraries = parser.extract_libraries()
-                            facet_structs = parser.extract_structs()
-                            facet_enums = parser.extract_enums()
-                            facet_constants = parser.extract_constants()
-                            facet_modifiers = parser.extract_modifiers()
-                            facet_functions = parser.extract_functions()
-
-                            # Separate internal functions
-                            facet_internal = {
-                                k: v for k, v in facet_functions.items()
-                                if v['visibility'] in ['internal', 'private']
-                            }
-
-                        # Merge into combined results
-                        all_functions.update(facet_functions)
-                        all_custom_types.update(facet_custom_types)
-                        all_using_statements.extend(facet_using_statements)
-                        all_libraries.update(facet_libraries)
-                        all_structs.update(facet_structs)
-                        all_enums.update(facet_enums)
-                        all_constants.update(facet_constants)
-                        all_modifiers.update(facet_modifiers)
-                        all_internal_functions.update(facet_internal)
-
-                        logger.info(f"    Added {len(facet_functions)} functions, {len(facet_custom_types)} custom types, {len(facet_using_statements)} using statements, {len(facet_libraries)} libraries, {len(facet_structs)} structs, {len(facet_enums)} enums, {len(facet_constants)} constants, {len(facet_modifiers)} modifiers from facet")
+                        logger.warning(f"  [{short_addr}] ✗ Could not fetch source after {max_retries} attempts")
+                        return facet_addr, None
+                    
+                    # Detect if facet code is Vyper or Solidity
+                    is_vyper = self.is_vyper_code(source_code)
+                    
+                    facet_result = {
+                        'source_code': source_code,
+                        'functions': {},
+                        'custom_types': {},
+                        'using_statements': [],
+                        'libraries': {},
+                        'structs': {},
+                        'enums': {},
+                        'constants': {},
+                        'modifiers': {},
+                        'internal_functions': {}
+                    }
+                    
+                    if is_vyper:
+                        facet_result['functions'] = self.extract_vyper_functions(source_code)
+                        facet_result['internal_functions'] = {
+                            k: v for k, v in facet_result['functions'].items()
+                            if v['visibility'] == 'internal'
+                        }
                     else:
-                        logger.warning(f"    Could not fetch source code for facet {facet_addr}")
+                        parser = SolidityCodeParser(source_code)
+                        facet_result['custom_types'] = parser.extract_custom_types()
+                        facet_result['using_statements'] = parser.extract_using_statements()
+                        facet_result['libraries'] = parser.extract_libraries()
+                        facet_result['structs'] = parser.extract_structs()
+                        facet_result['enums'] = parser.extract_enums()
+                        facet_result['constants'] = parser.extract_constants()
+                        facet_result['modifiers'] = parser.extract_modifiers()
+                        facet_result['functions'] = parser.extract_functions()
+                        facet_result['internal_functions'] = {
+                            k: v for k, v in facet_result['functions'].items()
+                            if v['visibility'] in ['internal', 'private']
+                        }
+                    
+                    # Try to extract contract name from source
+                    contract_name_match = re.search(r'contract\s+(\w+)\s*(?:is|{)', source_code)
+                    contract_name = contract_name_match.group(1) if contract_name_match else 'Unknown'
+                    facet_result['contract_name'] = contract_name
+                    
+                    elapsed = time.time() - t0
+                    func_count = len(facet_result['functions'])
+                    struct_count = len(facet_result['structs'])
+                    struct_names = list(facet_result['structs'].keys())
+                    logger.info(f"  [{short_addr}] ✓ {contract_name}: {func_count} functions, {struct_count} structs ({elapsed:.1f}s)")
+                    if struct_count > 0:
+                        logger.debug(f"  [{short_addr}] Structs: {struct_names[:5]}{'...' if struct_count > 5 else ''}")
+                    return facet_addr, facet_result
+                
+                # Use ThreadPoolExecutor to fetch facets in parallel (max 4 concurrent)
+                logger.info(f"Starting parallel fetch for {len(unique_facet_addresses)} facets on chain {chain_id}...")
+                max_workers = min(4, len(unique_facet_addresses))
+                t_start = time.time()
+                
+                try:
+                    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                        futures = {executor.submit(fetch_and_parse_facet, addr): addr 
+                                  for addr in unique_facet_addresses}
+                        
+                        for future in as_completed(futures):
+                            try:
+                                facet_addr, facet_result = future.result()
+                                if facet_result:
+                                    # Merge into combined results
+                                    all_functions.update(facet_result['functions'])
+                                    all_custom_types.update(facet_result.get('custom_types', {}))
+                                    all_using_statements.extend(facet_result.get('using_statements', []))
+                                    all_libraries.update(facet_result.get('libraries', {}))
+                                    all_structs.update(facet_result['structs'])
+                                    all_enums.update(facet_result['enums'])
+                                    all_constants.update(facet_result['constants'])
+                                    all_modifiers.update(facet_result['modifiers'])
+                                    all_internal_functions.update(facet_result['internal_functions'])
+                                    # Store per-facet code for efficient lookups later
+                                    per_facet_codes[facet_addr] = facet_result
+                            except Exception as fe:
+                                logger.error(f"  Error processing facet future: {fe}")
+                except Exception as e:
+                    logger.error(f"Parallel facet extraction failed: {e}")
+                
+                elapsed_total = time.time() - t_start
+                logger.info(f"Parallel extraction complete: {len(per_facet_codes)}/{len(unique_facet_addresses)} facets succeeded in {elapsed_total:.1f}s")
 
                 result['functions'] = all_functions
                 result['custom_types'] = all_custom_types
@@ -1790,20 +1924,26 @@ class SourceCodeExtractor:
                 result['modifiers'] = all_modifiers
                 result['internal_functions'] = all_internal_functions
                 result['source_code'] = f"Diamond proxy with {len(unique_facet_addresses)} facets"
+                
+                # Store per-facet codes and selector-to-facet mapping for efficient lookups
+                result['_per_facet_codes'] = per_facet_codes
+                result['_selector_to_facet'] = {sel: addr.lower() for sel, addr in facets.items()}
 
                 logger.info(f"✓ Extracted total: {len(all_functions)} functions, {len(all_custom_types)} custom types, {len(all_using_statements)} using statements, {len(all_libraries)} libraries, {len(all_structs)} structs, {len(all_enums)} enums, {len(all_constants)} constants, {len(all_modifiers)} modifiers from all facets")
 
-                # Cache and return
-                self.code_cache[cache_key] = result
+                # Cache and return (thread-safe)
+                with self._cache_lock:
+                    self.code_cache[cache_key] = result
                 return result
-            else:
-                # Not a Diamond proxy, check for standard EIP-1967 proxy
-                impl_address = self.detect_proxy_implementation(contract_address, chain_id)
-                if impl_address:
-                    result['is_proxy'] = True
-                    result['implementation'] = impl_address
-                    contract_address = impl_address  # Use implementation for source code
-                    logger.info(f"Using implementation address: {impl_address}")
+        
+        # Not a Diamond proxy, check for standard EIP-1967 proxy
+        if not result['is_diamond']:
+            impl_address = self.detect_proxy_implementation(contract_address, chain_id)
+            if impl_address:
+                result['is_proxy'] = True
+                result['implementation'] = impl_address
+                contract_address = impl_address  # Use implementation for source code
+                logger.info(f"Using implementation address: {impl_address}")
 
         # Fetch contract name from Etherscan (most reliable source)
         contract_name = self.get_contract_name_from_etherscan(contract_address, chain_id)
@@ -1821,7 +1961,8 @@ class SourceCodeExtractor:
 
         if not source_code:
             logger.warning(f"Could not fetch source code for {contract_address}")
-            self.code_cache[cache_key] = result
+            with self._cache_lock:
+                self.code_cache[cache_key] = result
             return result
 
         result['source_code'] = source_code
@@ -1898,8 +2039,9 @@ class SourceCodeExtractor:
                    f"{len(result['constants'])} constants, "
                    f"{len(result.get('modifiers', {}))} modifiers")
 
-        # Cache the result
-        self.code_cache[cache_key] = result
+        # Cache the result (thread-safe)
+        with self._cache_lock:
+            self.code_cache[cache_key] = result
 
         return result
 
@@ -2229,6 +2371,123 @@ class SourceCodeExtractor:
 
         return enum_types
 
+    def _extract_nested_types_from_structs(self, structs: List[str]) -> set:
+        """
+        Extract all nested type references from struct definitions, including qualified names.
+        
+        This handles types like:
+        - Simple types: SendParam, MessagingFee
+        - Qualified types: IStargate.SendParam, IStargate.MessagingFee
+        
+        Args:
+            structs: List of struct definition strings
+            
+        Returns:
+            Set of type references found in the structs (both simple and qualified)
+        """
+        nested_types = set()
+        
+        # Common Solidity primitive types to exclude
+        primitive_types = {
+            'address', 'bool', 'string', 'bytes', 'uint', 'int',
+            'uint8', 'uint16', 'uint24', 'uint32', 'uint64', 'uint128', 'uint256',
+            'int8', 'int16', 'int24', 'int32', 'int64', 'int128', 'int256',
+            'bytes1', 'bytes2', 'bytes3', 'bytes4', 'bytes8', 'bytes16', 'bytes20', 'bytes32',
+            'payable'
+        }
+        
+        for struct_def in structs:
+            # Extract body from struct
+            body_match = re.search(r'\{([^}]+)\}', struct_def)
+            if not body_match:
+                continue
+                
+            body = body_match.group(1)
+            
+            for line in body.split(';'):
+                line = line.strip()
+                if not line:
+                    continue
+                
+                # Extract type from line - handle arrays and mappings too
+                # Pattern matches: TypeName, Interface.TypeName, TypeName[], Interface.TypeName[]
+                type_match = re.match(r'([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)?)\s*(?:\[\])?\s+\w+', line)
+                if type_match:
+                    type_name = type_match.group(1)
+                    base_type = type_name.split('.')[0] if '.' in type_name else type_name
+                    
+                    # Skip primitives
+                    if base_type.lower() in primitive_types:
+                        continue
+                    
+                    # Check if it starts with uppercase (custom type/struct/interface)
+                    if type_name and type_name[0].isupper():
+                        nested_types.add(type_name)
+                        logger.debug(f"Found nested type in struct: {type_name}")
+        
+        return nested_types
+
+    def _find_struct_in_interface(self, interface_name: str, struct_name: str, source_code: str) -> Optional[str]:
+        """
+        Find a struct definition inside a specific interface.
+        
+        Args:
+            interface_name: Name of the interface (e.g., 'IStargate')
+            struct_name: Name of the struct to find (e.g., 'SendParam')
+            source_code: Full source code
+            
+        Returns:
+            Struct definition string or None if not found
+        """
+        # First find the interface definition
+        interface_pattern = rf'interface\s+{re.escape(interface_name)}\s*(?:is\s+[^{{]+)?\s*\{{'
+        interface_match = re.search(interface_pattern, source_code)
+        
+        if not interface_match:
+            logger.debug(f"Interface {interface_name} not found")
+            return None
+        
+        # Find the interface body
+        start_pos = interface_match.end() - 1
+        open_braces = 0
+        interface_end = start_pos
+        
+        for i in range(start_pos, len(source_code)):
+            if source_code[i] == '{':
+                open_braces += 1
+            elif source_code[i] == '}':
+                open_braces -= 1
+                if open_braces == 0:
+                    interface_end = i + 1
+                    break
+        
+        interface_body = source_code[start_pos:interface_end]
+        
+        # Now search for the struct within the interface body
+        struct_pattern = rf'struct\s+{re.escape(struct_name)}\s*\{{'
+        struct_match = re.search(struct_pattern, interface_body)
+        
+        if not struct_match:
+            logger.debug(f"Struct {struct_name} not found in interface {interface_name}")
+            return None
+        
+        # Extract the full struct definition
+        struct_start = struct_match.start()
+        brace_start = struct_match.end() - 1
+        open_braces = 0
+        
+        for i in range(brace_start, len(interface_body)):
+            if interface_body[i] == '{':
+                open_braces += 1
+            elif interface_body[i] == '}':
+                open_braces -= 1
+                if open_braces == 0:
+                    struct_def = interface_body[struct_start:i + 1].strip()
+                    logger.info(f"Found struct {interface_name}.{struct_name} in interface")
+                    return struct_def
+        
+        return None
+
     def _find_enum_in_interfaces(self, enum_name: str, source_code: str) -> Optional[str]:
         """
         Search for an enum definition in interfaces within the source code.
@@ -2496,7 +2755,8 @@ class SourceCodeExtractor:
         extracted_code: Dict[str, Any],
         function_signature: Optional[str] = None,
         max_lines: int = 300,
-        selector_only: bool = False
+        selector_only: bool = False,
+        selector: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Get a function's code along with its dependencies (structs, internal functions, libraries, etc.).
@@ -2508,6 +2768,7 @@ class SourceCodeExtractor:
                                 to disambiguate overloaded functions. If not provided, matches by name only.
             max_lines: Maximum number of lines to include (truncate if exceeded)
             selector_only: If True, only match by exact selector (skip name-based fallback)
+            selector: Optional function selector (0x...) for Diamond proxy facet-specific lookup
 
         Returns:
             Dictionary with:
@@ -2525,6 +2786,35 @@ class SourceCodeExtractor:
         """
         # Find the function
         target_function = None
+        source_text = extracted_code.get('source_code') or ""
+        
+        # For Diamond proxies: try to use facet-specific source code for faster lookups
+        facet_specific_code = None
+        facet_source_text = None
+        facet_addr = None
+        if selector:
+            selector_to_facet = extracted_code.get('_selector_to_facet', {})
+            per_facet_codes = extracted_code.get('_per_facet_codes', {})
+            
+            # DEBUG: Log what's available
+            logger.info(f"  🔍 DEBUG: _selector_to_facet has {len(selector_to_facet)} mappings, _per_facet_codes has {len(per_facet_codes)} facets")
+            
+            facet_addr = selector_to_facet.get(selector)
+            logger.debug(f"  🔍 DEBUG: Looking for facet_addr={facet_addr}, per_facet_codes keys={list(per_facet_codes.keys())[:3]}...")
+            if facet_addr and facet_addr in per_facet_codes:
+                facet_specific_code = per_facet_codes[facet_addr]
+                facet_source_text = facet_specific_code.get('source_code', '')
+                facet_func_count = len(facet_specific_code.get('functions', {}))
+                facet_struct_count = len(facet_specific_code.get('structs', {}))
+                facet_struct_names = list(facet_specific_code.get('structs', {}).keys())
+                logger.info(f"  🎯 Using facet-specific source for {selector} (facet: {facet_addr[:10]}..., {facet_func_count} functions, {facet_struct_count} structs)")
+                logger.info(f"  🎯 Facet-specific structs: {facet_struct_names[:10]}{'...' if len(facet_struct_names) > 10 else ''}")
+            elif facet_addr:
+                logger.warning(f"  ⚠ Facet {facet_addr[:10]}... not in per_facet_codes (has {len(per_facet_codes)} facets)")
+            elif selector_to_facet:
+                logger.warning(f"  ⚠ Selector {selector} not in selector_to_facet mapping (has {len(selector_to_facet)} selectors)")
+            else:
+                logger.debug(f"  No _selector_to_facet mapping available - using full merged source")
 
         # Get custom types mapping for resolving type aliases
         custom_types = extracted_code.get('custom_types', {})
@@ -2537,21 +2827,34 @@ class SourceCodeExtractor:
                 custom_type_mapping[type_name] = base_type
                 logger.debug(f"  Custom type mapping: {type_name} -> {base_type}")
 
+        # IMPORTANT: For Diamond proxies, prefer facet-specific types to avoid name collisions
+        # The same struct name can have DIFFERENT definitions in different facets!
+        type_source = facet_specific_code if facet_specific_code else extracted_code
+        type_source_name = f"facet {facet_addr[:10]}..." if (facet_specific_code and facet_addr) else "merged source"
+        
         # Add interfaces and contracts (they all map to address in ABI)
-        interfaces = extracted_code.get('interfaces', [])
+        interfaces = type_source.get('interfaces', [])
         for interface_name in interfaces:
             custom_type_mapping[interface_name] = 'address'
             logger.debug(f"  Interface/Contract mapping: {interface_name} -> address")
 
         # Add enums (they all map to uint8 in ABI)
-        enums = extracted_code.get('enums', {})
+        enums = type_source.get('enums', {})
         for enum_name in enums.keys():
             custom_type_mapping[enum_name] = 'uint8'
             logger.debug(f"  Enum mapping: {enum_name} -> uint8")
 
         # Get struct mapping for resolving struct types to tuples
-        structs = extracted_code.get('structs', {})
-        logger.info(f"  📚 Found {len(structs)} structs to map: {list(structs.keys())}")
+        # CRITICAL: Use facet-specific structs to avoid wrong definitions from other facets
+        structs = type_source.get('structs', {})
+        logger.info(f"  📚 Found {len(structs)} structs to map from {type_source_name}: {list(structs.keys())}")
+        
+        # DEBUG: Log actual StargateData definition if present
+        if 'StargateData' in structs:
+            logger.info(f"  🔍 DEBUG StargateData raw definition from {type_source_name}:")
+            logger.info(f"  {structs['StargateData'][:500]}...")
+            if facet_addr:
+                logger.info(f"  🔍 DEBUG: Facet address used = {facet_addr}")
         struct_type_mapping = {}
         for struct_name, struct_def in structs.items():
             # Extract tuple representation from struct, resolving custom types and nested structs
@@ -2562,6 +2865,21 @@ class SourceCodeExtractor:
             else:
                 logger.warning(f"  ⚠️  Failed to parse struct: {struct_name}")
 
+        # Pre-cache extracted functions for fast lookup (avoid O(n) scans)
+        all_functions_cache = extracted_code.get('functions', {}) or {}
+        functions_by_name = extracted_code.get('_functions_by_name')
+        if functions_by_name is None:
+            functions_by_name = {}
+            for func_data in all_functions_cache.values():
+                functions_by_name.setdefault(func_data['name'], []).append(func_data)
+            extracted_code['_functions_by_name'] = functions_by_name
+        
+        # Build facet-specific functions cache if using facet-specific code
+        facet_functions_by_name = {}
+        if facet_specific_code:
+            for func_data in facet_specific_code.get('functions', {}).values():
+                facet_functions_by_name.setdefault(func_data['name'], []).append(func_data)
+
         # If signature is provided, normalize it for comparison
         normalized_target_sig = None
         if function_signature:
@@ -2569,10 +2887,16 @@ class SourceCodeExtractor:
             logger.info(f"  Looking for function with normalized signature: {normalized_target_sig}")
 
         # Get main contract name and build inheritance hierarchy
+        # For Diamond proxies: use facet-specific contract name if available
         main_contract_name = extracted_code.get('contract_name')
+        if facet_specific_code and facet_specific_code.get('contract_name'):
+            main_contract_name = facet_specific_code.get('contract_name')
+            logger.info(f"  Using facet contract name: {main_contract_name}")
 
         # Extract inheritance relationships from source code
-        parser = SolidityCodeParser(extracted_code.get('source_code', ''))
+        # For Diamond proxies: use facet source code for inheritance parsing
+        source_for_parsing = facet_source_text if facet_source_text else extracted_code.get('source_code', '')
+        parser = SolidityCodeParser(source_for_parsing)
         inheritance_map = parser.extract_inheritance_chain()
 
         # DEBUG: Log inheritance extraction results
@@ -2617,11 +2941,27 @@ class SourceCodeExtractor:
             )
             logger.info(f"  Target selector: {target_selector}")
 
-        # Collect all matching candidates (by name and visibility)
-        all_candidates = []
-        for func_data in extracted_code['functions'].values():
-            if func_data['name'] == function_name and func_data['visibility'] in ['public', 'external']:
-                all_candidates.append(func_data)
+        # Collect all matching candidates (by name and visibility) using cached lookup
+        # For Diamond proxies with facet-specific code, prefer facet functions
+        if facet_functions_by_name:
+            all_candidates = [
+                f for f in facet_functions_by_name.get(function_name, [])
+                if f['visibility'] in ['public', 'external']
+            ]
+            if all_candidates:
+                logger.info(f"  Found {len(all_candidates)} candidates in facet-specific code")
+            else:
+                # Fallback to merged functions
+                all_candidates = [
+                    f for f in functions_by_name.get(function_name, [])
+                    if f['visibility'] in ['public', 'external']
+                ]
+                logger.info(f"  No facet candidates, using {len(all_candidates)} from merged code")
+        else:
+            all_candidates = [
+                f for f in functions_by_name.get(function_name, [])
+                if f['visibility'] in ['public', 'external']
+            ]
 
         # Filter out interface definitions (contract_name = None)
         contract_candidates = [f for f in all_candidates if f.get('contract_name') is not None]
@@ -2678,6 +3018,31 @@ class SourceCodeExtractor:
                     break
         else:
             logger.info(f"  ⚠️  Phase 1 SKIPPED - target_selector: {bool(target_selector)}, inheritance_hierarchy: {inheritance_hierarchy}")
+            
+            # PHASE 1b: If we have facet-specific candidates but no inheritance hierarchy,
+            # still try to match by selector directly
+            if target_selector and contract_candidates and not target_function:
+                logger.info(f"  Phase 1b: Checking {len(contract_candidates)} candidates by selector (no inheritance)...")
+                for func in contract_candidates:
+                    # Compute selector for this function
+                    func_sig = self._normalize_signature_for_matching(func.get('signature', ''))
+                    if not func_sig:
+                        continue
+                    
+                    func_selector = self._compute_function_selector(
+                        func_sig,
+                        custom_type_mapping,
+                        struct_type_mapping
+                    )
+                    
+                    logger.debug(f"    Checking: {func['signature'][:60]}... -> {func_selector}")
+                    
+                    if func_selector == target_selector:
+                        # Found exact selector match!
+                        target_function = func
+                        contract_name = func.get('contract_name', 'Unknown')
+                        logger.info(f"  ✓ Found selector match: {contract_name}.{func.get('name', 'unknown')} (line {func.get('start_line', 0)})")
+                        break
 
         # PHASE 2: If no selector match, try to match by NAME following inheritance hierarchy
         if not target_function and not selector_only and inheritance_hierarchy:
@@ -2765,6 +3130,19 @@ class SourceCodeExtractor:
             'truncated': False
         }
 
+        # IMPORTANT: For Diamond proxies, use facet-specific dependencies (structs, enums, modifiers, etc.)
+        # to avoid name collisions with unrelated structs from other facets.
+        # If we found the function in a specific facet, use that facet's dependencies.
+        # Otherwise, fall back to the merged extracted_code.
+        if facet_specific_code:
+            dependency_source = facet_specific_code
+            dependency_source_name = f"facet {facet_addr[:10]}..."
+            logger.info(f"  📦 Using facet-specific dependencies from {dependency_source_name}")
+        else:
+            dependency_source = extracted_code
+            dependency_source_name = "merged source"
+            logger.debug(f"  📦 Using merged dependencies (no facet-specific source)")
+
         # Collect all code to scan for constant references
         all_code_to_scan = [target_function['body']]
 
@@ -2776,98 +3154,138 @@ class SourceCodeExtractor:
 
         # Track which structs we've already added
         added_structs = set()
+        
+        # Get source code for interface searches
+        source_code = dependency_source.get('source_code', '') or extracted_code.get('source_code', '')
 
-        for struct_name, struct_code in extracted_code['structs'].items():
+        # PHASE 1: Add structs directly referenced in function signature/body
+        for struct_name, struct_code in dependency_source.get('structs', {}).items():
             if struct_name in func_text_to_search:
                 result['structs'].append(struct_code)
                 result['total_lines'] += struct_code.count('\n') + 1
                 added_structs.add(struct_name)
-                logger.info(f"    ✓ Including struct: {struct_name}")
+                logger.info(f"    ✓ Including struct: {struct_name} (from {dependency_source_name})")
 
-        # NEW: If struct is referenced but not found in extracted_code['structs'],
-        # search for it in interfaces defined in the source code (inheritance chain)
-        # This handles cases like RewardClaimWithProof defined in a parent interface
+        # PHASE 2: Search for missing structs from signature in interfaces
         struct_types_in_signature = self._extract_struct_types_from_signature(func_signature)
         missing_structs = struct_types_in_signature - added_structs
 
-        if missing_structs:
+        if missing_structs and source_code:
             logger.info(f"    🔍 Searching for missing structs in interfaces: {missing_structs}")
-            # Get the source code to search for struct definitions in interfaces
-            source_code = extracted_code.get('source_code', '')
-            if source_code:
-                for missing_struct in missing_structs:
-                    struct_def = self._find_struct_in_interfaces(missing_struct, source_code)
+            for missing_struct in missing_structs:
+                struct_def = self._find_struct_in_interfaces(missing_struct, source_code)
+                if struct_def:
+                    result['structs'].append(struct_def)
+                    result['total_lines'] += struct_def.count('\n') + 1
+                    added_structs.add(missing_struct)
+                    logger.info(f"    ✓ Found struct in interface: {missing_struct}")
+                else:
+                    logger.warning(f"    ✗ Struct {missing_struct} not found in interfaces")
+
+        # PHASE 3: RECURSIVE extraction of nested types from structs
+        # This handles types like IStargate.SendParam inside StargateData
+        max_iterations = 10  # Prevent infinite loops
+        iteration = 0
+        structs_to_process = list(result['structs'])
+        processed_types = set(added_structs)
+        
+        while structs_to_process and iteration < max_iterations:
+            iteration += 1
+            # Extract nested types from current structs (including qualified names)
+            nested_types = self._extract_nested_types_from_structs(structs_to_process)
+            new_types = nested_types - processed_types
+            
+            if not new_types:
+                break
+                
+            logger.info(f"    🔄 Iteration {iteration}: Found {len(new_types)} new nested types: {new_types}")
+            structs_to_process = []  # Reset for next iteration
+            
+            for type_ref in new_types:
+                processed_types.add(type_ref)
+                
+                # Handle qualified names like IStargate.SendParam
+                if '.' in type_ref:
+                    interface_name, struct_name = type_ref.split('.', 1)
+                    struct_def = self._find_struct_in_interface(interface_name, struct_name, source_code)
                     if struct_def:
                         result['structs'].append(struct_def)
                         result['total_lines'] += struct_def.count('\n') + 1
-                        added_structs.add(missing_struct)
-                        logger.info(f"    ✓ Found struct in interface: {missing_struct}")
+                        added_structs.add(type_ref)
+                        structs_to_process.append(struct_def)  # Process this struct for more nested types
+                        logger.info(f"    ✓ Found nested struct: {type_ref}")
                     else:
-                        logger.warning(f"    ✗ Struct {missing_struct} not found in interfaces")
+                        logger.debug(f"    ⚠ Nested type {type_ref} not found in interface {interface_name}")
+                else:
+                    # Simple type name - search in dependency_source structs first
+                    if type_ref in dependency_source.get('structs', {}):
+                        struct_code = dependency_source['structs'][type_ref]
+                        result['structs'].append(struct_code)
+                        result['total_lines'] += struct_code.count('\n') + 1
+                        added_structs.add(type_ref)
+                        structs_to_process.append(struct_code)
+                        logger.info(f"    ✓ Found nested struct: {type_ref} (from {dependency_source_name})")
+                    else:
+                        # Try interfaces
+                        struct_def = self._find_struct_in_interfaces(type_ref, source_code)
+                        if struct_def:
+                            result['structs'].append(struct_def)
+                            result['total_lines'] += struct_def.count('\n') + 1
+                            added_structs.add(type_ref)
+                            structs_to_process.append(struct_def)
+                            logger.info(f"    ✓ Found nested struct in interface: {type_ref}")
 
-        # Check for enums in function body, signature, AND the structs we just added
+        # PHASE 4: Check for enums in function body, signature, AND all the structs we've added
         all_text_for_enum_search = func_text_to_search + '\n' + '\n'.join(result['structs'])
         added_enums = set()
 
-        for enum_name, enum_code in extracted_code['enums'].items():
+        for enum_name, enum_code in dependency_source.get('enums', {}).items():
             if enum_name in all_text_for_enum_search:
                 result['enums'].append(enum_code)
                 result['total_lines'] += enum_code.count('\n') + 1
                 added_enums.add(enum_name)
-                logger.info(f"    ✓ Including enum: {enum_name}")
+                logger.info(f"    ✓ Including enum: {enum_name} (from {dependency_source_name})")
 
-        # Also search for enums in interfaces (similar to structs)
-        # Extract potential enum/struct types from structs we've added
-        # These could be either enums OR nested structs from imported interfaces
+        # PHASE 5: Search for missing enums in interfaces
         potential_types_in_structs = self._extract_enum_types_from_structs(result['structs'])
         missing_types = potential_types_in_structs - added_enums - added_structs
 
-        if missing_types:
-            logger.info(f"    🔍 Searching for missing types (structs/enums) in interfaces: {missing_types}")
-            source_code = extracted_code.get('source_code', '')
-            if source_code:
-                for missing_type in missing_types:
-                    # First try to find it as a struct (nested structs from imports)
-                    struct_def = self._find_struct_in_interfaces(missing_type, source_code)
-                    if struct_def:
-                        result['structs'].append(struct_def)
-                        result['total_lines'] += struct_def.count('\n') + 1
-                        added_structs.add(missing_type)
-                        logger.info(f"    ✓ Found struct in interface/import: {missing_type}")
-                    else:
-                        # If not a struct, try as an enum
-                        enum_def = self._find_enum_in_interfaces(missing_type, source_code)
-                        if enum_def:
-                            result['enums'].append(enum_def)
-                            result['total_lines'] += enum_def.count('\n') + 1
-                            added_enums.add(missing_type)
-                            logger.info(f"    ✓ Found enum in interface/import: {missing_type}")
-                        else:
-                            logger.warning(f"    ✗ Type {missing_type} not found in interfaces or imports")
+        if missing_types and source_code:
+            logger.info(f"    🔍 Searching for missing enums in interfaces: {missing_types}")
+            for missing_type in missing_types:
+                # Try as an enum
+                enum_def = self._find_enum_in_interfaces(missing_type, source_code)
+                if enum_def:
+                    result['enums'].append(enum_def)
+                    result['total_lines'] += enum_def.count('\n') + 1
+                    added_enums.add(missing_type)
+                    logger.info(f"    ✓ Found enum in interface: {missing_type}")
+                else:
+                    logger.debug(f"    ⚠ Type {missing_type} not found as enum in interfaces")
 
         # Add modifiers used by this function
         modifiers_used = target_function.get('modifiers', [])
         if modifiers_used:
             logger.info(f"  - Function uses modifiers: {modifiers_used}")
             for modifier_name in modifiers_used:
-                if modifier_name in extracted_code.get('modifiers', {}):
-                    modifier_code = extracted_code['modifiers'][modifier_name]
+                if modifier_name in dependency_source.get('modifiers', {}):
+                    modifier_code = dependency_source['modifiers'][modifier_name]
                     result['modifiers'].append(modifier_code)
                     result['total_lines'] += modifier_code.count('\n') + 1
-                    logger.info(f"    ✓ Including modifier: {modifier_name}")
+                    logger.info(f"    ✓ Including modifier: {modifier_name} (from {dependency_source_name})")
                 else:
-                    logger.warning(f"    ✗ Modifier {modifier_name} not found in extracted code")
+                    logger.warning(f"    ✗ Modifier {modifier_name} not found in {dependency_source_name}")
 
         # Add referenced custom types (e.g., type TakerTraits is uint256;)
         # Also track which custom types are used to find their associated libraries
         used_custom_types = set()
-        for type_name, type_code in extracted_code.get('custom_types', {}).items():
+        for type_name, type_code in dependency_source.get('custom_types', {}).items():
             # Check if type is referenced in function body or structs
             if type_name in target_function['body'] or any(type_name in s for s in result['structs']):
                 result['custom_types'].append(type_code)
                 result['total_lines'] += type_code.count('\n') + 1
                 used_custom_types.add(type_name)
-                logger.info(f"    ✓ Including custom type: {type_name}")
+                logger.info(f"    ✓ Including custom type: {type_name} (from {dependency_source_name})")
 
         # Collect library names from library calls for using statement filtering
         referenced_library_names = set()
@@ -2878,7 +3296,7 @@ class SourceCodeExtractor:
 
         # Also find libraries associated with custom types via "using" statements
         # Pattern: "using LibraryName for CustomType;"
-        for using_stmt in extracted_code.get('using_statements', []):
+        for using_stmt in dependency_source.get('using_statements', []):
             for type_name in used_custom_types:
                 if f"for {type_name}" in using_stmt:
                     # Extract library name from "using LibName for TypeName;"
@@ -2889,7 +3307,7 @@ class SourceCodeExtractor:
                         logger.info(f"    ✓ Found library {lib_name} for custom type {type_name} via using statement")
 
         # Add using statements related to types or libraries referenced in the function
-        for using_stmt in extracted_code.get('using_statements', []):
+        for using_stmt in dependency_source.get('using_statements', []):
             # Include using statements if:
             # 1. They relate to custom types we included
             # 2. They relate to libraries that are called
@@ -2932,24 +3350,24 @@ class SourceCodeExtractor:
             found = False
             func_to_use = None
 
-            # PRIORITY 1: Check in internal_functions from main contract first
+            # PRIORITY 1: Check in internal_functions from main contract first (use dependency_source)
             if main_contract:
-                for func_data in extracted_code['internal_functions'].values():
+                for func_data in dependency_source.get('internal_functions', {}).values():
                     if func_data['name'] == internal_call and func_data.get('contract_name') == main_contract:
                         func_to_use = func_data
                         logger.info(f"    ✓ Including internal function from main contract: {internal_call}()")
                         found = True
                         break
 
-            # PRIORITY 2: If not in main contract, check in other internal_functions
+            # PRIORITY 2: If not in main contract, check in other internal_functions (use dependency_source)
             if not found:
                 # Debug: Log available internal functions
                 if not found:
                     available_internal = [f"{fd.get('name')}({fd.get('contract_name', '?')})"
-                                         for fd in extracted_code['internal_functions'].values()]
+                                         for fd in dependency_source.get('internal_functions', {}).values()]
                     logger.info(f"    🔍 Searching for '{internal_call}' in {len(available_internal)} internal functions: {available_internal[:10]}")
 
-                for func_data in extracted_code['internal_functions'].values():
+                for func_data in dependency_source.get('internal_functions', {}).values():
                     if func_data['name'] == internal_call:
                         func_to_use = func_data
                         contract_src = func_data.get('contract_name', 'unknown')
@@ -2957,23 +3375,25 @@ class SourceCodeExtractor:
                         found = True
                         break
 
-            # PRIORITY 3: Check in public/external functions from main contract
+            # PRIORITY 3: Check in public/external functions from main contract (use dependency_source)
+            # NOTE: Compare signature (not just name) to allow overloaded functions with same name but different params
             if not found and main_contract:
-                for func_data in extracted_code['functions'].values():
-                    if func_data['name'] == internal_call and func_data['name'] != function_name:
+                for func_data in dependency_source.get('functions', {}).values():
+                    if func_data['name'] == internal_call and func_data.get('signature') != target_function.get('signature'):
                         if func_data.get('contract_name') == main_contract:
                             func_to_use = func_data
-                            logger.info(f"    ✓ Including public function from main contract: {internal_call}()")
+                            logger.info(f"    ✓ Including public function from main contract: {internal_call}() [overloaded: {func_data.get('signature')}]")
                             found = True
                             break
 
-            # PRIORITY 4: If not found, check in all other public/external functions
+            # PRIORITY 4: If not found, check in all other public/external functions (use dependency_source)
+            # NOTE: Compare signature (not just name) to allow overloaded functions with same name but different params
             if not found:
-                for func_data in extracted_code['functions'].values():
-                    if func_data['name'] == internal_call and func_data['name'] != function_name:
+                for func_data in dependency_source.get('functions', {}).values():
+                    if func_data['name'] == internal_call and func_data.get('signature') != target_function.get('signature'):
                         func_to_use = func_data
                         contract_src = func_data.get('contract_name', 'unknown')
-                        logger.info(f"    ✓ Including public/external function from {contract_src}: {internal_call}()")
+                        logger.info(f"    ✓ Including public/external function from {contract_src}: {internal_call}() [overloaded: {func_data.get('signature')}]")
                         found = True
                         break
 
@@ -3036,8 +3456,8 @@ class SourceCodeExtractor:
 
                 found = False
 
-                # First try: Search in extracted internal_functions
-                for func_data in extracted_code['internal_functions'].values():
+                # First try: Search in dependency_source internal_functions
+                for func_data in dependency_source.get('internal_functions', {}).values():
                     if func_data['name'] == func_name:
                         # Found the library function
                         result['internal_functions'].append({
@@ -3058,15 +3478,17 @@ class SourceCodeExtractor:
                         break
 
                 # Second try: If not found in internal_functions, search directly in source code
-                if not found and extracted_code.get('source_code'):
+                # Use facet-specific source first, fall back to merged source
+                fallback_source = dependency_source.get('source_code', '') or extracted_code.get('source_code', '')
+                if not found and fallback_source:
                     # Use cached extraction to avoid repeated expensive parsing
                     if all_funcs_cache is None:
-                        logger.info(f"    ⚠ {func_name} not in internal_functions, parsing full source code (first time)...")
-                        source_parser = SolidityCodeParser(extracted_code['source_code'])
+                        logger.info(f"    ⚠ {func_name} not in internal_functions, parsing source code (first time)...")
+                        source_parser = SolidityCodeParser(fallback_source)
                         all_funcs_cache = source_parser.extract_functions()
-                        logger.debug(f"    ✓ Cached {len(all_funcs_cache)} functions from full source code")
+                        logger.debug(f"    ✓ Cached {len(all_funcs_cache)} functions from source code")
                     else:
-                        logger.debug(f"    ⚠ {func_name} not in internal_functions, using cached full source code...")
+                        logger.debug(f"    ⚠ {func_name} not in internal_functions, using cached source code...")
 
                     # Look for the function by name in cached results
                     for func_sig, func_data in all_funcs_cache.items():
@@ -3094,16 +3516,16 @@ class SourceCodeExtractor:
 
         # Add full library definitions for referenced libraries
         for lib_name in referenced_library_names:
-            if lib_name in extracted_code.get('libraries', {}):
-                library_code = extracted_code['libraries'][lib_name]
+            if lib_name in dependency_source.get('libraries', {}):
+                library_code = dependency_source['libraries'][lib_name]
                 result['libraries'].append(library_code)
                 result['total_lines'] += library_code.count('\n') + 1
-                logger.info(f"    ✓ Including full library: {lib_name}")
+                logger.info(f"    ✓ Including full library: {lib_name} (from {dependency_source_name})")
 
         # Debug: Show all available constants (will be extracted after parent function processing)
-        all_constants = list(extracted_code.get('constants', {}).keys())
+        all_constants = list(dependency_source.get('constants', {}).keys())
         if all_constants:
-            logger.info(f"  - Available constants in source: {', '.join(all_constants[:10])}{' ...' if len(all_constants) > 10 else ''}")
+            logger.info(f"  - Available constants in {dependency_source_name}: {', '.join(all_constants[:10])}{' ...' if len(all_constants) > 10 else ''}")
 
         # Handle super. calls - extract inheritance chain and find parent implementations
         # Do this AFTER collecting all internal functions so we catch super calls in nested functions
@@ -3193,10 +3615,10 @@ class SourceCodeExtractor:
                 found = False
                 func_to_use = None
 
-                # Search for the internal function (same logic as before)
+                # Search for the internal function (same logic as before, using dependency_source)
                 # PRIORITY 1: Check in internal_functions from main contract first
                 if main_contract:
-                    for func_data in extracted_code['internal_functions'].values():
+                    for func_data in dependency_source.get('internal_functions', {}).values():
                         if func_data['name'] == internal_call and func_data.get('contract_name') == main_contract:
                             func_to_use = func_data
                             logger.info(f"    ✓ Including internal function from main contract: {internal_call}()")
@@ -3205,7 +3627,7 @@ class SourceCodeExtractor:
 
                 # PRIORITY 2: If not in main contract, check in other internal_functions
                 if not found:
-                    for func_data in extracted_code['internal_functions'].values():
+                    for func_data in dependency_source.get('internal_functions', {}).values():
                         if func_data['name'] == internal_call:
                             func_to_use = func_data
                             contract_src = func_data.get('contract_name', 'unknown')
@@ -3214,22 +3636,24 @@ class SourceCodeExtractor:
                             break
 
                 # PRIORITY 3: Check in public/external functions from main contract
+                # NOTE: Compare signature (not just name) to allow overloaded functions with same name but different params
                 if not found and main_contract:
-                    for func_data in extracted_code['functions'].values():
-                        if func_data['name'] == internal_call and func_data['name'] != function_name:
+                    for func_data in dependency_source.get('functions', {}).values():
+                        if func_data['name'] == internal_call and func_data.get('signature') != target_function.get('signature'):
                             if func_data.get('contract_name') == main_contract:
                                 func_to_use = func_data
-                                logger.info(f"    ✓ Including public function from main contract: {internal_call}()")
+                                logger.info(f"    ✓ Including public function from main contract: {internal_call}() [overloaded: {func_data.get('signature')}]")
                                 found = True
                                 break
 
                 # PRIORITY 4: If not found, check in all other public/external functions
+                # NOTE: Compare signature (not just name) to allow overloaded functions with same name but different params
                 if not found:
-                    for func_data in extracted_code['functions'].values():
-                        if func_data['name'] == internal_call and func_data['name'] != function_name:
+                    for func_data in dependency_source.get('functions', {}).values():
+                        if func_data['name'] == internal_call and func_data.get('signature') != target_function.get('signature'):
                             func_to_use = func_data
                             contract_src = func_data.get('contract_name', 'unknown')
-                            logger.info(f"    ✓ Including public/external function from {contract_src}: {internal_call}()")
+                            logger.info(f"    ✓ Including public/external function from {contract_src}: {internal_call}() [overloaded: {func_data.get('signature')}]")
                             found = True
                             break
 
@@ -3292,8 +3716,8 @@ class SourceCodeExtractor:
 
                     found = False
 
-                    # First try: Search in extracted internal_functions
-                    for func_data in extracted_code['internal_functions'].values():
+                    # First try: Search in dependency_source internal_functions
+                    for func_data in dependency_source.get('internal_functions', {}).values():
                         if func_data['name'] == func_name:
                             # Found the library function
                             result['internal_functions'].append({
@@ -3314,7 +3738,7 @@ class SourceCodeExtractor:
                             break
 
                     if not found:
-                        logger.debug(f"    ⚠ Library function {lib_call} not found")
+                        logger.debug(f"    ⚠ Library function {lib_call} not found in {dependency_source_name}")
 
         # Re-scan all code for constants (now includes parent functions and their internal calls)
         if all_code_to_scan:
@@ -3326,7 +3750,7 @@ class SourceCodeExtractor:
             constants_to_check = []
 
             # First pass: find constants directly referenced in the code
-            for const_name, const_decl in extracted_code.get('constants', {}).items():
+            for const_name, const_decl in dependency_source.get('constants', {}).items():
                 if re.search(r'\b' + re.escape(const_name) + r'\b', combined_code):
                     result['constants'].append(const_decl)
                     result['total_lines'] += 1
@@ -3337,7 +3761,7 @@ class SourceCodeExtractor:
             processed_constants = set(constants_found)
             while constants_to_check:
                 const_decl = constants_to_check.pop(0)
-                for const_name, const_decl_check in extracted_code.get('constants', {}).items():
+                for const_name, const_decl_check in dependency_source.get('constants', {}).items():
                     if const_name not in processed_constants:
                         if re.search(r'\b' + re.escape(const_name) + r'\b', const_decl):
                             result['constants'].append(const_decl_check)

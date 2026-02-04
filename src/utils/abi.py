@@ -6,7 +6,7 @@ This module provides ABI parsing and function selector utilities.
 
 import json
 import requests
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 from eth_utils import keccak
 
 
@@ -304,7 +304,7 @@ def fetch_contract_abi(
     contract_address: str,
     chain_id: int,
     etherscan_api_key: str
-) -> Optional[List[Dict]]:
+) -> Tuple[Optional[List[Dict]], Dict, bool]:
     """
     Fetch contract ABI from Etherscan with proxy detection.
 
@@ -319,7 +319,10 @@ def fetch_contract_abi(
         etherscan_api_key: Etherscan API key
 
     Returns:
-        Contract ABI as a list of dictionaries, or None if fetch fails
+        Tuple of:
+        - abi: Contract ABI as a list of dictionaries, or None if fetch fails
+        - selector_sources: Dict mapping selector -> list of {facet_address, chain_id, signature}
+        - is_diamond: True if Diamond proxy detected
     """
     import logging
     from .abi_merger import ABIMerger
@@ -355,7 +358,8 @@ def fetch_contract_abi(
 
                 if data['status'] == '1':
                     facet_abi = json.loads(data['result'])
-                    stats = merger.add_abi(facet_abi, i)
+                    # Pass facet_address to track selector -> facet mapping
+                    stats = merger.add_abi(facet_abi, chain_id, source_address=facet_address)
                     logger.info(f"    ✓ Added {stats['new_functions']} functions, {stats['new_events']} events "
                               f"({stats['duplicate_functions']} duplicates skipped)")
                     successful_fetches += 1
@@ -369,9 +373,10 @@ def fetch_contract_abi(
 
         if successful_fetches == 0:
             logger.error(f"Failed to fetch ABI from any facet")
-            return None
+            return None, {}, False
 
         merged_abi = merger.get_merged_abi()
+        selector_sources = merger.get_selector_sources()
         stats = merger.get_statistics()
 
         logger.info("=" * 60)
@@ -381,9 +386,11 @@ def fetch_contract_abi(
         logger.info(f"  Failed fetches: {failed_fetches}")
         logger.info(f"  Total unique functions: {stats['total_functions']}")
         logger.info(f"  Total unique events: {stats['total_events']}")
+        logger.info(f"  Selector→Facet mappings: {len(selector_sources)}")
         logger.info("=" * 60)
 
-        return merged_abi
+        # Return tuple: (abi, selector_sources, is_diamond)
+        return merged_abi, selector_sources, True
 
     # Not a Diamond proxy - check for simple proxy
     impl_address = detect_proxy_implementation(contract_address, chain_id, etherscan_api_key)
@@ -410,10 +417,11 @@ def fetch_contract_abi(
         if data['status'] == '1':
             abi = json.loads(data['result'])
             logger.info(f"Fetched ABI with {len(abi)} entries from {address_to_fetch}")
-            return abi
+            # Return tuple: (abi, selector_sources, is_diamond)
+            return abi, {}, False
         else:
             logger.warning(f"Failed to fetch ABI: {data.get('message', 'Unknown error')}")
-            return None
+            return None, {}, False
     except Exception as e:
         logger.error(f"Exception fetching ABI: {e}")
-        return None
+        return None, {}, False

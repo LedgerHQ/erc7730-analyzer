@@ -18,6 +18,14 @@ class ABIMerger:
         self.function_signatures = {}  # signature -> function ABI
         self.event_signatures = {}  # signature -> event ABI
         self.other_items = []  # constructors, fallback, receive
+        # Track where each selector came from: selector -> LIST of {facet_address, chain_id, signature}
+        # Multiple sources allow fallback if one fails during source extraction
+        self.selector_sources = {}
+    
+    def _compute_selector(self, signature: str) -> str:
+        """Compute 4-byte function selector from signature."""
+        from eth_utils import keccak
+        return '0x' + keccak(text=signature).hex()[:8]
 
     def _get_function_signature(self, func: Dict) -> Optional[str]:
         """
@@ -88,9 +96,14 @@ class ABIMerger:
 
         return param_type
 
-    def add_abi(self, abi: List[Dict], chain_id: int) -> Dict[str, int]:
+    def add_abi(self, abi: List[Dict], chain_id: int, source_address: str = None) -> Dict[str, int]:
         """
         Add an ABI to the merger.
+
+        Args:
+            abi: ABI entries to add
+            chain_id: Chain ID where this ABI came from
+            source_address: Address where this ABI came from (for Diamond facet tracking)
 
         Returns dict with counts of new items added:
         - new_functions: Number of new functions
@@ -111,9 +124,45 @@ class ABIMerger:
                         self.function_signatures[signature] = item
                         new_functions += 1
                         logger.debug(f"Added new function from chain {chain_id}: {signature}")
+                        
+                        # Track selector -> source mapping for Diamond proxy support
+                        if source_address:
+                            try:
+                                selector = self._compute_selector(signature)
+                                source_info = {
+                                    'facet_address': source_address,
+                                    'chain_id': chain_id,
+                                    'signature': signature
+                                }
+                                if selector not in self.selector_sources:
+                                    self.selector_sources[selector] = []
+                                # Avoid duplicate entries for same address+chain
+                                existing = self.selector_sources[selector]
+                                if not any(s['facet_address'] == source_address and s['chain_id'] == chain_id for s in existing):
+                                    self.selector_sources[selector].append(source_info)
+                                    logger.debug(f"Mapped selector {selector} -> facet {source_address} (chain {chain_id})")
+                            except Exception as e:
+                                logger.warning(f"Could not compute selector for {signature}: {e}")
                     else:
                         duplicate_functions += 1
                         logger.debug(f"Skipped duplicate function: {signature}")
+                        
+                        # Still track selector source even for duplicates (for fallback)
+                        if source_address:
+                            try:
+                                selector = self._compute_selector(signature)
+                                source_info = {
+                                    'facet_address': source_address,
+                                    'chain_id': chain_id,
+                                    'signature': signature
+                                }
+                                if selector not in self.selector_sources:
+                                    self.selector_sources[selector] = []
+                                existing = self.selector_sources[selector]
+                                if not any(s['facet_address'] == source_address and s['chain_id'] == chain_id for s in existing):
+                                    self.selector_sources[selector].append(source_info)
+                            except Exception:
+                                pass
 
             elif item_type == 'event':
                 signature = self._get_event_signature(item)
@@ -133,6 +182,20 @@ class ABIMerger:
             'new_events': new_events,
             'duplicate_functions': duplicate_functions
         }
+    
+    def get_selector_sources(self) -> Dict[str, List[Dict]]:
+        """
+        Get mapping of selector -> source info list.
+        
+        Returns:
+            Dict mapping selector (e.g., '0x1234abcd') to list of:
+            {
+                'facet_address': '0x...',
+                'chain_id': 1,
+                'signature': 'functionName(type1,type2)'
+            }
+        """
+        return self.selector_sources
 
     def get_merged_abi(self) -> List[Dict]:
         """
@@ -173,27 +236,29 @@ class ABIMerger:
 
 def merge_abis_from_deployments(
     deployments: List[Dict],
-    fetch_abi_func: Callable[[str, int, str], Optional[List[Dict]]],
+    fetch_abi_func: Callable[[str, int, str], Tuple[Optional[List[Dict]], Dict, bool]],
     api_key: str
-) -> Tuple[Optional[List[Dict]], Dict]:
+) -> Tuple[Optional[List[Dict]], Dict, Dict]:
     """
     Fetch and merge ABIs from multiple chain deployments.
 
     Args:
         deployments: List of deployment dicts with chainId and address
-        fetch_abi_func: Function to fetch ABI (contract_address, chain_id, api_key) -> abi
+        fetch_abi_func: Function to fetch ABI (contract_address, chain_id, api_key) -> (abi, selector_sources, is_diamond)
         api_key: API key for blockchain explorers
 
     Returns:
-        (merged_abi, fetch_results)
+        (merged_abi, fetch_results, selector_sources)
 
         merged_abi: Combined ABI with all unique functions, or None if all fetches failed
         fetch_results: Dict with per-chain fetch results
+        selector_sources: Dict mapping selector -> list of {facet_address, chain_id, signature}
     """
     merger = ABIMerger()
     fetch_results = {}
     successful_fetches = 0
     failed_fetches = 0
+    is_any_diamond = False
 
     logger.info(f"Fetching ABIs from {len(deployments)} chain(s)...")
 
@@ -204,14 +269,42 @@ def merge_abis_from_deployments(
         logger.info(f"Fetching ABI from chain {chain_id} for address {address[:10]}...")
 
         try:
-            abi = fetch_abi_func(address, chain_id, api_key)
+            result = fetch_abi_func(address, chain_id, api_key)
+            
+            # Handle new tuple return: (abi, selector_sources, is_diamond)
+            dep_selector_sources = {}
+            is_diamond = False
+            if isinstance(result, tuple) and len(result) == 3:
+                abi, dep_selector_sources, is_diamond = result
+                # Merge selector sources from this deployment
+                for sel, info in dep_selector_sources.items():
+                    if sel not in merger.selector_sources:
+                        merger.selector_sources[sel] = info if isinstance(info, list) else [info]
+                    else:
+                        # Append new sources
+                        existing = merger.selector_sources[sel]
+                        if isinstance(info, list):
+                            for item in info:
+                                if item not in existing:
+                                    existing.append(item)
+                        elif info not in existing:
+                            existing.append(info)
+                if is_diamond:
+                    is_any_diamond = True
+                    logger.info(f"  Diamond proxy: got {len(dep_selector_sources)} selector→facet mappings")
+            else:
+                abi = result
+            
             if abi:
-                stats = merger.add_abi(abi, chain_id)
+                # For non-Diamond, track source address
+                source_addr = address if not is_diamond else None
+                stats = merger.add_abi(abi, chain_id, source_address=source_addr)
                 fetch_results[chain_id] = {
                     'success': True,
                     'functions_count': len([item for item in abi if item.get('type') == 'function']),
                     'new_functions': stats['new_functions'],
-                    'duplicate_functions': stats['duplicate_functions']
+                    'duplicate_functions': stats['duplicate_functions'],
+                    'is_diamond': is_diamond
                 }
                 successful_fetches += 1
                 logger.info(f"✓ Chain {chain_id}: {stats['new_functions']} new functions, "
@@ -235,9 +328,10 @@ def merge_abis_from_deployments(
     # Get merged ABI
     if successful_fetches == 0:
         logger.error("Failed to fetch ABI from any chain")
-        return None, fetch_results
+        return None, fetch_results, {}
 
     merged_abi = merger.get_merged_abi()
+    selector_sources = merger.get_selector_sources()
     stats = merger.get_statistics()
 
     logger.info("=" * 60)
@@ -247,6 +341,8 @@ def merge_abis_from_deployments(
     logger.info(f"  Failed fetches: {failed_fetches}")
     logger.info(f"  Total unique functions: {stats['total_functions']}")
     logger.info(f"  Total unique events: {stats['total_events']}")
+    if selector_sources:
+        logger.info(f"  Selector→Facet mappings: {len(selector_sources)}")
     logger.info("=" * 60)
 
-    return merged_abi, fetch_results
+    return merged_abi, fetch_results, selector_sources

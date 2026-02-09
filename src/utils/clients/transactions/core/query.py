@@ -6,6 +6,8 @@ from typing import Any, Dict, List, Optional
 
 import requests
 
+from ..constants import BLOCKSCOUT_URLS
+
 logger = logging.getLogger(__name__)
 
 
@@ -447,4 +449,3 @@ class TransactionFetcherCoreQueryMixin:
                 logger.info(f"Selector {sel}: found {len(tx_list)}/{selector_wanted[sel]} transactions")
 
         return selector_txs
-

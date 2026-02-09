@@ -17,8 +17,8 @@ from pathlib import Path
 from datetime import datetime
 from dotenv import load_dotenv
 
-from utils.analyzer import ERC7730Analyzer
-from utils.reporter import generate_summary_file, generate_criticals_report, save_json_results
+from utils.core import ERC7730Analyzer
+from utils.reporting.reporter import generate_summary_file, generate_criticals_report, save_json_results
 
 # Load environment variables
 load_dotenv(override=True)

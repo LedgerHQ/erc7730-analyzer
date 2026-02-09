@@ -154,6 +154,7 @@ jobs:
 
       - name: Post summary to PR
         if: always() && steps.changed-files.outputs.any_changed == 'true'
+        continue-on-error: true
         uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7.0.1
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
@@ -184,12 +185,40 @@ jobs:
               body += '**This PR is safe to merge** (based on automated analysis).\n';
             }
 
-            await github.rest.issues.createComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: context.issue.number,
-              body: body
-            });
+            // Only PR events have issue_number.
+            if (!context.issue || !context.issue.number) {
+              core.notice('No PR issue number found; skipping PR comment.');
+              return;
+            }
+
+            const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+            const maxAttempts = 3;
+            for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+              try {
+                await github.rest.issues.createComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: context.issue.number,
+                  body: body
+                });
+                core.info(`Posted PR summary comment on attempt ${attempt}.`);
+                break;
+              } catch (error) {
+                const status = error.status || 'unknown';
+                const msg = error.message || String(error);
+                if (attempt === maxAttempts) {
+                  core.warning(
+                    `Failed to post PR summary comment after ${maxAttempts} attempts (status=${status}): ${msg}`
+                  );
+                } else {
+                  const waitMs = attempt * 2000;
+                  core.warning(
+                    `PR comment attempt ${attempt}/${maxAttempts} failed (status=${status}): ${msg}. Retrying in ${waitMs}ms...`
+                  );
+                  await sleep(waitMs);
+                }
+              }
+            }
 
       - name: Block merge if critical issues found
         if: always()

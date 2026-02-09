@@ -12,14 +12,13 @@ should be loaded directly as they are always used in full.
 
 import json
 import logging
-from importlib import resources
 from typing import Dict, Tuple
 
-from .. import audit_rules
 from .rules import (
     get_critical_issues,
     get_display_issues,
     get_recommendations,
+    read_rule,
     get_spec_limitations,
     get_validation_rules,
 )
@@ -108,8 +107,7 @@ COMPLEXITY_FALLBACK_THRESHOLD = 8
 
 def _load_format_reference() -> Dict:
     """Load the ERC-7730 format reference JSON from package resources."""
-    format_ref_path = resources.files(audit_rules).joinpath("erc7730_format_reference.json")
-    return json.loads(format_ref_path.read_text(encoding="utf-8"))
+    return json.loads(read_rule("erc7730_format_reference.json"))
 
 
 def analyze_descriptor_features(erc7730_format: Dict) -> Dict:

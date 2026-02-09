@@ -1,3 +1,7 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "erc7730-analyzer"
 version = "0.1.0"
@@ -26,3 +30,14 @@ analyze_7730 = "main:main"
 # Specific to uv but previous declaration is enough for setuptools
 [tool.uv]
 package = true
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+include-package-data = true
+py-modules = ["main"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+"utils.audit_rules" = ["*.json", "README.md"]

@@ -3,6 +3,7 @@
 import json
 import logging
 from importlib import resources
+from pathlib import Path
 from typing import Dict
 
 from .. import audit_rules
@@ -12,7 +13,21 @@ logger = logging.getLogger(__name__)
 
 def read_rule(filename: str) -> str:
     """Read a rule file from packaged audit_rules resources."""
-    return resources.files(audit_rules).joinpath(filename).read_text(encoding="utf-8")
+    try:
+        return resources.files(audit_rules).joinpath(filename).read_text(encoding="utf-8")
+    except FileNotFoundError:
+        # Fallback for environments where package-data was not bundled correctly.
+        # This covers local runs and CI layout used by .github/workflows/analyze.yml.
+        candidates = [
+            Path(__file__).resolve().parents[1] / "audit_rules" / filename,
+            Path.cwd() / "src" / "utils" / "audit_rules" / filename,
+            Path.cwd() / "analyzer" / "src" / "utils" / "audit_rules" / filename,
+        ]
+        for candidate in candidates:
+            if candidate.exists():
+                logger.warning(f"Using filesystem fallback for rule file: {candidate}")
+                return candidate.read_text(encoding="utf-8")
+        raise
 
 
 SYSTEM_INSTRUCTIONS = None

@@ -12,8 +12,17 @@ should be loaded directly as they are always used in full.
 
 import json
 import logging
-from pathlib import Path
+from importlib import resources
 from typing import Dict, Tuple
+
+from .. import audit_rules
+from .rules import (
+    get_critical_issues,
+    get_display_issues,
+    get_recommendations,
+    get_spec_limitations,
+    get_validation_rules,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -95,6 +104,12 @@ FEATURE_SECTIONS = {
 
 # Complexity threshold for fallback to full rules
 COMPLEXITY_FALLBACK_THRESHOLD = 8
+
+
+def _load_format_reference() -> Dict:
+    """Load the ERC-7730 format reference JSON from package resources."""
+    format_ref_path = resources.files(audit_rules).joinpath("erc7730_format_reference.json")
+    return json.loads(format_ref_path.read_text(encoding="utf-8"))
 
 
 def analyze_descriptor_features(erc7730_format: Dict) -> Dict:
@@ -213,12 +228,8 @@ def load_optimized_format_spec(
         - format_spec_dict: Optimized or full format specification
         - metadata_dict: Info about what was included/excluded
     """
-    rules_path = Path(__file__).parent / "audit_rules"
-    format_ref_path = rules_path / 'erc7730_format_reference.json'
-
     # Load full format reference
-    with open(format_ref_path, 'r') as f:
-        full_format_ref = json.load(f)
+    full_format_ref = _load_format_reference()
 
     # Check for fallback conditions
     complexity = descriptor_features['complexity_score']
@@ -281,32 +292,36 @@ def load_optimized_format_spec(
         logger.info(f"  ⚠️  High complexity ({complexity}), including complete_examples")
 
     # Filter to selected sections
+    special_keys = {'title', 'description', 'version'}
+    schema_keys = {k for k in full_format_ref.keys() if k.startswith('$')}
+    available_sections = {
+        k for k in full_format_ref.keys()
+        if k not in schema_keys and k not in special_keys
+    }
+    included_section_names = available_sections & sections_to_include
+    excluded_section_names = available_sections - included_section_names
+
     filtered_format_ref = {
         k: v for k, v in full_format_ref.items()
-        if k.startswith('$') or k in ['title', 'description', 'version'] or k in sections_to_include
+        if k in schema_keys or k in special_keys or k in included_section_names
     }
 
     # Calculate metadata
-    total_sections = len([
-        k for k in full_format_ref.keys()
-        if not k.startswith('$') and k not in ['title', 'description', 'version']
-    ])
-    included_sections = len(sections_to_include)
-    excluded_sections = total_sections - included_sections
+    total_sections = len(available_sections)
+    included_sections = len(included_section_names)
+    excluded_sections = len(excluded_section_names)
+    reduction_percent = round((excluded_sections / total_sections) * 100, 1) if total_sections else 0.0
 
     metadata = {
         'mode': 'smart',
         'complexity': complexity,
-        'format_types': list(descriptor_features['format_types']),
+        'format_types': sorted(descriptor_features['format_types']),
         'total_format_sections': total_sections,
         'included_format_sections': included_sections,
         'excluded_format_sections': excluded_sections,
-        'reduction_percent': round((excluded_sections / total_sections) * 100, 1),
-        'sections_included': list(sections_to_include),
-        'sections_excluded': list(
-            set(full_format_ref.keys()) - set(filtered_format_ref.keys()) -
-            {'$schema', 'title', 'description', 'version'}
-        )
+        'reduction_percent': reduction_percent,
+        'sections_included': sorted(included_section_names),
+        'sections_excluded': sorted(excluded_section_names),
     }
 
     logger.info(
@@ -320,6 +335,28 @@ def load_optimized_format_spec(
         logger.info(f"  ❌ Excluded sections ({excluded_sections}): {sorted(metadata['sections_excluded'])}")
 
     return filtered_format_ref, metadata
+
+
+def load_relevant_rules(
+    descriptor_features: Dict,
+    use_smart_referencing: bool = True,
+) -> Tuple[Dict, Dict]:
+    """
+    Backward-compatible wrapper returning optimized format rules + static rule sets.
+    """
+    format_spec, metadata = load_optimized_format_spec(
+        descriptor_features,
+        use_smart_referencing=use_smart_referencing,
+    )
+    rules_dict = {
+        "erc7730_format_reference": format_spec,
+        "validation_rules": get_validation_rules(),
+        "critical_issues": get_critical_issues(),
+        "recommendations": get_recommendations(),
+        "spec_limitations": get_spec_limitations(),
+        "display_issues": get_display_issues(),
+    }
+    return rules_dict, metadata
 
 
 def format_optimization_note(metadata: Dict) -> str:
@@ -358,3 +395,8 @@ Based on descriptor features:
 Only format specification sections relevant to detected format types are included.
 Validation rules and critical criteria are always loaded in full separately.
 """
+
+
+def format_smart_rules_note(metadata: Dict) -> str:
+    """Backward-compatible alias for optimization note formatting."""
+    return format_optimization_note(metadata)

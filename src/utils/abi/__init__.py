@@ -325,7 +325,7 @@ def fetch_contract_abi(
         - is_diamond: True if Diamond proxy detected
     """
     import logging
-    from .abi_merger import ABIMerger
+    from .merger import ABIMerger
     logger = logging.getLogger(__name__)
 
     # First, check if this is a Diamond proxy

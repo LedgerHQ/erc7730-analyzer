@@ -24,6 +24,11 @@ classifiers = [
     "Programming Language :: Python :: 3",
 ]
 
+[dependency-groups]
+dev = [
+    "ruff>=0.9.0",
+]
+
 [project.scripts]
 analyze_7730 = "main:main"
 
@@ -41,3 +46,36 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 "utils.audit_rules" = ["*.json", "README.md"]
+
+# ---------- Ruff ----------
+
+[tool.ruff]
+target-version = "py312"
+line-length = 120
+src = ["src"]
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "F",    # pyflakes
+    "I",    # isort (import sorting)
+    "N",    # pep8-naming
+    "UP",   # pyupgrade
+    "B",    # flake8-bugbear
+    "SIM",  # flake8-simplify
+    "TCH",  # flake8-type-checking
+    "RUF",  # ruff-specific rules
+]
+ignore = [
+    "E501",   # line too long (handled by formatter)
+    "B008",   # do not perform function call in argument defaults
+    "SIM108", # use ternary operator (can reduce readability)
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["utils"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"

@@ -1,0 +1,84 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: Lint & Format
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@803947b9bd8e9f986429fa0c5a41c367cd732b41 # v7.2.1
+        with:
+          version: "0.6.14"
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Install dependencies
+        run: uv sync --dev
+
+      - name: Ruff lint
+        run: uv run ruff check src/
+
+      - name: Ruff format check
+        run: uv run ruff format --check src/
+
+  commitlint:
+    name: Commit Messages
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+
+      - name: Validate commit messages
+        run: |
+          echo "Checking commit messages for semantic format..."
+          echo ""
+
+          # Allowed emoji prefixes
+          PATTERN='^(🎉 init|✨ feat|🐛 fix|📝 docs|💄 style|♻️ refactor|✅ test|👷 ci|⬆️ deps|🐳 docker|🔧 chore|🤖 chore|🔥 chore|🔀 merge):'
+
+          FAILED=0
+          while IFS= read -r msg; do
+            if ! echo "$msg" | grep -qP "$PATTERN"; then
+              echo "❌ Invalid: $msg"
+              FAILED=1
+            else
+              echo "✅ Valid:   $msg"
+            fi
+          done < <(git log --format='%s' origin/${{ github.base_ref }}..${{ github.event.pull_request.head.sha }})
+
+          echo ""
+          if [ "$FAILED" -eq 1 ]; then
+            echo "::error::Commit messages must follow semantic format: <emoji> <type>: <description>"
+            echo ""
+            echo "Allowed formats:"
+            echo "  ✨ feat: add new feature"
+            echo "  🐛 fix: fix a bug"
+            echo "  📝 docs: update documentation"
+            echo "  💄 style: formatting changes"
+            echo "  ♻️ refactor: code restructuring"
+            echo "  ✅ test: add or update tests"
+            echo "  👷 ci: CI/CD changes"
+            echo "  ⬆️ deps: dependency updates"
+            echo "  🐳 docker: Docker changes"
+            echo "  🔧 chore: maintenance tasks"
+            echo "  🔀 merge: merge commits"
+            exit 1
+          fi
+
+          echo "All commit messages follow semantic format ✅"

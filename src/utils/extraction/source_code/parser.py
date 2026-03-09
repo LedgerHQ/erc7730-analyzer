@@ -1,9 +1,10 @@
 """Solidity source parser used by extraction and dependency resolution flows."""
 
 import re
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from .shared import logger
+
 
 class SolidityCodeParser:
     """Parser for extracting functions, structs, and internal functions from Solidity code.
@@ -25,12 +26,12 @@ class SolidityCodeParser:
     def _remove_comments(text: str) -> str:
         """Remove comments from Solidity code."""
         # Remove block comments
-        text = re.sub(r'/\*.*?\*/', '', text, flags=re.DOTALL)
+        text = re.sub(r"/\*.*?\*/", "", text, flags=re.DOTALL)
         # Remove line comments
-        text = re.sub(r'//.*', '', text)
+        text = re.sub(r"//.*", "", text)
         return text
 
-    def extract_interfaces(self) -> List[str]:
+    def extract_interfaces(self) -> list[str]:
         """
         Extract all interface names from the code.
 
@@ -42,7 +43,7 @@ class SolidityCodeParser:
         interfaces = []
 
         # Pattern to match interface definitions
-        interface_pattern = r'interface\s+(\w+)\s*\{'
+        interface_pattern = r"interface\s+(\w+)\s*\{"
 
         for match in re.finditer(interface_pattern, self.cleaned_code):
             interface_name = match.group(1)
@@ -50,7 +51,7 @@ class SolidityCodeParser:
             logger.debug(f"Found interface: {interface_name}")
 
         # Also match abstract contracts and regular contracts (they can be used as types too)
-        contract_pattern = r'(?:abstract\s+)?contract\s+(\w+)\s*(?:is\s+[^{]+)?\s*\{'
+        contract_pattern = r"(?:abstract\s+)?contract\s+(\w+)\s*(?:is\s+[^{]+)?\s*\{"
 
         for match in re.finditer(contract_pattern, self.cleaned_code):
             contract_name = match.group(1)
@@ -59,7 +60,7 @@ class SolidityCodeParser:
 
         return interfaces
 
-    def extract_structs(self) -> Dict[str, str]:
+    def extract_structs(self) -> dict[str, str]:
         """
         Extract all struct definitions from the code.
 
@@ -69,12 +70,12 @@ class SolidityCodeParser:
         structs = {}
 
         # Pattern to match struct definitions
-        struct_pattern = r'struct\s+(\w+)\s*\{([^}]+)\}'
+        struct_pattern = r"struct\s+(\w+)\s*\{([^}]+)\}"
 
         for match in re.finditer(struct_pattern, self.cleaned_code):
             struct_name = match.group(1)
             struct_body = match.group(0)
-            
+
             # IMPORTANT: Detect duplicate struct definitions (common in flattened source)
             if struct_name in structs:
                 old_def = structs[struct_name][:100]
@@ -83,15 +84,15 @@ class SolidityCodeParser:
                     logger.warning(f"⚠️  DUPLICATE STRUCT '{struct_name}' - definitions differ!")
                     logger.warning(f"   OLD: {old_def}...")
                     logger.warning(f"   NEW: {new_def}...")
-                    logger.warning(f"   Using FIRST definition (ignoring later duplicate)")
+                    logger.warning("   Using FIRST definition (ignoring later duplicate)")
                     continue  # Skip the duplicate - keep first definition
-            
+
             structs[struct_name] = struct_body.strip()
             logger.debug(f"Found struct: {struct_name}")
 
         return structs
 
-    def extract_enums(self) -> Dict[str, str]:
+    def extract_enums(self) -> dict[str, str]:
         """
         Extract all enum definitions from the code.
 
@@ -100,7 +101,7 @@ class SolidityCodeParser:
         """
         enums = {}
 
-        enum_pattern = r'enum\s+(\w+)\s*\{([^}]+)\}'
+        enum_pattern = r"enum\s+(\w+)\s*\{([^}]+)\}"
 
         for match in re.finditer(enum_pattern, self.cleaned_code):
             enum_name = match.group(1)
@@ -110,7 +111,7 @@ class SolidityCodeParser:
 
         return enums
 
-    def extract_constants(self) -> Dict[str, str]:
+    def extract_constants(self) -> dict[str, str]:
         """
         Extract all constant declarations from the code.
 
@@ -124,7 +125,7 @@ class SolidityCodeParser:
         # Matches: type internal constant NAME = value;
         # Matches: type constant internal NAME = value;
         # Pattern: type [internal/private/public] constant [internal/private/public] NAME = value;
-        constant_pattern = r'(\w+)\s+(?:internal\s+|private\s+|public\s+)?constant\s+(?:internal\s+|private\s+|public\s+)?(\w+)\s*=\s*([^;]+);'
+        constant_pattern = r"(\w+)\s+(?:internal\s+|private\s+|public\s+)?constant\s+(?:internal\s+|private\s+|public\s+)?(\w+)\s*=\s*([^;]+);"
 
         for match in re.finditer(constant_pattern, self.cleaned_code):
             const_type = match.group(1)
@@ -132,22 +133,24 @@ class SolidityCodeParser:
             const_value = match.group(3).strip()
             const_decl = f"{const_type} constant {const_name} = {const_value};"
             constants[const_name] = const_decl
-            if 'NATIVE' in const_name or 'ASSET' in const_name:
+            if "NATIVE" in const_name or "ASSET" in const_name:
                 logger.info(f"Found constant: {const_name} = {const_value}")
             else:
                 logger.debug(f"Found constant: {const_name}")
 
         # Also check if the source code contains NATIVE_ASSETID but we didn't extract it
-        if 'NATIVE_ASSETID' in self.cleaned_code and 'NATIVE_ASSETID' not in constants:
+        if "NATIVE_ASSETID" in self.cleaned_code and "NATIVE_ASSETID" not in constants:
             logger.warning("⚠️  Source contains 'NATIVE_ASSETID' but it wasn't extracted by regex!")
             # Try to find it manually
-            lines_with_native = [line.strip() for line in self.cleaned_code.split('\n') if 'NATIVE_ASSETID' in line and '=' in line]
+            lines_with_native = [
+                line.strip() for line in self.cleaned_code.split("\n") if "NATIVE_ASSETID" in line and "=" in line
+            ]
             if lines_with_native:
                 logger.info(f"Lines containing NATIVE_ASSETID: {lines_with_native[:3]}")
 
         return constants
 
-    def extract_custom_types(self) -> Dict[str, str]:
+    def extract_custom_types(self) -> dict[str, str]:
         """
         Extract all custom type definitions from the code.
 
@@ -159,7 +162,7 @@ class SolidityCodeParser:
         custom_types = {}
 
         # Pattern to match: type TypeName is BaseType;
-        type_pattern = r'type\s+(\w+)\s+is\s+([^;]+);'
+        type_pattern = r"type\s+(\w+)\s+is\s+([^;]+);"
 
         for match in re.finditer(type_pattern, self.cleaned_code):
             type_name = match.group(1)
@@ -169,7 +172,7 @@ class SolidityCodeParser:
 
         return custom_types
 
-    def extract_using_statements(self) -> List[str]:
+    def extract_using_statements(self) -> list[str]:
         """
         Extract all 'using' statements from the code.
 
@@ -181,7 +184,7 @@ class SolidityCodeParser:
         using_statements = []
 
         # Pattern to match: using LibName for TypeName;
-        using_pattern = r'using\s+\w+\s+for\s+[^;]+;'
+        using_pattern = r"using\s+\w+\s+for\s+[^;]+;"
 
         for match in re.finditer(using_pattern, self.cleaned_code):
             using_stmt = match.group(0).strip()
@@ -190,7 +193,7 @@ class SolidityCodeParser:
 
         return using_statements
 
-    def extract_modifiers(self) -> Dict[str, str]:
+    def extract_modifiers(self) -> dict[str, str]:
         """
         Extract all modifier definitions from the code.
 
@@ -201,7 +204,7 @@ class SolidityCodeParser:
 
         # Pattern to match modifier definitions
         # modifier modifierName(params) { body }
-        modifier_pattern = r'modifier\s+(\w+)\s*\(([^)]*)\)\s*\{'
+        modifier_pattern = r"modifier\s+(\w+)\s*\(([^)]*)\)\s*\{"
 
         for match in re.finditer(modifier_pattern, self.source_code):
             modifier_name = match.group(1)
@@ -212,9 +215,9 @@ class SolidityCodeParser:
             open_braces = 0
             i = body_start
             while i < len(self.source_code):
-                if self.source_code[i] == '{':
+                if self.source_code[i] == "{":
                     open_braces += 1
-                elif self.source_code[i] == '}':
+                elif self.source_code[i] == "}":
                     open_braces -= 1
                     if open_braces == 0:
                         body_end = i + 1
@@ -229,7 +232,7 @@ class SolidityCodeParser:
 
         return modifiers
 
-    def extract_libraries(self) -> Dict[str, str]:
+    def extract_libraries(self) -> dict[str, str]:
         """
         Extract all library definitions from the code.
 
@@ -239,7 +242,7 @@ class SolidityCodeParser:
         libraries = {}
 
         # Pattern to match library declaration
-        library_pattern = r'library\s+(\w+)\s*\{'
+        library_pattern = r"library\s+(\w+)\s*\{"
 
         for match in re.finditer(library_pattern, self.source_code):
             library_name = match.group(1)
@@ -250,9 +253,9 @@ class SolidityCodeParser:
             open_braces = 0
             i = body_start
             while i < len(self.source_code):
-                if self.source_code[i] == '{':
+                if self.source_code[i] == "{":
                     open_braces += 1
-                elif self.source_code[i] == '}':
+                elif self.source_code[i] == "}":
                     open_braces -= 1
                     if open_braces == 0:
                         body_end = i + 1
@@ -267,7 +270,7 @@ class SolidityCodeParser:
 
         return libraries
 
-    def extract_functions(self) -> Dict[str, Dict[str, Any]]:
+    def extract_functions(self) -> dict[str, dict[str, Any]]:
         """
         Extract all function definitions (public, external, internal, private).
 
@@ -288,21 +291,21 @@ class SolidityCodeParser:
         # Pattern to match function declarations
         # First find: function name(
         # Then manually balance parentheses to handle nested params
-        function_start_pattern = r'function\s+(\w+)\s*\('
+        function_start_pattern = r"function\s+(\w+)\s*\("
 
         for match in re.finditer(function_start_pattern, self.source_code):
             function_name = match.group(1)
 
             # Find matching closing parenthesis by balancing
-            paren_start = match.end() - 1  # Position of opening (
+            match.end() - 1  # Position of opening (
             paren_count = 1
             i = match.end()
             params_end = None
 
             while i < len(self.source_code) and paren_count > 0:
-                if self.source_code[i] == '(':
+                if self.source_code[i] == "(":
                     paren_count += 1
-                elif self.source_code[i] == ')':
+                elif self.source_code[i] == ")":
                     paren_count -= 1
                     if paren_count == 0:
                         params_end = i
@@ -313,12 +316,12 @@ class SolidityCodeParser:
                 continue  # Malformed function, skip
 
             # Extract parameters
-            params_raw = self.source_code[match.end():params_end].strip()
+            params_raw = self.source_code[match.end() : params_end].strip()
 
             # Find visibility block and opening brace
             # Look for { after the closing )
-            remainder = self.source_code[params_end + 1:]
-            brace_match = re.search(r'^([^{]*)\{', remainder)
+            remainder = self.source_code[params_end + 1 :]
+            brace_match = re.search(r"^([^{]*)\{", remainder)
 
             if not brace_match:
                 continue  # No opening brace found, skip
@@ -329,17 +332,17 @@ class SolidityCodeParser:
             params_clean = self._clean_comments_from_params(params_raw)
 
             # Determine visibility
-            visibility = 'internal'  # default
-            if 'public' in visibility_block:
-                visibility = 'public'
-            elif 'external' in visibility_block:
-                visibility = 'external'
-            elif 'private' in visibility_block:
-                visibility = 'private'
+            visibility = "internal"  # default
+            if "public" in visibility_block:
+                visibility = "public"
+            elif "external" in visibility_block:
+                visibility = "external"
+            elif "private" in visibility_block:
+                visibility = "private"
 
             # Check if function is virtual or override
-            is_virtual = 'virtual' in visibility_block
-            is_override = 'override' in visibility_block
+            is_virtual = "virtual" in visibility_block
+            is_override = "override" in visibility_block
 
             # Extract full function body
             start_pos = match.start()
@@ -353,9 +356,9 @@ class SolidityCodeParser:
             open_braces = 0
             i = body_start
             while i < len(self.source_code):
-                if self.source_code[i] == '{':
+                if self.source_code[i] == "{":
                     open_braces += 1
-                elif self.source_code[i] == '}':
+                elif self.source_code[i] == "}":
                     open_braces -= 1
                     if open_braces == 0:
                         body_end = i + 1
@@ -364,11 +367,11 @@ class SolidityCodeParser:
             else:
                 body_end = len(self.source_code)
 
-            function_body = self.source_code[match.start():body_end]
+            function_body = self.source_code[match.start() : body_end]
 
             # Calculate line numbers
-            start_line = self.source_code[:start_pos].count('\n') + 1
-            end_line = self.source_code[:body_end].count('\n') + 1
+            start_line = self.source_code[:start_pos].count("\n") + 1
+            end_line = self.source_code[:body_end].count("\n") + 1
 
             # Extract docstring (NatSpec comment before function)
             docstring = self._extract_docstring_before_position(start_pos)
@@ -380,28 +383,30 @@ class SolidityCodeParser:
             key = f"{function_name}_{visibility}_{start_line}"
 
             functions[key] = {
-                'name': function_name,
-                'visibility': visibility,
-                'signature': f"{function_name}({params_clean})",
-                'body': function_body,
-                'docstring': docstring,
-                'modifiers': modifiers_used,  # NEW: List of modifier names
-                'is_virtual': is_virtual,
-                'is_override': is_override,
-                'contract_name': contract_name,
-                'start_line': start_line,
-                'end_line': end_line,
-                'line_count': end_line - start_line + 1
+                "name": function_name,
+                "visibility": visibility,
+                "signature": f"{function_name}({params_clean})",
+                "body": function_body,
+                "docstring": docstring,
+                "modifiers": modifiers_used,  # NEW: List of modifier names
+                "is_virtual": is_virtual,
+                "is_override": is_override,
+                "contract_name": contract_name,
+                "start_line": start_line,
+                "end_line": end_line,
+                "line_count": end_line - start_line + 1,
             }
 
             if modifiers_used:
-                logger.debug(f"Found function: {function_name} ({visibility}) with modifiers {modifiers_used} at lines {start_line}-{end_line}")
+                logger.debug(
+                    f"Found function: {function_name} ({visibility}) with modifiers {modifiers_used} at lines {start_line}-{end_line}"
+                )
             else:
                 logger.debug(f"Found function: {function_name} ({visibility}) at lines {start_line}-{end_line}")
 
         return functions
 
-    def _find_contract_for_position(self, position: int) -> Optional[str]:
+    def _find_contract_for_position(self, position: int) -> str | None:
         """
         Find which contract a given position in source code belongs to.
 
@@ -415,7 +420,7 @@ class SolidityCodeParser:
 
         # Find all contract declarations before this position
         # Pattern matches: contract Name, contract Name is Parent1, Parent2
-        contract_pattern = r'(?:abstract\s+)?contract\s+(\w+)(?:\s+is\s+[^{]+)?\s*\{'
+        contract_pattern = r"(?:abstract\s+)?contract\s+(\w+)(?:\s+is\s+[^{]+)?\s*\{"
 
         last_contract = None
         last_contract_pos = -1
@@ -426,45 +431,43 @@ class SolidityCodeParser:
             open_braces = 0
             i = match.end() - 1  # Start at the opening brace
             while i < len(self.source_code):
-                if self.source_code[i] == '{':
+                if self.source_code[i] == "{":
                     open_braces += 1
-                elif self.source_code[i] == '}':
+                elif self.source_code[i] == "}":
                     open_braces -= 1
                     if open_braces == 0:
                         contract_end = i
                         # Check if our position is within this contract
-                        if contract_start < position <= contract_end:
-                            # This is the innermost contract containing our position
-                            if contract_start > last_contract_pos:
-                                last_contract = match.group(1)
-                                last_contract_pos = contract_start
+                        if contract_start < position <= contract_end and contract_start > last_contract_pos:
+                            last_contract = match.group(1)
+                            last_contract_pos = contract_start
                         break
                 i += 1
 
         return last_contract
 
-    def _extract_docstring_before_position(self, position: int) -> Optional[str]:
+    def _extract_docstring_before_position(self, position: int) -> str | None:
         """Extract NatSpec comment immediately before a given position."""
         code_before = self.source_code[:position]
-        lines = code_before.split('\n')
+        lines = code_before.split("\n")
 
         docstring_lines = []
         inside_doc = False
 
         for line in reversed(lines):
             stripped = line.strip()
-            if stripped.endswith('*/'):
+            if stripped.endswith("*/"):
                 inside_doc = True
                 docstring_lines.insert(0, line)
             elif inside_doc:
                 docstring_lines.insert(0, line)
-                if stripped.startswith('/**') or stripped.startswith('///'):
+                if stripped.startswith("/**") or stripped.startswith("///"):
                     break
-            elif stripped != '':
+            elif stripped != "":
                 # Non-comment code before function
                 break
 
-        return '\n'.join(docstring_lines).strip() if docstring_lines else None
+        return "\n".join(docstring_lines).strip() if docstring_lines else None
 
     def _clean_comments_from_params(self, params: str) -> str:
         """
@@ -475,17 +478,17 @@ class SolidityCodeParser:
             Output: "uint256 amount, address receiver"
         """
         # Remove single-line comments (//...)
-        cleaned = re.sub(r'//[^\n]*', '', params)
+        cleaned = re.sub(r"//[^\n]*", "", params)
 
         # Remove multi-line comments (/* ... */)
-        cleaned = re.sub(r'/\*.*?\*/', '', cleaned, flags=re.DOTALL)
+        cleaned = re.sub(r"/\*.*?\*/", "", cleaned, flags=re.DOTALL)
 
         # Remove excessive whitespace and newlines
-        cleaned = ' '.join(cleaned.split())
+        cleaned = " ".join(cleaned.split())
 
         return cleaned
 
-    def find_internal_functions_used(self, function_body: str) -> List[str]:
+    def find_internal_functions_used(self, function_body: str) -> list[str]:
         """
         Find internal function calls within a function body.
 
@@ -498,18 +501,31 @@ class SolidityCodeParser:
         internal_calls = []
 
         # Pattern to match function calls: functionName(
-        call_pattern = r'\b([a-zA-Z_]\w*)\s*\('
+        call_pattern = r"\b([a-zA-Z_]\w*)\s*\("
 
         for match in re.finditer(call_pattern, function_body):
             func_name = match.group(1)
             # Filter out common keywords and built-in functions
-            if func_name not in ['if', 'for', 'while', 'require', 'assert', 'revert', 'return',
-                                  'keccak256', 'abi', 'address', 'uint', 'bytes', 'string']:
+            if func_name not in [
+                "if",
+                "for",
+                "while",
+                "require",
+                "assert",
+                "revert",
+                "return",
+                "keccak256",
+                "abi",
+                "address",
+                "uint",
+                "bytes",
+                "string",
+            ]:
                 internal_calls.append(func_name)
 
         return list(set(internal_calls))  # Remove duplicates
 
-    def find_library_calls(self, function_body: str) -> List[str]:
+    def find_library_calls(self, function_body: str) -> list[str]:
         """
         Find library function calls within a function body (e.g., LibAsset.isNativeAsset).
 
@@ -522,7 +538,7 @@ class SolidityCodeParser:
         library_calls = []
 
         # Pattern to match library calls: LibraryName.functionName(
-        library_call_pattern = r'\b([A-Z][a-zA-Z0-9_]*)\.([\w]+)\s*\('
+        library_call_pattern = r"\b([A-Z][a-zA-Z0-9_]*)\.([\w]+)\s*\("
 
         for match in re.finditer(library_call_pattern, function_body):
             lib_name = match.group(1)
@@ -531,7 +547,7 @@ class SolidityCodeParser:
 
         return list(set(library_calls))  # Remove duplicates
 
-    def find_modifiers_used(self, visibility_block: str) -> List[str]:
+    def find_modifiers_used(self, visibility_block: str) -> list[str]:
         """
         Find modifiers used in a function's visibility block.
 
@@ -547,11 +563,22 @@ class SolidityCodeParser:
         # Pattern to match modifier calls: modifierName(args) or just modifierName
         # This should appear after visibility and before returns/{
         # Common patterns: ensure(deadline), onlyOwner, nonReentrant
-        modifier_pattern = r'\b([a-z_][a-zA-Z0-9_]*)\s*(?:\([^)]*\))?'
+        modifier_pattern = r"\b([a-z_][a-zA-Z0-9_]*)\s*(?:\([^)]*\))?"
 
         # Keywords to exclude (not modifiers)
-        keywords = {'public', 'private', 'internal', 'external', 'pure', 'view',
-                   'payable', 'virtual', 'override', 'returns', 'return'}
+        keywords = {
+            "public",
+            "private",
+            "internal",
+            "external",
+            "pure",
+            "view",
+            "payable",
+            "virtual",
+            "override",
+            "returns",
+            "return",
+        }
 
         for match in re.finditer(modifier_pattern, visibility_block):
             modifier_name = match.group(1)
@@ -561,7 +588,7 @@ class SolidityCodeParser:
 
         return list(set(modifiers))  # Remove duplicates
 
-    def find_super_calls(self, function_body: str) -> List[str]:
+    def find_super_calls(self, function_body: str) -> list[str]:
         """
         Find super.functionName() calls within a function body.
 
@@ -574,7 +601,7 @@ class SolidityCodeParser:
         super_calls = []
 
         # Pattern to match super.functionName(
-        super_pattern = r'super\.(\w+)\s*\('
+        super_pattern = r"super\.(\w+)\s*\("
 
         for match in re.finditer(super_pattern, function_body):
             func_name = match.group(1)
@@ -583,7 +610,7 @@ class SolidityCodeParser:
 
         return list(set(super_calls))
 
-    def extract_inheritance_chain(self) -> Dict[str, List[str]]:
+    def extract_inheritance_chain(self) -> dict[str, list[str]]:
         """
         Extract inheritance relationships from all contracts in the source code.
 
@@ -595,7 +622,7 @@ class SolidityCodeParser:
 
         # Pattern to match contract inheritance: contract Name is Parent1, Parent2
         # Also handles abstract contract
-        contract_pattern = r'(?:abstract\s+)?contract\s+(\w+)\s+is\s+([^{]+)\s*\{'
+        contract_pattern = r"(?:abstract\s+)?contract\s+(\w+)\s+is\s+([^{]+)\s*\{"
 
         for match in re.finditer(contract_pattern, self.cleaned_code):
             contract_name = match.group(1)
@@ -604,10 +631,10 @@ class SolidityCodeParser:
             # Parse parent contracts (may include constructor calls)
             # e.g., "ERC4626(asset_), Ownable(owner)" -> ["ERC4626", "Ownable"]
             parents = []
-            for parent in parents_str.split(','):
+            for parent in parents_str.split(","):
                 parent = parent.strip()
                 # Extract just the contract name (before any parentheses)
-                parent_name = re.match(r'(\w+)', parent)
+                parent_name = re.match(r"(\w+)", parent)
                 if parent_name:
                     parents.append(parent_name.group(1))
 
@@ -616,7 +643,7 @@ class SolidityCodeParser:
 
         return inheritance
 
-    def find_function_in_parent(self, function_name: str, parent_name: str) -> Optional[Dict[str, Any]]:
+    def find_function_in_parent(self, function_name: str, parent_name: str) -> dict[str, Any] | None:
         """
         Find a function definition in a specific parent contract.
 
@@ -629,7 +656,7 @@ class SolidityCodeParser:
         """
         # Find the parent contract definition
         # Pattern: contract ParentName ... { ... }
-        parent_pattern = rf'(?:abstract\s+)?contract\s+{re.escape(parent_name)}\s+(?:is\s+[^{{]+)?\s*\{{'
+        parent_pattern = rf"(?:abstract\s+)?contract\s+{re.escape(parent_name)}\s+(?:is\s+[^{{]+)?\s*\{{"
 
         match = re.search(parent_pattern, self.source_code)
         if not match:
@@ -644,20 +671,20 @@ class SolidityCodeParser:
 
         i = start_pos
         while i < len(self.source_code):
-            if self.source_code[i] == '{':
+            if self.source_code[i] == "{":
                 open_braces += 1
-            elif self.source_code[i] == '}':
+            elif self.source_code[i] == "}":
                 open_braces -= 1
                 if open_braces == 0:
                     contract_body_end = i
                     break
             i += 1
 
-        contract_body = self.source_code[contract_body_start:contract_body_end + 1]
+        contract_body = self.source_code[contract_body_start : contract_body_end + 1]
 
         # Search for the function in this contract's body
         # Pattern: function functionName(
-        func_pattern = rf'function\s+{re.escape(function_name)}\s*\(([^)]*)\)\s+([^{{]+)\{{'
+        func_pattern = rf"function\s+{re.escape(function_name)}\s*\(([^)]*)\)\s+([^{{]+)\{{"
 
         func_match = re.search(func_pattern, contract_body)
         if not func_match:
@@ -672,9 +699,9 @@ class SolidityCodeParser:
         open_braces = 0
         i = body_start
         while i < len(self.source_code):
-            if self.source_code[i] == '{':
+            if self.source_code[i] == "{":
                 open_braces += 1
-            elif self.source_code[i] == '}':
+            elif self.source_code[i] == "}":
                 open_braces -= 1
                 if open_braces == 0:
                     body_end = i + 1
@@ -687,27 +714,27 @@ class SolidityCodeParser:
 
         # Determine visibility
         visibility_block = func_match.group(2).strip()
-        visibility = 'internal'
-        if 'public' in visibility_block:
-            visibility = 'public'
-        elif 'external' in visibility_block:
-            visibility = 'external'
-        elif 'private' in visibility_block:
-            visibility = 'private'
+        visibility = "internal"
+        if "public" in visibility_block:
+            visibility = "public"
+        elif "external" in visibility_block:
+            visibility = "external"
+        elif "private" in visibility_block:
+            visibility = "private"
 
         params_clean = self._clean_comments_from_params(func_match.group(1).strip())
-        start_line = self.source_code[:func_start].count('\n') + 1
-        end_line = self.source_code[:body_end].count('\n') + 1
+        start_line = self.source_code[:func_start].count("\n") + 1
+        end_line = self.source_code[:body_end].count("\n") + 1
 
         logger.info(f"  ✓ Found {function_name} in parent {parent_name}")
 
         return {
-            'name': function_name,
-            'visibility': visibility,
-            'signature': f"{function_name}({params_clean})",
-            'body': function_body,
-            'parent_contract': parent_name,
-            'start_line': start_line,
-            'end_line': end_line,
-            'line_count': end_line - start_line + 1
+            "name": function_name,
+            "visibility": visibility,
+            "signature": f"{function_name}({params_clean})",
+            "body": function_body,
+            "parent_contract": parent_name,
+            "start_line": start_line,
+            "end_line": end_line,
+            "line_count": end_line - start_line + 1,
         }

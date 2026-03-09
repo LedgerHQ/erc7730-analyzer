@@ -13,23 +13,30 @@ import argparse
 import logging
 import os
 import sys
-from pathlib import Path
 from datetime import datetime
+from pathlib import Path
+
 from dotenv import load_dotenv
 
 from utils.core import ERC7730Analyzer
-from utils.reporting.reporter import generate_summary_file, generate_criticals_report, save_json_results
+from utils.llm import BACKEND_DEFAULTS, VALID_BACKENDS
+from utils.reporting.reporter import generate_criticals_report, generate_summary_file, save_json_results
 
-# Load environment variables
 load_dotenv(override=True)
 
 logger = logging.getLogger(__name__)
 
 
+def _status(msg: str) -> None:
+    """Print a progress line to stderr."""
+    sys.stderr.write(msg + "\n")
+    sys.stderr.flush()
+
+
 def main():
     """Main entry point."""
     parser = argparse.ArgumentParser(
-        description='Analyze ERC-7730 clear signing files and fetch transaction data',
+        description="Analyze ERC-7730 clear signing files and fetch transaction data",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Environment Variables (can also be set in .env file):
@@ -38,65 +45,85 @@ Environment Variables (can also be set in .env file):
   RAW_TXS_FILE             Path to JSON file with raw transactions (optional)
   ETHERSCAN_API_KEY        Etherscan API key
   COREDAO_API_KEY          Core DAO API key (optional, for chain 1116)
-  OPENAI_API_KEY           OpenAI API key for AI-powered audits (optional)
+  OPENAI_API_KEY           OpenAI API key (for openai backend)
+  ANTHROPIC_API_KEY        Anthropic API key (for anthropic backend)
   LOOKBACK_DAYS            Number of days to look back (default: 20)
   MAX_CONCURRENT_API_CALLS Maximum concurrent API calls (default: 10)
   MAX_API_RETRIES          Maximum retry attempts per API call (default: 3)
 
+LLM Backends:
+  openai      OpenAI-compatible API (default model: gpt-4o)
+  anthropic   Anthropic API (default model: claude-sonnet-4-20250514)
+  cursor      Cursor agent CLI in ask mode (default model: opus-4.6, no API key needed)
+
 Priority: Command-line arguments > Environment variables > Defaults
-        """
+        """,
     )
     parser.add_argument(
-        '--erc7730_file',
+        "--erc7730_file",
         type=Path,
-        default=os.getenv('ERC7730_FILE'),
-        help='Path to ERC-7730 JSON file (env: ERC7730_FILE)'
+        default=os.getenv("ERC7730_FILE"),
+        help="Path to ERC-7730 JSON file (env: ERC7730_FILE)",
     )
     parser.add_argument(
-        '--abi',
+        "--abi",
         type=Path,
-        default=os.getenv('ABI_FILE'),
-        help='Path to contract ABI JSON file (env: ABI_FILE, optional)'
+        default=os.getenv("ABI_FILE"),
+        help="Path to contract ABI JSON file (env: ABI_FILE, optional)",
     )
     parser.add_argument(
-        '--raw-txs',
+        "--raw-txs",
         type=Path,
-        default=os.getenv('RAW_TXS_FILE'),
-        help='Path to JSON file with raw transactions (env: RAW_TXS_FILE, optional)'
+        default=os.getenv("RAW_TXS_FILE"),
+        help="Path to JSON file with raw transactions (env: RAW_TXS_FILE, optional)",
     )
     parser.add_argument(
-        '--api-key',
-        default=os.getenv('ETHERSCAN_API_KEY'),
-        help='Etherscan API key (env: ETHERSCAN_API_KEY)'
+        "--api-key", default=os.getenv("ETHERSCAN_API_KEY"), help="Etherscan API key (env: ETHERSCAN_API_KEY)"
     )
     parser.add_argument(
-        '--coredao-api-key',
-        default=os.getenv('COREDAO_API_KEY'),
-        help='Core DAO API key for chain 1116 (env: COREDAO_API_KEY, optional)'
+        "--coredao-api-key",
+        default=os.getenv("COREDAO_API_KEY"),
+        help="Core DAO API key for chain 1116 (env: COREDAO_API_KEY, optional)",
     )
     parser.add_argument(
-        '--lookback-days',
+        "--lookback-days",
         type=int,
-        default=int(os.getenv('LOOKBACK_DAYS') or '20'),
-        help='Number of days to look back for transaction history (env: LOOKBACK_DAYS, default: 20)'
+        default=int(os.getenv("LOOKBACK_DAYS") or "20"),
+        help="Number of days to look back for transaction history (env: LOOKBACK_DAYS, default: 20)",
     )
     parser.add_argument(
-        '--max-concurrent',
+        "--max-concurrent",
         type=int,
-        default=int(os.getenv('MAX_CONCURRENT_API_CALLS') or '8'),
-        help='Maximum number of concurrent API calls (env: MAX_CONCURRENT_API_CALLS, default: 8)'
+        default=int(os.getenv("MAX_CONCURRENT_API_CALLS") or "8"),
+        help="Maximum number of concurrent API calls (env: MAX_CONCURRENT_API_CALLS, default: 8)",
     )
     parser.add_argument(
-        '--max-retries',
+        "--max-retries",
         type=int,
-        default=int(os.getenv('MAX_API_RETRIES') or '3'),
-        help='Maximum retry attempts per API call (env: MAX_API_RETRIES, default: 3)'
+        default=int(os.getenv("MAX_API_RETRIES") or "3"),
+        help="Maximum retry attempts per API call (env: MAX_API_RETRIES, default: 3)",
     )
     parser.add_argument(
-        '--debug',
-        action='store_true',
-        default=False,
-        help='Enable debug mode to log to file (default: False)'
+        "--debug", action="store_true", default=False, help="Enable debug mode to log to file (default: False)"
+    )
+
+    # LLM backend options
+    backends_help = ", ".join(VALID_BACKENDS)
+    parser.add_argument(
+        "--backend", choices=VALID_BACKENDS, default="openai", help=f"LLM backend: {backends_help} (default: openai)"
+    )
+    parser.add_argument(
+        "--model",
+        default=None,
+        help="Model name (default depends on backend: "
+        + ", ".join(f"{b}={d['model']}" for b, d in BACKEND_DEFAULTS.items())
+        + ")",
+    )
+    parser.add_argument(
+        "--llm-api-key", default=None, help="API key for the LLM backend (overrides env var for the selected backend)"
+    )
+    parser.add_argument(
+        "--llm-api-url", default=None, help="Custom API base URL for the LLM backend (openai/anthropic only)"
     )
 
     args = parser.parse_args()
@@ -110,19 +137,13 @@ Priority: Command-line arguments > Environment variables > Defaults
         # Enable file logging when debug is True
         logging.basicConfig(
             level=logging.INFO,
-            format='%(asctime)s - %(levelname)s - %(message)s',
-            handlers=[
-                logging.FileHandler(output_dir / 'analyze_7730.log')
-            ]
+            format="%(asctime)s - %(levelname)s - %(message)s",
+            handlers=[logging.FileHandler(output_dir / "analyze_7730.log")],
         )
     else:
         # Disable logging output when debug is False
         logging.basicConfig(
-            level=logging.CRITICAL,
-            format='%(asctime)s - %(levelname)s - %(message)s',
-            handlers=[
-                logging.NullHandler()
-            ]
+            level=logging.CRITICAL, format="%(asctime)s - %(levelname)s - %(message)s", handlers=[logging.NullHandler()]
         )
 
     # Validate required arguments
@@ -138,7 +159,11 @@ Priority: Command-line arguments > Environment variables > Defaults
         coredao_api_key=args.coredao_api_key,
         lookback_days=args.lookback_days,
         max_concurrent_api_calls=args.max_concurrent,
-        max_api_retries=args.max_retries
+        max_api_retries=args.max_retries,
+        backend=args.backend,
+        model=args.model,
+        api_key=args.llm_api_key,
+        api_url=args.llm_api_url,
     )
 
     # Run analysis
@@ -149,104 +174,66 @@ Priority: Command-line arguments > Environment variables > Defaults
         logger.error("Analysis failed - no results returned")
         return 1
 
-    # Always create output directory and save results
     output_dir = Path("output")
     output_dir.mkdir(exist_ok=True)
 
-    logger.info(f"Saving results to {output_dir}")
-
-    # Generate timestamp for filenames
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
-    # Extract protocol name from descriptor (try multiple fields)
-    context = results.get('context', {})
-    protocol_name = None
+    context = results.get("context", {})
+    protocol_name = context.get("$id") or context.get("owner") or context.get("legalname")
+    if not protocol_name:
+        filename = Path(args.erc7730_file).stem
+        protocol_name = filename[9:] if filename.startswith("calldata-") else filename
 
-    # Try $id first
-    if context.get('$id'):
-        protocol_name = context['$id']
-    # Try owner
-    elif context.get('owner'):
-        protocol_name = context['owner']
-    # Try legalname
-    elif context.get('legalname'):
-        protocol_name = context['legalname']
-    # Fallback to filename (remove "calldata-" prefix if present)
-    else:
-        filename = Path(args.erc7730_file).stem  # Get filename without extension
-        if filename.startswith('calldata-'):
-            protocol_name = filename[9:]  # Remove "calldata-" prefix (9 chars)
-        else:
-            protocol_name = filename
+    context_id = protocol_name.replace(" ", "_") if protocol_name else "unknown"
 
-    context_id = protocol_name.replace(' ', '_') if protocol_name else 'unknown'
-
-    # Generate full report file
     summary_file = output_dir / f"FULL_REPORT_{context_id}_{timestamp}.md"
-    logger.info(f"Generating full report file at {summary_file}")
     generate_summary_file(results, summary_file)
 
-    # Generate critical issues mini report
     criticals_file = output_dir / f"CRITICALS_{context_id}_{timestamp}.md"
-    logger.info(f"Generating critical issues report at {criticals_file}")
     generate_criticals_report(results, criticals_file)
 
-    # Save JSON results
     json_output = output_dir / f"results_{context_id}_{timestamp}.json"
-    logger.info(f"Saving JSON results to {json_output}")
     save_json_results(results, json_output)
 
-    logger.info(f"\n{'='*60}")
-    logger.info(f"Analysis complete!")
-    logger.info(f"Detailed report: {summary_file}")
-    logger.info(f"Critical issues: {criticals_file}")
-    logger.info(f"JSON results: {json_output}")
-    logger.info(f"{'='*60}\n")
+    _status(f"Reports saved to {output_dir}/:")
+    _status(f"  Full report:      {summary_file.name}")
+    _status(f"  Critical issues:  {criticals_file.name}")
+    _status(f"  JSON results:     {json_output.name}")
 
-    # Check if there are any critical issues by reading the CRITICALS_*.md file
+    # Determine exit code from critical issues
     has_critical_issues = False
 
     if criticals_file.exists():
-        print(f"DEBUG: Checking CRITICALS report: {criticals_file}")
-        logger.info(f"Checking CRITICALS report: {criticals_file}")
         criticals_content = criticals_file.read_text()
 
-        # Check if the summary table contains any 🔴 symbols (indicating critical issues)
-        # The table format is: | function | selector | 🔴 Issue... | [View]... |
-        print(f"DEBUG: Searching for '| 🔴' in content (length: {len(criticals_content)} chars)")
-        if '| 🔴' in criticals_content:
+        if "| 🔴" in criticals_content:
             has_critical_issues = True
-            # Count how many functions have critical issues
-            critical_count = criticals_content.count('| 🔴')
-            print(f"DEBUG: Found {critical_count} critical issues!")
-            logger.warning(f"⚠️  Found {critical_count} function(s) with critical issues in summary table")
+            critical_count = criticals_content.count("| 🔴")
+            _status(f"\nCRITICAL ISSUES FOUND ({critical_count} function(s))")
 
-        # Also check for sections that are NOT "No critical issues found"
-        # Look for critical issue sections that contain actual issues
         if not has_critical_issues:
-            # Check if there are any sections with critical issues listed
             import re
-            critical_sections = re.findall(r'### 🔴 Critical Issues\n\n(.*?)(?=\n###|\n---|\Z)', criticals_content, re.DOTALL)
+
+            critical_sections = re.findall(
+                r"### 🔴 Critical Issues\n\n(.*?)(?=\n###|\n---|\Z)", criticals_content, re.DOTALL
+            )
             for section in critical_sections:
-                # If section has numbered lists or bullet points (actual issues), not just "No critical issues found"
-                if section.strip() and ('- ' in section or re.search(r'\d+\. ', section)) and 'No critical issues found' not in section.lower():
+                if (
+                    section.strip()
+                    and ("- " in section or re.search(r"\d+\. ", section))
+                    and "No critical issues found" not in section.lower()
+                ):
                     has_critical_issues = True
-                    logger.warning("⚠️  Found critical issues in detailed sections")
+                    _status("\nCRITICAL ISSUES FOUND (see report)")
                     break
 
-    # Return exit code based on critical issues
-    print(f"DEBUG: has_critical_issues = {has_critical_issues}")
     if has_critical_issues:
-        print("DEBUG: Returning exit code 1")
-        logger.error(f"\n❌ CRITICAL ISSUES FOUND")
-        logger.error("Analysis failed - PR merge should be blocked")
         return 1
     else:
-        print("DEBUG: Returning exit code 0")
-        logger.info("\n✅ NO CRITICAL ISSUES - All functions passed analysis")
-        logger.info("Analysis passed - PR merge is allowed")
+        _status("\nNo critical issues found.")
         return 0
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     sys.exit(main())

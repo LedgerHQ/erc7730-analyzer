@@ -2,8 +2,6 @@
 
 import logging
 
-from ...clients.transactions.constants import BLOCKSCOUT_URLS
-
 logger = logging.getLogger(__name__)
 
 RPC_URLS = {

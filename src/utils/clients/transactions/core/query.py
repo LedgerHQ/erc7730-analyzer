@@ -2,7 +2,7 @@
 
 import logging
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 import requests
 
@@ -13,13 +13,8 @@ logger = logging.getLogger(__name__)
 
 class TransactionFetcherCoreQueryMixin:
     def _fetch_transactions_blockscout_v2(
-        self,
-        contract_address: str,
-        selectors: List[str],
-        chain_id: int,
-        per_selector: int,
-        payable_selectors: set
-    ) -> Dict[str, List[Dict[str, Any]]]:
+        self, contract_address: str, selectors: list[str], chain_id: int, per_selector: int, payable_selectors: set
+    ) -> dict[str, list[dict[str, Any]]]:
         """
         Fetch transactions using Blockscout v2 API.
 
@@ -52,11 +47,7 @@ class TransactionFetcherCoreQueryMixin:
         selector_erc20_txs = {s: [] for s in payable_selectors}
 
         # Fetch transactions from Blockscout v2
-        blockscout_txs = self._fetch_blockscout_v2_transactions(
-            contract_address,
-            chain_id,
-            filter_type="to"
-        )
+        blockscout_txs = self._fetch_blockscout_v2_transactions(contract_address, chain_id, filter_type="to")
 
         if not blockscout_txs:
             logger.warning("No transactions found from Blockscout v2 API")
@@ -70,10 +61,10 @@ class TransactionFetcherCoreQueryMixin:
             etherscan_tx = self._convert_blockscout_v2_to_etherscan_format(tx)
 
             # Skip failed transactions
-            if etherscan_tx.get('isError') != '0':
+            if etherscan_tx.get("isError") != "0":
                 continue
 
-            inp = etherscan_tx.get('input', '')
+            inp = etherscan_tx.get("input", "")
             if len(inp) < 10:
                 continue
 
@@ -93,12 +84,14 @@ class TransactionFetcherCoreQueryMixin:
                         continue
 
                     # Determine if this is a native ETH or ERC20 transaction
-                    tx_value = int(etherscan_tx.get('value', '0'))
+                    tx_value = int(etherscan_tx.get("value", "0"))
                     is_native = tx_value > 0
 
                     if is_native:
                         selector_native_txs[tx_selector].append(etherscan_tx)
-                        logger.debug(f"Found native ETH tx for {tx_selector}: {etherscan_tx.get('hash')} (value: {tx_value})")
+                        logger.debug(
+                            f"Found native ETH tx for {tx_selector}: {etherscan_tx.get('hash')} (value: {tx_value})"
+                        )
                     else:
                         selector_erc20_txs[tx_selector].append(etherscan_tx)
                         logger.debug(f"Found ERC20 tx for {tx_selector}: {etherscan_tx.get('hash')}")
@@ -155,27 +148,28 @@ class TransactionFetcherCoreQueryMixin:
         logger.info(f"Scanned {total_txs_scanned} total transactions from Blockscout v2")
         for sel, tx_list in selector_txs.items():
             if sel in payable_selectors:
-                native_count = sum(1 for tx in tx_list if int(tx.get('value', '0')) > 0)
+                native_count = sum(1 for tx in tx_list if int(tx.get("value", "0")) > 0)
                 erc20_count = len(tx_list) - native_count
-                logger.info(f"Selector {sel} (payable): found {len(tx_list)}/{selector_wanted[sel]} transactions ({native_count} native ETH, {erc20_count} ERC20)")
+                logger.info(
+                    f"Selector {sel} (payable): found {len(tx_list)}/{selector_wanted[sel]} transactions ({native_count} native ETH, {erc20_count} ERC20)"
+                )
             else:
                 logger.info(f"Selector {sel}: found {len(tx_list)}/{selector_wanted[sel]} transactions")
 
         return selector_txs
 
-
     def _fetch_transactions_with_api(
         self,
         contract_address: str,
-        selectors: List[str],
+        selectors: list[str],
         chain_id: int,
         per_selector: int,
         window_size: int,
         page_size: int,
         max_retries: int,
         payable_selectors: set,
-        use_blockscout: bool = False
-    ) -> Dict[str, List[Dict[str, Any]]]:
+        use_blockscout: bool = False,
+    ) -> dict[str, list[dict[str, Any]]]:
         """
         Internal method to fetch transactions using either Etherscan or Blockscout API.
 
@@ -187,11 +181,7 @@ class TransactionFetcherCoreQueryMixin:
         # If using Blockscout v2, use the new API
         if use_blockscout and chain_id in BLOCKSCOUT_URLS:
             return self._fetch_transactions_blockscout_v2(
-                contract_address,
-                selectors,
-                chain_id,
-                per_selector,
-                payable_selectors
+                contract_address, selectors, chain_id, per_selector, payable_selectors
             )
 
         # Normalize selectors to lowercase for consistent dictionary keys
@@ -240,7 +230,7 @@ class TransactionFetcherCoreQueryMixin:
         max_pages = 10000 // page_size
         total_txs_scanned = 0
         consecutive_failures = 0  # Track consecutive API failures for early abort
-        MAX_CONSECUTIVE_FAILURES = 3  # Abort after 3 consecutive failures (reduced from 5 for faster bailout)
+        max_consecutive_failures = 3  # Abort after 3 consecutive failures (reduced from 5 for faster bailout)
 
         def all_done() -> bool:
             """Check if we have enough samples for all selectors"""
@@ -273,23 +263,25 @@ class TransactionFetcherCoreQueryMixin:
             while not all_done() and page <= max_pages:
                 # Double-check we won't exceed the limit
                 if page * page_size > 10000:
-                    logger.info(f"Reached page limit (page {page} × offset {page_size} = {page * page_size} > 10000), moving to next window")
+                    logger.info(
+                        f"Reached page limit (page {page} x offset {page_size} = {page * page_size} > 10000), moving to next window"
+                    )
                     break
 
                 params = {
-                    'module': 'account',
-                    'action': 'txlist',
-                    'address': contract_address,
-                    'startblock': block_low,
-                    'endblock': block_high,
-                    'sort': 'desc',
-                    'page': page,
-                    'offset': page_size,
+                    "module": "account",
+                    "action": "txlist",
+                    "address": contract_address,
+                    "startblock": block_low,
+                    "endblock": block_high,
+                    "sort": "desc",
+                    "page": page,
+                    "offset": page_size,
                 }
 
                 # Blockscout doesn't require API key
                 if not use_blockscout:
-                    params['apikey'] = self.etherscan_api_key
+                    params["apikey"] = self.etherscan_api_key
 
                 # Retry logic
                 txs = None
@@ -299,29 +291,33 @@ class TransactionFetcherCoreQueryMixin:
                         response.raise_for_status()
                         data = response.json()
 
-                        if data['status'] != '1':
-                            if 'No transactions found' in data.get('message', ''):
+                        if data["status"] != "1":
+                            if "No transactions found" in data.get("message", ""):
                                 txs = []
                                 consecutive_failures = 0  # Reset on successful response (even if no txs)
                                 break
-                            if 'Result window is too large' in data.get('message', ''):
+                            if "Result window is too large" in data.get("message", ""):
                                 logger.info(f"Hit page limit at page {page}, moving to next window")
                                 txs = []
                                 consecutive_failures = 0
                                 break
                             # NOTOK or other errors
                             consecutive_failures += 1
-                            logger.warning(f"API warning: {data.get('message', 'Unknown error')} (failure {consecutive_failures}/{MAX_CONSECUTIVE_FAILURES})")
+                            logger.warning(
+                                f"API warning: {data.get('message', 'Unknown error')} (failure {consecutive_failures}/{max_consecutive_failures})"
+                            )
 
                             # Early abort if too many consecutive failures
-                            if consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
-                                logger.warning(f"Aborting after {consecutive_failures} consecutive API failures - API likely not supported for chain {chain_id}")
+                            if consecutive_failures >= max_consecutive_failures:
+                                logger.warning(
+                                    f"Aborting after {consecutive_failures} consecutive API failures - API likely not supported for chain {chain_id}"
+                                )
                                 return selector_txs
 
                             txs = []
                             break
 
-                        txs = data['result']
+                        txs = data["result"]
                         consecutive_failures = 0  # Reset on success
                         break
                     except Exception as e:
@@ -330,8 +326,8 @@ class TransactionFetcherCoreQueryMixin:
                             logger.error(f"Failed to fetch transactions after {max_retries} attempts: {e}")
 
                             # Check if we should abort entirely
-                            if consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
-                                logger.warning(f"Aborting due to repeated failures")
+                            if consecutive_failures >= max_consecutive_failures:
+                                logger.warning("Aborting due to repeated failures")
                                 return selector_txs
 
                             logger.info(f"Scanned {total_txs_scanned} total transactions before error")
@@ -348,9 +344,9 @@ class TransactionFetcherCoreQueryMixin:
 
                 # Distribute matches to ALL selectors in one pass
                 for tx in txs:
-                    if tx.get('isError') != '0':
+                    if tx.get("isError") != "0":
                         continue
-                    inp = tx.get('input', '')
+                    inp = tx.get("input", "")
                     if len(inp) < 10:
                         continue
 
@@ -368,12 +364,14 @@ class TransactionFetcherCoreQueryMixin:
                                 continue
 
                             # Determine if this is a native ETH or ERC20 transaction
-                            tx_value = int(tx.get('value', '0'))
+                            tx_value = int(tx.get("value", "0"))
                             is_native = tx_value > 0
 
                             if is_native:
                                 selector_native_txs[tx_selector].append(tx)
-                                logger.debug(f"Found native ETH tx for {tx_selector}: {tx.get('hash')} (value: {tx_value})")
+                                logger.debug(
+                                    f"Found native ETH tx for {tx_selector}: {tx.get('hash')} (value: {tx_value})"
+                                )
                             else:
                                 selector_erc20_txs[tx_selector].append(tx)
                                 logger.debug(f"Found ERC20 tx for {tx_selector}: {tx.get('hash')}")
@@ -442,9 +440,11 @@ class TransactionFetcherCoreQueryMixin:
         logger.info(f"Scanned {total_txs_scanned} total transactions")
         for sel, tx_list in selector_txs.items():
             if sel in payable_selectors:
-                native_count = sum(1 for tx in tx_list if int(tx.get('value', '0')) > 0)
+                native_count = sum(1 for tx in tx_list if int(tx.get("value", "0")) > 0)
                 erc20_count = len(tx_list) - native_count
-                logger.info(f"Selector {sel} (payable): found {len(tx_list)}/{selector_wanted[sel]} transactions ({native_count} native ETH, {erc20_count} ERC20)")
+                logger.info(
+                    f"Selector {sel} (payable): found {len(tx_list)}/{selector_wanted[sel]} transactions ({native_count} native ETH, {erc20_count} ERC20)"
+                )
             else:
                 logger.info(f"Selector {sel}: found {len(tx_list)}/{selector_wanted[sel]} transactions")
 

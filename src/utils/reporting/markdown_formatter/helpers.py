@@ -5,6 +5,7 @@ from typing import Any
 
 from pydantic import BaseModel
 
+
 def _risk_emoji(level: str) -> str:
     """
     Convert risk level string to emoji.
@@ -15,11 +16,8 @@ def _risk_emoji(level: str) -> str:
     Returns:
         Emoji string
     """
-    return {
-        'high': '🔴',
-        'medium': '🟡',
-        'low': '🟢'
-    }.get(level.lower(), '⚪')
+    return {"high": "🔴", "medium": "🟡", "low": "🟢"}.get(level.lower(), "⚪")
+
 
 def _format_code_snippet(snippet: Any) -> str:
     """
@@ -78,6 +76,7 @@ def _format_code_snippet(snippet: Any) -> str:
 
     return f"\n```json\n{snippet_str}\n```\n"
 
+
 def _severity_emoji(severity: str) -> str:
     """
     Convert severity level to emoji.
@@ -88,12 +87,8 @@ def _severity_emoji(severity: str) -> str:
     Returns:
         Emoji string
     """
-    return {
-        'critical': '🔴',
-        'high': '🟠',
-        'medium': '🟡',
-        'low': '🟢'
-    }.get(severity.lower(), '⚪')
+    return {"critical": "🔴", "high": "🟠", "medium": "🟡", "low": "🟢"}.get(severity.lower(), "⚪")
+
 
 def _bool_emoji(value: bool) -> str:
     """
@@ -105,5 +100,4 @@ def _bool_emoji(value: bool) -> str:
     Returns:
         Emoji string
     """
-    return '✅ Yes' if value else '❌ No'
-
+    return "✅ Yes" if value else "❌ No"

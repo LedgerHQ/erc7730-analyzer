@@ -32,6 +32,6 @@ def truncate_byte_arrays(obj: Any, max_bytes_length: int = 100):
         if obj.startswith("0x") and len(obj) > 200:
             bytes_count = (len(obj) - 2) // 2
             preview_chars = min(100, len(obj) - 2)
-            return f"{obj[:preview_chars + 2]}... (truncated {bytes_count} bytes total)"
+            return f"{obj[: preview_chars + 2]}... (truncated {bytes_count} bytes total)"
         return obj
     return obj

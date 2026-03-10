@@ -1,7 +1,6 @@
 """Type and struct normalization helpers for signature matching."""
 
 import re
-from typing import Dict, Optional
 
 from ..shared import logger
 
@@ -10,9 +9,9 @@ class SourceCodeSignatureTypeMixin:
     def _struct_to_tuple(
         self,
         struct_def: str,
-        custom_type_mapping: Optional[Dict[str, str]] = None,
-        all_structs: Optional[Dict[str, str]] = None
-    ) -> Optional[str]:
+        custom_type_mapping: dict[str, str] | None = None,
+        all_structs: dict[str, str] | None = None,
+    ) -> str | None:
         """
         Convert a struct definition to its tuple representation, recursively resolving
         custom types and nested structs.
@@ -41,7 +40,7 @@ class SourceCodeSignatureTypeMixin:
 
         try:
             # Extract fields from struct body
-            match = re.search(r'\{([^}]+)\}', struct_def)
+            match = re.search(r"\{([^}]+)\}", struct_def)
             if not match:
                 return None
 
@@ -49,7 +48,7 @@ class SourceCodeSignatureTypeMixin:
 
             # Extract field types (first token before semicolon on each line)
             types = []
-            for line in body.split(';'):
+            for line in body.split(";"):
                 line = line.strip()
                 if not line:
                     continue
@@ -70,14 +69,16 @@ class SourceCodeSignatureTypeMixin:
                         if nested_tuple:
                             field_type = nested_tuple
                     # If not found and contains '.', try unqualified name (handles ANY qualified type)
-                    elif '.' in lookup_name:
-                        unqualified_name = lookup_name.split('.')[-1]
+                    elif "." in lookup_name:
+                        unqualified_name = lookup_name.split(".")[-1]
                         # Try custom types (enums, interfaces, UDVTs)
                         if unqualified_name in custom_type_mapping:
                             field_type = custom_type_mapping[unqualified_name]
                         # Try structs (recursive resolution)
                         elif unqualified_name in all_structs:
-                            nested_tuple = self._struct_to_tuple(all_structs[unqualified_name], custom_type_mapping, all_structs)
+                            nested_tuple = self._struct_to_tuple(
+                                all_structs[unqualified_name], custom_type_mapping, all_structs
+                            )
                             if nested_tuple:
                                 field_type = nested_tuple
                     # else: keep field_type as-is (primitive or unknown type)
@@ -94,7 +95,6 @@ class SourceCodeSignatureTypeMixin:
         except Exception as e:
             logger.debug(f"Failed to parse struct: {e}")
             return None
-
 
     def _normalize_type_aliases(self, param_type: str) -> str:
         """
@@ -114,24 +114,23 @@ class SourceCodeSignatureTypeMixin:
         """
         # Handle arrays: uint[] -> normalize uint -> uint256[]
         base_type = param_type
-        array_suffix = ''
-        if '[' in param_type:
-            bracket_pos = param_type.index('[')
+        array_suffix = ""
+        if "[" in param_type:
+            bracket_pos = param_type.index("[")
             base_type = param_type[:bracket_pos]
             array_suffix = param_type[bracket_pos:]
 
         # Normalize type aliases
-        if base_type == 'uint':
-            base_type = 'uint256'
-        elif base_type == 'int':
-            base_type = 'int256'
-        elif base_type == 'ufixed':
-            base_type = 'ufixed128x18'
-        elif base_type == 'fixed':
-            base_type = 'fixed128x18'
+        if base_type == "uint":
+            base_type = "uint256"
+        elif base_type == "int":
+            base_type = "int256"
+        elif base_type == "ufixed":
+            base_type = "ufixed128x18"
+        elif base_type == "fixed":
+            base_type = "fixed128x18"
 
         return base_type + array_suffix
-
 
     def _extract_struct_types_from_signature(self, signature: str) -> set:
         """
@@ -151,7 +150,7 @@ class SourceCodeSignatureTypeMixin:
         # Handle arrays: TypeName[], TypeName[5], etc.
 
         # First, extract the parameters section
-        param_match = re.search(r'\(([^)]*)\)', signature)
+        param_match = re.search(r"\(([^)]*)\)", signature)
         if not param_match:
             return struct_types
 
@@ -159,28 +158,54 @@ class SourceCodeSignatureTypeMixin:
 
         # Common Solidity primitive types to exclude
         primitive_types = {
-            'address', 'bool', 'string', 'bytes', 'uint', 'int',
-            'uint8', 'uint16', 'uint24', 'uint32', 'uint64', 'uint128', 'uint256',
-            'int8', 'int16', 'int24', 'int32', 'int64', 'int128', 'int256',
-            'bytes1', 'bytes2', 'bytes3', 'bytes4', 'bytes8', 'bytes16', 'bytes20', 'bytes32',
-            'calldata', 'memory', 'storage'  # Storage modifiers
+            "address",
+            "bool",
+            "string",
+            "bytes",
+            "uint",
+            "int",
+            "uint8",
+            "uint16",
+            "uint24",
+            "uint32",
+            "uint64",
+            "uint128",
+            "uint256",
+            "int8",
+            "int16",
+            "int24",
+            "int32",
+            "int64",
+            "int128",
+            "int256",
+            "bytes1",
+            "bytes2",
+            "bytes3",
+            "bytes4",
+            "bytes8",
+            "bytes16",
+            "bytes20",
+            "bytes32",
+            "calldata",
+            "memory",
+            "storage",  # Storage modifiers
         }
 
         # Split by comma and process each parameter
-        for param in params_str.split(','):
+        for param in params_str.split(","):
             param = param.strip()
             if not param:
                 continue
 
             # Extract the type (first token before array brackets, storage modifier, or variable name)
             # Pattern: TypeName[] memory _varName OR TypeName _varName
-            type_match = re.match(r'([A-Za-z_][A-Za-z0-9_\.]*)', param)
+            type_match = re.match(r"([A-Za-z_][A-Za-z0-9_\.]*)", param)
             if type_match:
                 type_name = type_match.group(1)
 
                 # Handle qualified names like IRewardManager.RewardClaimWithProof
-                if '.' in type_name:
-                    type_name = type_name.split('.')[-1]  # Take last part
+                if "." in type_name:
+                    type_name = type_name.split(".")[-1]  # Take last part
 
                 # Check if it's likely a struct (capitalized, not a primitive)
                 if type_name and type_name[0].isupper() and type_name.lower() not in primitive_types:

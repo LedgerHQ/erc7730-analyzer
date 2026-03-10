@@ -2,7 +2,7 @@
 
 import logging
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 import requests
 
@@ -17,14 +17,14 @@ class TransactionFetcherCoreAggregationMixin:
     def fetch_all_transactions_for_selectors(
         self,
         contract_address: str,
-        selectors: List[str],
+        selectors: list[str],
         chain_id: int = 1,
         per_selector: int = 5,
         window_size: int = 10000,
         page_size: int = 1000,
         max_retries: int = 3,
-        payable_selectors: set = None
-    ) -> Dict[str, List[Dict[str, Any]]]:
+        payable_selectors: set | None = None,
+    ) -> dict[str, list[dict[str, Any]]]:
         """
         Efficiently fetch transactions for MULTIPLE selectors at once.
         Fetches each Etherscan page ONCE and distributes matches to all selectors.
@@ -80,7 +80,7 @@ class TransactionFetcherCoreAggregationMixin:
                 page_size,
                 max_retries,
                 payable_selectors,
-                use_blockscout
+                use_blockscout,
             )
 
             # Check if we got any transactions
@@ -108,15 +108,14 @@ class TransactionFetcherCoreAggregationMixin:
         logger.warning(f"No transactions found for any selector on chain {chain_id}")
         return {s.lower(): [] for s in selectors}
 
-
     def integrate_manual_transactions(
         self,
-        fetched_txs: Dict[str, List[Dict[str, Any]]],
-        raw_txs_file: Optional[Path],
+        fetched_txs: dict[str, list[dict[str, Any]]],
+        raw_txs_file: Path | None,
         contract_address: str,
-        abi: List[Dict[str, Any]],
-        chain_id: int = 1
-    ) -> Dict[str, List[Dict[str, Any]]]:
+        abi: list[dict[str, Any]],
+        chain_id: int = 1,
+    ) -> dict[str, list[dict[str, Any]]]:
         """
         Integrate manually provided raw transactions with fetched transactions.
 
@@ -158,17 +157,17 @@ class TransactionFetcherCoreAggregationMixin:
 
         # Fetch transactions that are marked as hash_only
         for manual_tx in parsed_manual_txs:
-            if manual_tx.get('mode') == 'hash_only':
-                tx_hash = manual_tx['tx_hash']
+            if manual_tx.get("mode") == "hash_only":
+                tx_hash = manual_tx["tx_hash"]
                 logger.info(f"Fetching transaction data for {tx_hash} from Etherscan")
 
                 # Fetch transaction from Etherscan
                 try:
                     params = {
-                        'module': 'proxy',
-                        'action': 'eth_getTransactionByHash',
-                        'txhash': tx_hash,
-                        'apikey': self.etherscan_api_key
+                        "module": "proxy",
+                        "action": "eth_getTransactionByHash",
+                        "txhash": tx_hash,
+                        "apikey": self.etherscan_api_key,
                     }
 
                     base_url = self._get_api_base_url(chain_id, False)
@@ -177,28 +176,30 @@ class TransactionFetcherCoreAggregationMixin:
                     data = response.json()
 
                     # Etherscan proxy API returns result directly (not wrapped in status/result)
-                    tx_data = data.get('result')
+                    tx_data = data.get("result")
 
-                    if tx_data and isinstance(tx_data, dict) and tx_data.get('hash'):
-                        manual_tx['to'] = tx_data.get('to', '')
-                        manual_tx['input'] = tx_data.get('input', '')
-                        manual_tx['value'] = int(tx_data.get('value', '0x0'), 16)
-                        manual_tx['selector'] = tx_data.get('input', '')[:10] if tx_data.get('input') else None
-                        manual_tx['from'] = tx_data.get('from', '')
-                        manual_tx['mode'] = 'fetched'
+                    if tx_data and isinstance(tx_data, dict) and tx_data.get("hash"):
+                        manual_tx["to"] = tx_data.get("to", "")
+                        manual_tx["input"] = tx_data.get("input", "")
+                        manual_tx["value"] = int(tx_data.get("value", "0x0"), 16)
+                        manual_tx["selector"] = tx_data.get("input", "")[:10] if tx_data.get("input") else None
+                        manual_tx["from"] = tx_data.get("from", "")
+                        manual_tx["mode"] = "fetched"
                         logger.info(f"✓ Fetched transaction: selector={manual_tx['selector']}, to={manual_tx['to']}")
                     else:
-                        error_msg = data.get('message') or data.get('error') or 'Transaction not found or invalid response'
+                        error_msg = (
+                            data.get("message") or data.get("error") or "Transaction not found or invalid response"
+                        )
                         logger.warning(f"✗ Failed to fetch transaction {tx_hash}: {error_msg}")
                         logger.info(f"Response keys: {list(data.keys() if isinstance(data, dict) else [])}")
                         logger.info(f"Response data: {str(data)[:200]}")
-                        manual_tx['mode'] = 'fetch_failed'
+                        manual_tx["mode"] = "fetch_failed"
                 except Exception as e:
                     logger.error(f"✗ Error fetching transaction {tx_hash}: {e}")
-                    manual_tx['mode'] = 'fetch_failed'
+                    manual_tx["mode"] = "fetch_failed"
 
         # Filter out failed fetches
-        parsed_manual_txs = [tx for tx in parsed_manual_txs if tx.get('mode') != 'fetch_failed']
+        parsed_manual_txs = [tx for tx in parsed_manual_txs if tx.get("mode") != "fetch_failed"]
 
         # Group by selector
         manual_by_selector = group_transactions_by_selector(parsed_manual_txs)
@@ -215,10 +216,7 @@ class TransactionFetcherCoreAggregationMixin:
             selector_lower = selector.lower()
 
             # Filter manual transactions for this contract only
-            contract_manual_txs = [
-                tx for tx in manual_txs
-                if tx.get('to', '').lower() == contract_address.lower()
-            ]
+            contract_manual_txs = [tx for tx in manual_txs if tx.get("to", "").lower() == contract_address.lower()]
 
             if not contract_manual_txs:
                 logger.debug(f"No manual transactions for contract {contract_address} with selector {selector}")
@@ -230,24 +228,24 @@ class TransactionFetcherCoreAggregationMixin:
             converted_txs = []
             for idx, manual_tx in enumerate(contract_manual_txs, 1):
                 # Use a friendly identifier for manual transactions
-                tx_hash = manual_tx.get('tx_hash', '').strip()
-                tx_id = tx_hash if tx_hash and tx_hash.startswith('0x') else f"manual_tx_{idx}"
+                tx_hash = manual_tx.get("tx_hash", "").strip()
+                tx_id = tx_hash if tx_hash and tx_hash.startswith("0x") else f"manual_tx_{idx}"
 
                 logger.info(f"Processing manual transaction {idx}/{len(contract_manual_txs)} for selector {selector}")
-                if manual_tx.get('description'):
+                if manual_tx.get("description"):
                     logger.info(f"  Description: {manual_tx['description']}")
 
                 # Create transaction dict in Etherscan format
                 tx_dict = {
-                    'hash': tx_id,
-                    'from': '0x0000000000000000000000000000000000000000',  # Unknown sender
-                    'to': manual_tx['to'],
-                    'value': str(manual_tx['value']),
-                    'input': manual_tx['input'],
-                    'blockNumber': '0',
-                    'timeStamp': '0',
-                    'source': 'manual',
-                    'description': manual_tx.get('description', '')
+                    "hash": tx_id,
+                    "from": "0x0000000000000000000000000000000000000000",  # Unknown sender
+                    "to": manual_tx["to"],
+                    "value": str(manual_tx["value"]),
+                    "input": manual_tx["input"],
+                    "blockNumber": "0",
+                    "timeStamp": "0",
+                    "source": "manual",
+                    "description": manual_tx.get("description", ""),
                 }
 
                 # Get function data from ABI for this selector
@@ -258,31 +256,24 @@ class TransactionFetcherCoreAggregationMixin:
                     continue
 
                 # Decode the transaction input
-                decoded_input = self.decode_transaction_input(
-                    manual_tx['input'],
-                    function_data,
-                    abi_helper
-                )
+                decoded_input = self.decode_transaction_input(manual_tx["input"], function_data, abi_helper)
 
                 if decoded_input:
-                    tx_dict['decoded_input'] = decoded_input
+                    tx_dict["decoded_input"] = decoded_input
                     logger.info(f"✓ Successfully decoded manual transaction {tx_id}")
                 else:
                     logger.warning(f"✗ Failed to decode manual transaction {tx_id}")
                     continue
 
                 # Try to fetch receipt if we have a real tx hash
-                if tx_hash and tx_hash.startswith('0x'):
+                if tx_hash and tx_hash.startswith("0x"):
                     logger.info(f"Attempting to fetch receipt for manual TX {tx_hash}")
-                    receipt = self.fetch_transaction_receipt(
-                        tx_hash,
-                        chain_id
-                    )
+                    receipt = self.fetch_transaction_receipt(tx_hash, chain_id)
                     if receipt:
-                        tx_dict['receipt_logs'] = receipt.get('receipt_logs', [])
+                        tx_dict["receipt_logs"] = receipt.get("receipt_logs", [])
                         logger.info(f"✓ Fetched receipt with {len(receipt.get('receipt_logs', []))} logs")
                 else:
-                    logger.debug(f"No transaction hash provided for manual TX - skipping receipt fetch")
+                    logger.debug("No transaction hash provided for manual TX - skipping receipt fetch")
 
                 converted_txs.append(tx_dict)
 
@@ -291,7 +282,9 @@ class TransactionFetcherCoreAggregationMixin:
                 result[selector_lower] = []
 
             result[selector_lower] = converted_txs + result[selector_lower]
-            logger.info(f"✓ Added {len(converted_txs)} manual transaction(s) to selector {selector} "
-                       f"(total: {len(result[selector_lower])})")
+            logger.info(
+                f"✓ Added {len(converted_txs)} manual transaction(s) to selector {selector} "
+                f"(total: {len(result[selector_lower])})"
+            )
 
         return result

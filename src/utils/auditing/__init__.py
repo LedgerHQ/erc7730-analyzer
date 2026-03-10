@@ -45,6 +45,7 @@ from .rules import (
 )
 
 __all__ = [
+    "SYSTEM_INSTRUCTIONS",
     "AuditReport",
     "AuditResult",
     "AuditTask",
@@ -63,7 +64,6 @@ __all__ = [
     "SecurityRisk",
     "Severity",
     "SpecLimitation",
-    "SYSTEM_INSTRUCTIONS",
     "TxSample",
     "UserIntentField",
     "build_system_instructions",

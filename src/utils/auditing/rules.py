@@ -4,7 +4,6 @@ import json
 import logging
 from importlib import resources
 from pathlib import Path
-from typing import Dict
 
 from .. import audit_rules
 
@@ -32,26 +31,32 @@ def read_rule(filename: str) -> str:
 
 SYSTEM_INSTRUCTIONS = None
 
+
 # Load audit rules that are always used in full (not optimized)
-def load_validation_rules() -> Dict:
+def load_validation_rules() -> dict:
     """Load validation rules from JSON file."""
-    return json.loads(read_rule('validation_rules.json'))
+    return json.loads(read_rule("validation_rules.json"))
 
-def load_critical_issues() -> Dict:
+
+def load_critical_issues() -> dict:
     """Load critical issues criteria from JSON file."""
-    return json.loads(read_rule('critical_issues.json'))
+    return json.loads(read_rule("critical_issues.json"))
 
-def load_recommendations() -> Dict:
+
+def load_recommendations() -> dict:
     """Load recommendations format guidelines from JSON file."""
-    return json.loads(read_rule('recommendations.json'))
+    return json.loads(read_rule("recommendations.json"))
 
-def load_spec_limitations() -> Dict:
+
+def load_spec_limitations() -> dict:
     """Load spec limitations guidelines from JSON file."""
-    return json.loads(read_rule('spec_limitations.json'))
+    return json.loads(read_rule("spec_limitations.json"))
 
-def load_display_issues() -> Dict:
+
+def load_display_issues() -> dict:
     """Load display issues guidelines from JSON file."""
-    return json.loads(read_rule('display_issues.json'))
+    return json.loads(read_rule("display_issues.json"))
+
 
 # Cache these files to avoid reloading on every call
 _VALIDATION_RULES = None
@@ -60,35 +65,40 @@ _RECOMMENDATIONS = None
 _SPEC_LIMITATIONS = None
 _DISPLAY_ISSUES = None
 
-def get_validation_rules() -> Dict:
+
+def get_validation_rules() -> dict:
     """Get cached validation rules."""
     global _VALIDATION_RULES
     if _VALIDATION_RULES is None:
         _VALIDATION_RULES = load_validation_rules()
     return _VALIDATION_RULES
 
-def get_critical_issues() -> Dict:
+
+def get_critical_issues() -> dict:
     """Get cached critical issues criteria."""
     global _CRITICAL_ISSUES
     if _CRITICAL_ISSUES is None:
         _CRITICAL_ISSUES = load_critical_issues()
     return _CRITICAL_ISSUES
 
-def get_recommendations() -> Dict:
+
+def get_recommendations() -> dict:
     """Get cached recommendations format guidelines."""
     global _RECOMMENDATIONS
     if _RECOMMENDATIONS is None:
         _RECOMMENDATIONS = load_recommendations()
     return _RECOMMENDATIONS
 
-def get_spec_limitations() -> Dict:
+
+def get_spec_limitations() -> dict:
     """Get cached spec limitations guidelines."""
     global _SPEC_LIMITATIONS
     if _SPEC_LIMITATIONS is None:
         _SPEC_LIMITATIONS = load_spec_limitations()
     return _SPEC_LIMITATIONS
 
-def get_display_issues() -> Dict:
+
+def get_display_issues() -> dict:
     """Get cached display issues guidelines."""
     global _DISPLAY_ISSUES
     if _DISPLAY_ISSUES is None:
@@ -105,7 +115,7 @@ def build_system_instructions() -> str:
     byte-for-byte stability for OpenAI's prompt caching.
     """
     # Load the FULL format specification (no optimization)
-    format_spec = json.loads(read_rule('erc7730_format_reference.json'))
+    format_spec = json.loads(read_rule("erc7730_format_reference.json"))
 
     validation_rules = get_validation_rules()
     critical_issues = get_critical_issues()
@@ -170,8 +180,8 @@ Supports both Solidity and Vyper contracts. Vyper uses decorators (@external, @i
 ```
 
 **Summary:**
-- {critical_issues.get('definition', 'Critical issues prevent users from making informed decisions')}
-- Review all {len(critical_issues.get('critical_criteria', []))} criteria
+- {critical_issues.get("definition", "Critical issues prevent users from making informed decisions")}
+- Review all {len(critical_issues.get("critical_criteria", []))} criteria
 - Native ETH handling (criterion #8) has 4 cases
 
 ---
@@ -183,7 +193,7 @@ Supports both Solidity and Vyper contracts. Vyper uses decorators (@external, @i
 ```
 
 **Key:**
-- CRITICAL: {validation_rules.get('critical_validation', {}).get('critical_definition', 'Misleading or hidden information')}
+- CRITICAL: {validation_rules.get("critical_validation", {}).get("critical_definition", "Misleading or hidden information")}
 - When in doubt, DO NOT mark as critical
 
 ---

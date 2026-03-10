@@ -1,9 +1,7 @@
 """Calldata decoding helpers for function inputs."""
 
 import logging
-from typing import Any, Dict, List, Optional
-
-from ...abi import ABI
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -26,18 +24,18 @@ class TransactionFetcherDecodingMixin:
         Returns:
             Properly formatted value
         """
-        type_str = type_info.get('type', '')
+        type_str = type_info.get("type", "")
 
         # Handle array of structs (tuple[], tuple[3], tuple[][], etc.)
-        if type_str.startswith('tuple['):
-            components = type_info.get('components', [])
+        if type_str.startswith("tuple["):
+            components = type_info.get("components", [])
             result = []
 
             # Recursively handle each struct in the array
             for item in value:
                 struct_dict = {}
                 for idx, component in enumerate(components):
-                    comp_name = component.get('name', f'field_{idx}')
+                    comp_name = component.get("name", f"field_{idx}")
                     comp_value = item[idx] if idx < len(item) else None
 
                     # Recursively convert based on component type
@@ -48,12 +46,12 @@ class TransactionFetcherDecodingMixin:
             return result
 
         # Handle single struct (tuple)
-        elif type_str == 'tuple':
-            components = type_info.get('components', [])
+        elif type_str == "tuple":
+            components = type_info.get("components", [])
             struct_dict = {}
 
             for idx, component in enumerate(components):
-                comp_name = component.get('name', f'field_{idx}')
+                comp_name = component.get("name", f"field_{idx}")
                 comp_value = value[idx] if idx < len(value) else None
 
                 # Recursively convert based on component type
@@ -63,7 +61,7 @@ class TransactionFetcherDecodingMixin:
 
         # Handle bytes
         elif isinstance(value, bytes):
-            return '0x' + value.hex()
+            return "0x" + value.hex()
 
         # Handle arrays (of primitives or bytes)
         elif isinstance(value, (list, tuple)):
@@ -72,10 +70,10 @@ class TransactionFetcherDecodingMixin:
             converted = []
             for item in value:
                 if isinstance(item, bytes):
-                    converted.append('0x' + item.hex())
+                    converted.append("0x" + item.hex())
                 elif isinstance(item, (list, tuple)):
                     # Nested array - recurse
-                    converted.append(self._convert_decoded_value(item, {'type': 'unknown'}))
+                    converted.append(self._convert_decoded_value(item, {"type": "unknown"}))
                 else:
                     converted.append(item)
             return type(value)(converted)
@@ -84,7 +82,7 @@ class TransactionFetcherDecodingMixin:
         else:
             return value
 
-    def _has_complex_types(self, inputs: List[Dict]) -> bool:
+    def _has_complex_types(self, inputs: list[dict]) -> bool:
         """
         Check if function inputs contain complex types that might need fallback.
 
@@ -94,16 +92,17 @@ class TransactionFetcherDecodingMixin:
         Returns:
             True if complex types detected
         """
+
         def check_type(type_info):
-            type_str = type_info.get('type', '')
+            type_str = type_info.get("type", "")
 
             # Multi-dimensional arrays (e.g., uint256[][], bytes[][])
-            if type_str.count('[') > 1:
+            if type_str.count("[") > 1:
                 return True
 
             # Check nested struct components recursively
-            if type_str.startswith('tuple'):
-                components = type_info.get('components', [])
+            if type_str.startswith("tuple"):
+                components = type_info.get("components", [])
                 for comp in components:
                     if check_type(comp):
                         return True
@@ -112,12 +111,7 @@ class TransactionFetcherDecodingMixin:
 
         return any(check_type(inp) for inp in inputs)
 
-    def decode_transaction_input(
-        self,
-        tx_input: str,
-        function_data: Dict,
-        abi_helper
-    ) -> Optional[Dict[str, Any]]:
+    def decode_transaction_input(self, tx_input: str, function_data: dict, abi_helper) -> dict[str, Any] | None:
         """
         Decode transaction calldata using the function metadata.
 
@@ -140,13 +134,13 @@ class TransactionFetcherDecodingMixin:
             calldata = tx_input[10:]
 
             # Get the full ABI entry for this function
-            function_name = function_data['name']
+            function_name = function_data["name"]
             function_abi_entry = None
             for item in abi_helper.abi:
-                if item.get('type') == 'function' and item.get('name') == function_name:
-                    input_types = [abi_helper._param_abi_type_to_str(inp) for inp in item.get('inputs', [])]
+                if item.get("type") == "function" and item.get("name") == function_name:
+                    input_types = [abi_helper._param_abi_type_to_str(inp) for inp in item.get("inputs", [])]
                     sig = f"{function_name}({','.join(input_types)})"
-                    if sig == function_data['signature']:
+                    if sig == function_data["signature"]:
                         function_abi_entry = item
                         break
 
@@ -155,21 +149,21 @@ class TransactionFetcherDecodingMixin:
                 return None
 
             # Get input types for decoding
-            inputs = function_abi_entry.get('inputs', [])
+            inputs = function_abi_entry.get("inputs", [])
             input_types = [abi_helper._param_abi_type_to_str(inp) for inp in inputs]
-            input_names = function_data['param_names']
+            input_names = function_data["param_names"]
 
             # Decode the calldata
             decoded_values = self.w3.codec.decode(input_types, bytes.fromhex(calldata))
 
             # Create a dictionary mapping names to values
             result = {}
-            for name, value, input_def in zip(input_names, decoded_values, inputs):
+            for name, value, input_def in zip(input_names, decoded_values, inputs, strict=False):
                 # Use the comprehensive recursive converter
                 converted_value = self._convert_decoded_value(value, input_def)
 
                 # Special handling for unnamed tuple params (flatten into result)
-                if input_def.get('type') == 'tuple' and (not name or name == 'params'):
+                if input_def.get("type") == "tuple" and (not name or name == "params"):
                     # Flatten unnamed struct params into the result dict
                     if isinstance(converted_value, dict):
                         result.update(converted_value)
@@ -183,10 +177,10 @@ class TransactionFetcherDecodingMixin:
 
             if has_complex:
                 # Include raw fallback for AI to cross-check if needed
-                result['_raw_fallback'] = {
-                    'note': 'Complex types detected - raw calldata included for verification',
-                    'raw_calldata': tx_input,
-                    'function_abi': function_abi_entry
+                result["_raw_fallback"] = {
+                    "note": "Complex types detected - raw calldata included for verification",
+                    "raw_calldata": tx_input,
+                    "function_abi": function_abi_entry,
                 }
                 logger.info(f"Complex types detected in {function_name} - included raw fallback")
 
@@ -199,33 +193,33 @@ class TransactionFetcherDecodingMixin:
             # Decoding failed - provide raw data for AI to decode
             try:
                 # Try to get the ABI entry even if decoding failed
-                function_name = function_data['name']
+                function_name = function_data["name"]
                 function_abi_entry = None
                 for item in abi_helper.abi:
-                    if item.get('type') == 'function' and item.get('name') == function_name:
-                        input_types = [abi_helper._param_abi_type_to_str(inp) for inp in item.get('inputs', [])]
+                    if item.get("type") == "function" and item.get("name") == function_name:
+                        input_types = [abi_helper._param_abi_type_to_str(inp) for inp in item.get("inputs", [])]
                         sig = f"{function_name}({','.join(input_types)})"
-                        if sig == function_data['signature']:
+                        if sig == function_data["signature"]:
                             function_abi_entry = item
                             break
 
                 return {
-                    '_decoding_failed': True,
-                    '_error': str(e),
-                    '_raw_fallback': {
-                        'note': 'Decoding failed - AI should decode from raw calldata',
-                        'raw_calldata': tx_input,
-                        'function_abi': function_abi_entry
-                    }
+                    "_decoding_failed": True,
+                    "_error": str(e),
+                    "_raw_fallback": {
+                        "note": "Decoding failed - AI should decode from raw calldata",
+                        "raw_calldata": tx_input,
+                        "function_abi": function_abi_entry,
+                    },
                 }
             except Exception as fallback_error:
                 logger.error(f"Failed to build fallback decoding payload: {fallback_error}")
                 return {
-                    '_decoding_failed': True,
-                    '_error': f"{e}; fallback_error={fallback_error}",
-                    '_raw_fallback': {
-                        'note': 'Decoding failed and fallback payload generation failed',
-                        'raw_calldata': tx_input,
-                        'function_abi': None
-                    }
+                    "_decoding_failed": True,
+                    "_error": f"{e}; fallback_error={fallback_error}",
+                    "_raw_fallback": {
+                        "note": "Decoding failed and fallback payload generation failed",
+                        "raw_calldata": tx_input,
+                        "function_abi": None,
+                    },
                 }

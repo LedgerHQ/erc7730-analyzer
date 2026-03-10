@@ -1,24 +1,27 @@
 """Base analyzer state and shared configuration."""
 
-from typing import Optional
+from __future__ import annotations
+
+from typing import ClassVar
 
 from web3 import Web3
 
-from ..extraction.source_code import SourceCodeExtractor
 from ..clients.transactions import TransactionFetcher
+from ..extraction.source_code import SourceCodeExtractor
+from ..llm import LLMConfig
 
 
 class AnalyzerBase:
     """Base class for analyzer runtime state."""
 
-    ERC4626_INCLUDE_PATTERNS = [
+    ERC4626_INCLUDE_PATTERNS: ClassVar[list[str]] = [
         "erc4626",
         "erc-4626",
         "4626-vault",
         "4626vault",
     ]
 
-    ERC4626_SOURCE_PATTERNS = [
+    ERC4626_SOURCE_PATTERNS: ClassVar[list[str]] = [
         r"ERC4626",
         r"IERC4626",
         r"function\\s+asset\\s*\\(\\s*\\)",
@@ -30,13 +33,17 @@ class AnalyzerBase:
 
     def __init__(
         self,
-        etherscan_api_key: Optional[str] = None,
-        coredao_api_key: Optional[str] = None,
+        etherscan_api_key: str | None = None,
+        coredao_api_key: str | None = None,
         lookback_days: int = 20,
         enable_source_code: bool = True,
         use_smart_referencing: bool = True,
         max_concurrent_api_calls: int = 8,
         max_api_retries: int = 3,
+        backend: str = "openai",
+        model: str | None = None,
+        api_key: str | None = None,
+        api_url: str | None = None,
     ):
         self.etherscan_api_key = etherscan_api_key
         self.coredao_api_key = coredao_api_key
@@ -46,14 +53,17 @@ class AnalyzerBase:
         self.max_concurrent_api_calls = max_concurrent_api_calls
         self.max_api_retries = max_api_retries
 
+        self.llm_config = LLMConfig(
+            backend=backend,
+            model=model,
+            api_key=api_key,
+            api_url=api_url,
+        ).resolve()
+
         self.w3 = Web3()
         self.abi_helper = None
         self.tx_fetcher = TransactionFetcher(etherscan_api_key, lookback_days)
-        self.source_extractor = (
-            SourceCodeExtractor(etherscan_api_key, coredao_api_key)
-            if enable_source_code
-            else None
-        )
+        self.source_extractor = SourceCodeExtractor(etherscan_api_key, coredao_api_key) if enable_source_code else None
 
         self.selector_to_format_key = {}
         self.selector_sources = {}

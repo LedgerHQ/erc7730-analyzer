@@ -1,0 +1,357 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "ERC-7730 Recommendations Format",
+  "description": "Guidelines for writing recommendations in ERC-7730 clear signing audit reports",
+  "version": "1.1.0",
+
+  "always_include": "Even if no critical issues found, ALWAYS include recommendations section",
+
+  "key_points": [
+    "Always provide recommendations even if no critical issues found",
+    "Include spec limitations (parameters that CANNOT be clear signed)",
+    "For each fix recommendation, include a CLEAR CORRECTION showing exactly what to add or change in the descriptor",
+    "Use concrete examples with actual field definitions, not generic descriptions",
+    "Use current v2 syntax in recommendations. Do NOT propose new `required`, `excluded`, or `screens` arrays for v2 descriptors.",
+    "If no truthful non-narrowing fix exists, state the issue as a spec limitation instead of inventing a scope-restricting recommendation."
+  ],
+
+  "validate_existing_descriptor_first": {
+    "title": "CRITICAL: Validate existing descriptors before recommending changes",
+    "description": "Before recommending any changes, check if the existing descriptor is already correct",
+    "validation_steps": [
+      {
+        "check": "Byte slicing patterns (e.g., srcToken.[-20:], param.[0:12])",
+        "how_to_validate": "Check source code for bit operations on that parameter",
+        "patterns_that_justify_slicing": [
+          "(param & MASK) - bit masking to extract portions",
+          "(param >> 160) - bit shifting to extract high/low bytes",
+          "address(param) - casting uint256 to address (takes last 20 bytes)",
+          "_bytes32ToAddress(param) - helper function casting to address",
+          "type X is uint256 - custom type with packed data"
+        ],
+        "action_if_found": "The existing byte slicing is CORRECT. Do NOT recommend removing or changing it.",
+        "action_if_not_found": "The byte slicing may be wrong. Check if the parameter should be displayed as full value instead."
+      },
+      {
+        "check": "Token path references",
+        "how_to_validate": "Verify tokenPath points to actual token address parameter in ABI",
+        "action_if_correct": "Do NOT recommend changes to working tokenPath references"
+      },
+      {
+        "check": "Format type appropriateness",
+        "how_to_validate": "Check if format matches parameter type and usage in source code",
+        "action_if_correct": "Do NOT recommend changing format if it's already appropriate"
+      }
+    ],
+    "example_false_positive": {
+      "descriptor": "{\"path\": \"amount\", \"tokenPath\": \"srcToken.[-20:]\"}",
+      "source_code": "address srcTokenAddr = _bytes32ToAddress(srcToken);",
+      "wrong_recommendation": "Change tokenPath from 'srcToken.[-20:]' to 'srcToken'",
+      "why_wrong": "Source code shows srcToken is cast to address, so .[-20:] extracts the address bytes - this is CORRECT",
+      "correct_action": "Do NOT recommend any changes - descriptor is already correct"
+    }
+  },
+
+  "formatting_requirements": {
+    "bullet_format": "USE BULLET POINTS with dashes (-), NOT numbered lists",
+    "complete_sentences": "Each recommendation must be a COMPLETE, STANDALONE sentence",
+    "end_with_period": "Each bullet point must END with a period (.)",
+    "no_colons": "DO NOT use colons (:) at the end of recommendations",
+    "no_numbers": "DO NOT start with numbers like '1.', '2.', '3.'",
+    "be_specific": "DO NOT write generic recommendations that just repeat the rules. Be SPECIFIC to this descriptor. If you say 'Ensure nested calldata descriptor(s) are available', you are being too generic. Instead, say which specific selector needs a nested descriptor or don't mention it at all.",
+    "no_generic_advice": "AVOID generic phrases like 'Ensure...', 'Make sure...', 'Verify...', 'Recommend wallets...'. Only include actionable, specific recommendations for THIS descriptor.",
+    "v2_only": "Use v2 terminology and structures. Prefer `fields`, `visible`, `fieldGroup`, and formatter params. Do NOT recommend selector-only format keys or v1 required/excluded arrays. For tuple signatures in new examples, prefer bare `(...)` style even though the schema regex also accepts `tuple(...)`.",
+    "review_friendly_change_layout": {
+      "rule": "When proposing JSON changes, group them into reviewer-friendly buckets such as `field_to_add`, `field_to_remove`, and `changes_to_make` instead of dumping an unstructured whole-file blob.",
+      "reason": "This makes additions/removals/edits easy to inspect even without color.",
+      "note": "Keep snippets minimal and only include the touched fragments."
+    },
+    "CHARACTER_LIMIT_CRITICAL": {
+      "rule": "ANY proposed intent MUST be ≤20 characters. ANY proposed label MUST be ≤20 characters.",
+      "when_to_check": "Check character count for EVERY intent and label you recommend, regardless of what issue you're fixing",
+      "examples": {
+        "WRONG": {
+          "recommendation": "Change intent to 'Authorize Validator Signer'",
+          "character_count": 28,
+          "problem": "Exceeds 20-character hardware wallet limit"
+        },
+        "CORRECT": {
+          "recommendation": "Change intent to 'Authorize Signer'",
+          "character_count": 16,
+          "reason": "Under 20 characters and still clear"
+        }
+      },
+      "validation_process": "Before recommending any intent or label: (1) COUNT the characters, (2) If >20, shorten it, (3) Verify shortened version is ≤20 chars",
+      "applies_to_all_issues": "This applies when fixing misleading labels, unclear intents, or ANY issue where you propose a new intent/label"
+    }
+  },
+
+  "recommendation_types": [
+    {
+      "type": "Fixes for critical issues",
+      "description": "For each critical issue from 'Issues Found' section, write ONE bullet point",
+      "requirements": [
+        "States the fix clearly in human-readable language",
+        "Separates explanation (description) from code (code_snippet)",
+        "Description is concise (1-2 sentences), explains WHAT and WHY",
+        "Code snippet contains the actual JSON to add/modify, properly formatted",
+        "DO NOT embed JSON in description text - use code_snippet field instead",
+        "If the recommendation would only work by constraining a legitimate supported mode (for example `visible.mustBe` on a real runtime option), present that as OPTIONAL scope narrowing or move it to spec limitations instead of presenting it as the default fix",
+        "When recommending enum mappings: Use ACTUAL values from source code if available. If values are not visible in the provided source code, use clear placeholders like 'ROLE_VALIDATOR' or '0xROLE_VALUE_FROM_CONTRACT' and explicitly state 'populate with actual role constants from the contract source code'",
+        "NEVER use made-up hex values like 0x1111...1111 or 0x2222...2222 that appear to be real constants but are actually placeholders",
+        "CRITICAL - Check source code for packed data before recommending tokenPath/field paths: When recommending new fields or fixing tokenPath references, check if the source code contains bit masks, bit shifts, or address casts on that parameter. If the code shows operations like (param & MASK), (param >> 160), address(param), or _bytes32ToAddress(param), you MUST recommend the sliced path (e.g., srcToken.[-20:] to extract address bytes). Do NOT recommend using the raw parameter name without slicing when source code shows casting/masking."
+      ],
+      "packed_data_patterns": {
+        "title": "CRITICAL: Detecting packed uint256 parameters that need byte slicing",
+        "description": "When source code casts uint256 parameters to address or applies bit operations, the descriptor MUST use byte slicing to extract the correct portion",
+        "source_code_patterns_requiring_slicing": [
+          {
+            "pattern": "address(uint256_param) or address(bytes32_param)",
+            "descriptor_solution": "Use param.[-20:] to extract last 20 bytes (address)",
+            "example_code": "address srcTokenAddr = address(srcToken);",
+            "example_descriptor": "\"tokenPath\": \"srcToken.[-20:]\""
+          },
+          {
+            "pattern": "_bytes32ToAddress(param) or similar helper functions",
+            "descriptor_solution": "Use param.[-20:] to extract address bytes",
+            "example_code": "address srcTokenAddr = _bytes32ToAddress(srcToken);",
+            "example_descriptor": "\"tokenPath\": \"srcToken.[-20:]\""
+          },
+          {
+            "pattern": "(param & MASK) >> shift - extracting high bits",
+            "descriptor_solution": "Use param.[0:N] to extract high bytes",
+            "example_code": "uint256 orderId = (srcToken & _ORDER_ID_MASK) >> 160;",
+            "example_descriptor": "\"path\": \"srcToken.[0:12]\" // extracts order ID from high bytes"
+          },
+          {
+            "pattern": "param & 0xffff...ffff - masking to extract low bits",
+            "descriptor_solution": "Use param.[-N:] to extract low bytes",
+            "example_code": "address token = address(uint160(srcToken));",
+            "example_descriptor": "\"tokenPath\": \"srcToken.[-20:]\""
+          }
+        ],
+        "how_to_detect": "Look for type casting (address(), uint160()), helper functions (_bytes32ToAddress), or bit operations (&, >>, <<) on the parameter",
+        "action_when_detected": "ALWAYS recommend the sliced path in your code_snippet, NOT the raw parameter name",
+        "example_wrong_recommendation": {
+          "source_code": "address srcTokenAddr = _bytes32ToAddress(srcToken);",
+          "wrong": "\"tokenPath\": \"srcToken\"",
+          "why_wrong": "srcToken is uint256/bytes32 packed data, taking it directly won't extract the address correctly",
+          "correct": "\"tokenPath\": \"srcToken.[-20:]\"",
+          "why_correct": "Extracts last 20 bytes which is where the address is stored after casting"
+        }
+      },
+      "nested_struct_paths": {
+        "title": "CRITICAL: Two valid approaches for nested struct fields",
+        "description": "When constructing paths to fields within nested structs, you can use either flat dot-notation paths OR hierarchical fields nesting",
+        "approach_1_flat_paths": {
+          "rule": "Use complete dot-notation paths starting from the parameter name through all nested struct fields",
+          "when_to_use": "Simpler, more concise for shallow nesting (1-2 levels)",
+          "example": {
+            "function_signature": "approve2(IAllowanceTransfer.PermitSingle calldata permitSingle, ...)",
+            "struct_definition": "struct PermitSingle { PermitDetails details; address spender; } struct PermitDetails { address token; uint160 amount; }",
+            "descriptor": {
+              "fields": [
+                {"path": "permitSingle.details.token", "label": "Token", "format": "addressName"},
+                {"path": "permitSingle.details.amount", "label": "Amount", "format": "tokenAmount", "params": {"tokenPath": "permitSingle.details.token"}}
+              ]
+            }
+          }
+        },
+        "approach_2_hierarchical_fields": {
+          "rule": "Use nested 'fields' arrays where each level specifies only its immediate field name (relative path)",
+          "when_to_use": "Better organization for deep nesting (3+ levels) or complex structs",
+          "example": {
+            "function_signature": "approve2(IAllowanceTransfer.PermitSingle calldata permitSingle, ...)",
+            "struct_definition": "struct PermitSingle { PermitDetails details; address spender; } struct PermitDetails { address token; uint160 amount; }",
+            "descriptor": {
+              "fields": [
+                {
+                  "path": "#.permitSingle",
+                  "fields": [
+                    {
+                      "path": "details",
+                      "fields": [
+                        {"path": "token", "label": "Token", "format": "addressName", "params": {"types": ["token"]}},
+                        {"path": "amount", "label": "Amount", "format": "tokenAmount", "params": {"tokenPath": "token"}}
+                      ]
+                    },
+                    {"path": "spender", "label": "Spender", "format": "addressName"}
+                  ]
+                }
+              ]
+            }
+          },
+          "note_relative_paths": "In hierarchical approach, nested fields use RELATIVE paths (just the field name). The 'tokenPath' in nested context refers to sibling/ancestor fields, e.g., 'tokenPath': 'token' refers to the token field at the same level."
+        },
+        "WRONG_approach": {
+          "example": {
+            "fields": [
+              {"path": "token", "label": "Token"},
+              {"path": "amount", "label": "Amount"}
+            ]
+          },
+          "why_wrong": "Missing parent struct navigation - no way to reach these fields from function parameters"
+        },
+        "validation_check": "Before finalizing code_snippet: (1) If using flat paths, verify full path from parameter name is included, OR (2) If using hierarchical fields, verify proper nesting structure with outer field pointing to parameter"
+      }
+    },
+    {
+      "type": "Validating existing descriptors before recommending changes",
+      "description": "Before recommending changes to EXISTING byte slicing, verify it's actually wrong",
+      "requirements": [
+        "If descriptor already has byte slicing (e.g., srcToken.[-20:]), check source code to see if it's justified",
+        "Do NOT recommend removing slicing if source code shows casting/bit operations on that parameter",
+        "Only recommend changes to slicing if it's provably incorrect for the use case"
+      ],
+      "json_structure": {
+        "title": "Brief, clear title of the fix",
+        "description": "Human-readable explanation (1-2 sentences) - NO JSON HERE",
+        "code_snippet": "Actual descriptor JSON to add or modify"
+      },
+      "examples": [
+        {
+          "title": "Add msg.value display",
+          "description": "Include a field to show the native ETH fee being sent with the transaction.",
+          "code_snippet": {"path": "@.value", "label": "Fee Amount", "format": "amount"}
+        },
+        {
+          "title": "Fix inverted token addresses",
+          "description": "Swap the tokenPath references so fromAmount points to the correct input token and toAmount points to the output token.",
+          "code_snippet": {"fromAmount_tokenPath": "#.tokenIn", "toAmount_tokenPath": "#.tokenOut"}
+        },
+        {
+          "title": "Show recipient address",
+          "description": "Add a field to display where the tokens are being sent.",
+          "code_snippet": {"path": "#.recipient", "label": "Recipient", "format": "addressName"}
+        }
+      ],
+      "enum_mapping_examples": {
+        "good_when_values_known": {
+          "description": "When role constants are visible in source code",
+          "example": "Add enum mapping: {\"path\": \"role\", \"format\": \"enum\", \"params\": {\"$ref\": \"$.metadata.enums.roleNames\"}} with metadata.enums.roleNames: {\"0x8f5b8b1f9f7b6e0f3b4a0a6f7b5e8c9d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b\": \"Validator\", \"0xc2a8ba48e60e8d2bf0b0e3f1c3a4e5f6e7d8c9a0b1c2d3e4f5a6b7c8d9e0f1a2\": \"Attestation\"}"
+        },
+        "good_when_values_unknown": {
+          "description": "When role constants are NOT visible in provided source code",
+          "example": "Add enum mapping for role: {\"path\": \"role\", \"format\": \"enum\", \"params\": {\"$ref\": \"$.metadata.enums.roleNames\"}}. Populate metadata.enums.roleNames with actual role constant values from the contract source code (e.g., keccak256('VALIDATOR_SIGNER_ROLE'), keccak256('ATTESTATION_SIGNER_ROLE'), etc.).",
+          "note": "Clearly state that values need to be populated from source code"
+        },
+        "bad_placeholder_values": {
+          "description": "NEVER use fake-looking hex values that appear real",
+          "bad_example": "DO NOT: {\"0x1111111111111111111111111111111111111111111111111111111111111111\": \"Execute\", \"0x2222222222222222222222222222222222222222222222222222222222222222\": \"Transfer\"}",
+          "why_bad": "These look like real constants but are made up, which is misleading"
+        }
+      }
+    },
+    {
+      "type": "Spec limitations",
+      "description": "For parameters that CANNOT be clear signed due to ERC-7730 limitations",
+      "rules": [
+        "These do NOT go in 'Issues Found' section",
+        "List them here in Recommendations with full explanation",
+        "Follow the 'ERC-7730 SPEC LIMITATIONS' format",
+        "ALWAYS include these even when no critical issues exist",
+        "Use this path when the only available 'fix' would narrow a legitimate runtime mode rather than truthfully represent it"
+      ],
+      "examples": [
+        "**Output token cannot be clear signed:** The `minReturn` field displays the minimum amount to receive, but the output token is determined by the pool/DEX address and not available as a function input, so ERC-7730 cannot reliably map this to a specific ERC20 address with tokenPath."
+      ]
+    },
+    {
+      "type": "Optional improvements",
+      "description": "Even when descriptor is correct, suggest UX enhancements",
+      "suggestions": [
+        "Adding senderAddress parameter for zero-check fallbacks",
+        "Better label wording",
+        "Additional helpful fields",
+        "Include these even when no critical issues exist"
+      ],
+      "format": "Still use bullet points (-), Mark them as '(Optional)' at the start, Keep them complete sentences",
+      "examples": [
+        "**(Optional) Add senderAddress parameter:** Consider adding `\"senderAddress\": [\"0x0000000000000000000000000000000000000000\"]` to the recipient field to handle the zero-address fallback pattern detected in the source code where `recipient == address(0) ? msg.sender : recipient`.",
+        "**(Optional) Improve label clarity:** Consider changing the label from \"To\" to \"Recipient Address\" for better user clarity."
+      ]
+    }
+  ],
+
+  "bad_examples": [
+    "1. Add an explicit field showing msg.value:",
+    "2. Example snippet to include in fields:",
+    "3. (Optional) If maintainers want...",
+    "4. ---"
+  ],
+
+  "spec_limitations": {
+    "title": "ERC-7730 SPEC LIMITATIONS",
+    "rule": "If a critical parameter CANNOT be clear signed using the current ERC-7730 specification, you MUST explicitly state this with a complete explanation",
+    "common_limitations": [
+      {
+        "limitation": "Bitmask flags",
+        "description": "Parameter used with bitwise AND operations (e.g., flags & _SHOULD_CLAIM != 0)",
+        "source_code_pattern": "if (param & CONSTANT != 0) or param & MASK",
+        "why_unsupported": "ERC-7730's enum format only supports simple 1:1 value→label mappings. Cannot test individual bits or display multiple flag combinations",
+        "example": "flags = 0x06 = REQUIRES_EXTRA_ETH + SHOULD_CLAIM cannot be shown as 'REQUIRES_EXTRA_ETH, SHOULD_CLAIM'"
+      },
+      {
+        "limitation": "Deeply nested arrays",
+        "description": "Arrays of structs containing arrays",
+        "example": "path[].orders[].amounts[]"
+      },
+      {
+        "limitation": "Dynamic data structures",
+        "description": "Data computed on-chain, not in inputs"
+      },
+      {
+        "limitation": "Complex tuples",
+        "description": "Multi-level struct nesting beyond ERC-7730 path capabilities"
+      },
+      {
+        "limitation": "Output token from pool/DEX",
+        "description": "Token determined by pool address, not explicit in inputs",
+        "example": "minReturn in Uniswap where pool determines output token"
+      },
+      {
+        "limitation": "Concatenated bytes with separate length array",
+        "description": "Bytes parameter that contains concatenated calldata/data for multiple operations, sliced using a separate lengths array",
+        "source_code_pattern": "data.slice(position, lengths[i]) or similar pattern where data is split dynamically",
+        "why_unsupported": "ERC-7730 cannot dynamically slice a concatenated bytes blob based on another array. The calldata format expects discrete per-transaction data, not a blob that needs parsing.",
+        "example": "executeHotfix(values[], destinations[], data, dataLengths[]) where data contains all calldatas concatenated and must be split using dataLengths[i]",
+        "what_to_recommend": "State this as a spec limitation, NOT a critical issue. Do not propose format: calldata on the concatenated blob."
+      }
+    ],
+    "required_format": [
+      "**[Parameter name] cannot be clear signed:** This parameter cannot be displayed with current ERC-7730 spec because [explain the specific limitation].",
+      "**Why this matters:** [Explain what information the user is missing and the security implications]",
+      "**Detected pattern:** [If applicable, show the code pattern that proves it's a limitation]"
+    ],
+    "example": {
+      "parameter": "flags",
+      "recommendation": "**flags cannot be clear signed:** This parameter cannot be displayed with current ERC-7730 spec because it is a bitmask with bitwise operations, and ERC-7730's enum format only supports simple value→label mappings without bitwise AND support.",
+      "why_matters": "**Why this matters:** Users cannot see which behavior flags are enabled (SHOULD_CLAIM, REQUIRES_EXTRA_ETH, PARTIAL_FILL), affecting token routing and ETH requirements",
+      "detected_pattern": "**Detected pattern:** Source code shows: `if (flags & _SHOULD_CLAIM != 0)` and `if (flags & _REQUIRES_EXTRA_ETH != 0)`"
+    }
+  },
+
+  "always_provide_recommendations": {
+    "rule": "Even if there are NO critical issues, you MUST still provide recommendations",
+    "include": [
+      "Spec limitations: Parameters that cannot be clear signed (bitmask flags, output tokens from pools, packed data, etc.)",
+      "Optional improvements: Better labels, adding senderAddress parameter, display enhancements, etc.",
+      "Best practices: Suggestions that improve UX even if not critical"
+    ],
+    "if_truly_no_recommendations": "**No additional recommendations - descriptor is comprehensive.**",
+    "avoid_generic_recommendations": [
+      "DO NOT say: 'Ensure nested calldata descriptor(s) are available' - this is too generic",
+      "DO NOT say: 'The inner selector is not clear signed' unless you have ruled out wallet-/registry-scope nested descriptor lookup beyond the current file",
+      "DO NOT say: 'Recommend wallets verify...' - this is out of scope for descriptor audit",
+      "DO NOT say: 'Document as a spec limitation...' - just state the limitation directly",
+      "DO NOT say: 'Make sure all labels remain ≤20 characters' - only mention if there's an actual label >20 chars",
+      "DO NOT say: 'Spec limitation — Bitmask/packed flags cannot be clear signed:' followed by generic explanation",
+      "DO NOT say: 'Spec limitation — Output token determined by pool/DEX cannot be clear signed:' followed by generic explanation",
+      "DO NOT say: 'Spec limitation — Dynamic/computed data cannot be clear signed:' followed by generic explanation",
+      "DO NOT say: 'Spec limitation: There are no ERC-7730 spec limitations relevant to this function...'",
+      "DO NOT list spec limitations as templates - either there IS a specific limitation to mention, or don't mention limitations at all",
+      "DO NOT repeat rules from the audit guidelines - be specific to THIS descriptor"
+    ],
+    "when_descriptor_is_perfect": "If the descriptor has no issues, no spec limitations, and no meaningful improvements to suggest, simply write: '**No additional recommendations - descriptor is comprehensive.**'"
+  }
+}

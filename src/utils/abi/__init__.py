@@ -5,9 +5,14 @@ This module provides ABI parsing and function selector utilities.
 """
 
 import json
+from typing import Any
+
 import requests
-from typing import Dict, List, Optional, Tuple
-from eth_utils import keccak
+from eth_utils.abi import (
+    abi_to_signature,
+    function_abi_to_4byte_selector,
+    function_signature_to_4byte_selector,
+)
 
 
 class ABI:
@@ -24,6 +29,9 @@ class ABI:
             abi: Contract ABI as a list of dictionaries
         """
         self.abi = abi
+        self._functions_by_selector: dict[str, dict[str, Any]] = {}
+        self._functions_by_signature_key: dict[str, dict[str, Any]] = {}
+        self._build_function_indexes()
 
     @staticmethod
     def _function_signature_to_selector(signature: str) -> str:
@@ -36,7 +44,127 @@ class ABI:
         Returns:
             Function selector as hex string (e.g., "0xa9059cbb")
         """
-        return "0x" + keccak(text=signature).hex()[:8]
+        return "0x" + function_signature_to_4byte_selector(signature).hex()
+
+    @staticmethod
+    def _normalize_signature_lookup(signature: str) -> str:
+        return "".join(str(signature or "").split())
+
+    @classmethod
+    def _format_param_for_display_signature(
+        cls,
+        param: dict[str, Any],
+        *,
+        include_names: bool,
+        tuple_keyword: bool,
+    ) -> str:
+        param_type = param.get("type", "")
+        param_name = str(param.get("name") or "").strip()
+
+        if param_type.startswith("tuple"):
+            components = param.get("components") or []
+            inner = ", ".join(
+                cls._format_param_for_display_signature(
+                    component,
+                    include_names=include_names,
+                    tuple_keyword=tuple_keyword,
+                )
+                for component in components
+            )
+            tuple_suffix = param_type[len("tuple") :]
+            tuple_prefix = "tuple" if tuple_keyword else ""
+            rendered_type = f"{tuple_prefix}({inner}){tuple_suffix}"
+        else:
+            rendered_type = param_type
+
+        if include_names and param_name:
+            return f"{rendered_type} {param_name}"
+        return rendered_type
+
+    @classmethod
+    def _function_abi_to_display_signature(
+        cls,
+        function_abi: dict[str, Any],
+        *,
+        include_names: bool,
+        tuple_keyword: bool,
+    ) -> str | None:
+        if function_abi.get("type") != "function":
+            return None
+
+        function_name = function_abi.get("name")
+        if not function_name:
+            return None
+
+        inputs = function_abi.get("inputs", [])
+        rendered_inputs = ", ".join(
+            cls._format_param_for_display_signature(
+                input_param,
+                include_names=include_names,
+                tuple_keyword=tuple_keyword,
+            )
+            for input_param in inputs
+        )
+        return f"{function_name}({rendered_inputs})"
+
+    def _build_function_indexes(self) -> None:
+        self._functions_by_selector = {}
+        self._functions_by_signature_key = {}
+
+        for item in self.abi:
+            if item.get("type") != "function":
+                continue
+
+            try:
+                canonical_signature = abi_to_signature(item)
+                selector = "0x" + function_abi_to_4byte_selector(item).hex()
+            except Exception:
+                continue
+
+            inputs = item.get("inputs", [])
+            display_signature = self._function_abi_to_display_signature(
+                item,
+                include_names=True,
+                tuple_keyword=False,
+            )
+            tuple_keyword_display_signature = self._function_abi_to_display_signature(
+                item,
+                include_names=True,
+                tuple_keyword=True,
+            )
+            signature_without_names = self._function_abi_to_display_signature(
+                item,
+                include_names=False,
+                tuple_keyword=False,
+            )
+            tuple_signature_without_names = self._function_abi_to_display_signature(
+                item,
+                include_names=False,
+                tuple_keyword=True,
+            )
+            metadata = {
+                "name": item["name"],
+                "param_names": [param.get("name") for param in inputs],
+                "param_internal_types": [param.get("internalType") for param in inputs],
+                "signature": canonical_signature,
+                "display_signature": display_signature,
+                "tuple_keyword_display_signature": tuple_keyword_display_signature,
+                "selector": selector,
+                "stateMutability": item.get("stateMutability", "nonpayable"),
+            }
+            self._functions_by_selector[selector.lower()] = metadata
+
+            aliases = {
+                canonical_signature,
+                display_signature,
+                tuple_keyword_display_signature,
+                signature_without_names,
+                tuple_signature_without_names,
+            }
+            for alias in aliases:
+                if not alias:
+                    continue
+                self._functions_by_signature_key[self._normalize_signature_lookup(alias)] = metadata
 
     def _param_abi_type_to_str(self, param) -> str:
         """
@@ -49,14 +177,10 @@ class ABI:
             Type string for signature (e.g., "address", "(uint256,address)")
         """
         if param["type"] == "tuple":
-            inner = ",".join(
-                self._param_abi_type_to_str(p) for p in param["components"]
-            )
+            inner = ",".join(self._param_abi_type_to_str(p) for p in param["components"])
             return f"({inner})" + ("[]" if param.get("type").endswith("[]") else "")
         elif param["type"].startswith("tuple["):
-            inner = ",".join(
-                self._param_abi_type_to_str(p) for p in param["components"]
-            )
+            inner = ",".join(self._param_abi_type_to_str(p) for p in param["components"])
             return f"({inner})" + param["type"][5:]
         else:
             return param["type"]
@@ -80,35 +204,28 @@ class ABI:
             - selector: Function selector
             - stateMutability: Function state mutability (payable, nonpayable, view, pure)
         """
-        for item in self.abi:
-            if item.get("type") != "function":
-                continue
+        return self._functions_by_selector.get(selector.lower(), {})
 
-            name = item["name"]
-            inputs = item.get("inputs", [])
-            native_types = ",".join(self._param_abi_type_to_str(p) for p in inputs)
-            signature = f"{name}({native_types})"
+    def find_function_by_signature(self, signature: str) -> dict:
+        """
+        Find a function using any ABI-derived signature alias.
 
-            computed_selector = self._function_signature_to_selector(signature)
-            if computed_selector == selector.lower():
-                return {
-                    "name": name,
-                    "param_names": [item.get("name") for item in inputs],
-                    "param_internal_types": [
-                        item.get("internalType") for item in inputs
-                    ],
-                    "signature": signature,
-                    "selector": computed_selector,
-                    "stateMutability": item.get("stateMutability", "nonpayable"),
-                }
-        return {}
+        Supports:
+        - canonical compiler-style signatures, e.g. "transfer(address,uint256)"
+        - v2 human-readable signatures with parameter names using bare tuple syntax
+        - compatibility aliases that still use explicit `tuple(...)`
+        """
+        if not signature:
+            return {}
+
+        if signature.startswith("0x") and len(signature) == 10:
+            return self.find_function_by_selector(signature)
+
+        normalized_signature = self._normalize_signature_lookup(signature)
+        return self._functions_by_signature_key.get(normalized_signature, {})
 
 
-def detect_diamond_proxy(
-    contract_address: str,
-    chain_id: int,
-    etherscan_api_key: str
-) -> Optional[List[str]]:
+def detect_diamond_proxy(contract_address: str, chain_id: int, etherscan_api_key: str) -> list[str] | None:
     """
     Detect if contract is a Diamond proxy (EIP-2535) and return all facet addresses.
 
@@ -123,20 +240,21 @@ def detect_diamond_proxy(
         List of facet addresses if Diamond proxy, None otherwise
     """
     import logging
+
     logger = logging.getLogger(__name__)
 
     try:
         # Call facets() function from DiamondLoupe interface
         # Selector: 0x7a0ed627
-        facets_selector = '0x7a0ed627'
+        facets_selector = "0x7a0ed627"
 
         params = {
-            'module': 'proxy',
-            'action': 'eth_call',
-            'to': contract_address,
-            'data': facets_selector,
-            'tag': 'latest',
-            'apikey': etherscan_api_key
+            "module": "proxy",
+            "action": "eth_call",
+            "to": contract_address,
+            "data": facets_selector,
+            "tag": "latest",
+            "apikey": etherscan_api_key,
         }
 
         base_url = f"https://api.etherscan.io/v2/api?chainid={chain_id}"
@@ -145,22 +263,22 @@ def detect_diamond_proxy(
 
         # Check if the call succeeded
         # Etherscan API returns status: '1' for success, '0' for failure
-        if 'error' in data or data.get('status') == '0' or data.get('message') == 'NOTOK':
-            logger.debug(f"Not a Diamond proxy (facets() call failed)")
+        if "error" in data or data.get("status") == "0" or data.get("message") == "NOTOK":
+            logger.debug("Not a Diamond proxy (facets() call failed)")
             return None
 
-        if not data.get('result') or data['result'] == '0x':
-            logger.debug(f"Not a Diamond proxy (empty result)")
+        if not data.get("result") or data["result"] == "0x":
+            logger.debug("Not a Diamond proxy (empty result)")
             return None
 
-        result = data['result']
+        result = data["result"]
         logger.info(f"✓ facets() call succeeded - this is a Diamond proxy (response: {len(result)} chars)")
 
         # Parse the ABI-encoded Facet[] array
-        hex_data = result[2:] if result.startswith('0x') else result
+        hex_data = result[2:] if result.startswith("0x") else result
 
         if len(hex_data) < 64:
-            logger.warning(f"facets() response too short to parse")
+            logger.warning("facets() response too short to parse")
             return None
 
         # Parse array offset and length
@@ -168,10 +286,10 @@ def detect_diamond_proxy(
         array_start = array_offset * 2
 
         if len(hex_data) < array_start + 64:
-            logger.warning(f"facets() response too short after offset")
+            logger.warning("facets() response too short after offset")
             return None
 
-        array_length = int(hex_data[array_start:array_start + 64], 16)
+        array_length = int(hex_data[array_start : array_start + 64], 16)
         logger.info(f"Diamond proxy has {array_length} facets")
 
         if array_length == 0:
@@ -189,16 +307,16 @@ def detect_diamond_proxy(
             if len(hex_data) < facet_offset_pos + 64:
                 break
 
-            facet_data_offset = int(hex_data[facet_offset_pos:facet_offset_pos + 64], 16)
+            facet_data_offset = int(hex_data[facet_offset_pos : facet_offset_pos + 64], 16)
             facet_data_pos = array_start + 64 + (facet_data_offset * 2)
 
             if len(hex_data) < facet_data_pos + 64:
                 break
 
             # Extract facet address (last 40 hex chars of 32-byte word)
-            facet_address = '0x' + hex_data[facet_data_pos + 24:facet_data_pos + 64]
+            facet_address = "0x" + hex_data[facet_data_pos + 24 : facet_data_pos + 64]
 
-            if facet_address != '0x' + '0' * 40:
+            if facet_address != "0x" + "0" * 40:
                 facet_addresses.append(facet_address.lower())
 
         # Remove duplicates
@@ -212,11 +330,7 @@ def detect_diamond_proxy(
         return None
 
 
-def detect_proxy_implementation(
-    contract_address: str,
-    chain_id: int,
-    etherscan_api_key: str
-) -> Optional[str]:
+def detect_proxy_implementation(contract_address: str, chain_id: int, etherscan_api_key: str) -> str | None:
     """
     Detect if contract is a simple proxy and return implementation address.
 
@@ -235,20 +349,21 @@ def detect_proxy_implementation(
         Implementation address or None
     """
     import logging
+
     logger = logging.getLogger(__name__)
 
     try:
         # EIP-1967 implementation slot
         # keccak256("eip1967.proxy.implementation") - 1
-        impl_slot = '0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc'
+        impl_slot = "0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc"
 
         params = {
-            'module': 'proxy',
-            'action': 'eth_getStorageAt',
-            'address': contract_address,
-            'position': impl_slot,
-            'tag': 'latest',
-            'apikey': etherscan_api_key
+            "module": "proxy",
+            "action": "eth_getStorageAt",
+            "address": contract_address,
+            "position": impl_slot,
+            "tag": "latest",
+            "apikey": etherscan_api_key,
         }
 
         base_url = f"https://api.etherscan.io/v2/api?chainid={chain_id}"
@@ -257,35 +372,35 @@ def detect_proxy_implementation(
         data = response.json()
 
         # Check for API errors first
-        if 'error' in data or data.get('status') == '0' or data.get('message') == 'NOTOK':
-            logger.debug(f"API error when checking EIP-1967 implementation slot")
+        if "error" in data or data.get("status") == "0" or data.get("message") == "NOTOK":
+            logger.debug("API error when checking EIP-1967 implementation slot")
             # Continue to next detection method
-        elif data.get('result') and data['result'] != '0x' + '0' * 64:
+        elif data.get("result") and data["result"] != "0x" + "0" * 64:
             # Ensure result is valid hex before extracting address
-            result = data['result']
-            if result.startswith('0x') and len(result) == 66:  # 0x + 64 hex chars
+            result = data["result"]
+            if result.startswith("0x") and len(result) == 66:  # 0x + 64 hex chars
                 # Extract address from storage slot (last 20 bytes)
-                impl_address = '0x' + result[-40:]
-                if impl_address != '0x' + '0' * 40:
+                impl_address = "0x" + result[-40:]
+                if impl_address != "0x" + "0" * 40:
                     logger.info(f"Detected EIP-1967 proxy, implementation: {impl_address}")
                     return impl_address
 
         # Try Etherscan's built-in proxy detection
         params = {
-            'module': 'contract',
-            'action': 'getsourcecode',
-            'address': contract_address,
-            'apikey': etherscan_api_key
+            "module": "contract",
+            "action": "getsourcecode",
+            "address": contract_address,
+            "apikey": etherscan_api_key,
         }
 
         response = requests.get(base_url, params=params, timeout=10)
         data = response.json()
 
-        if data.get('result') and len(data['result']) > 0:
-            result = data['result'][0]
-            impl = result.get('Implementation')
+        if data.get("result") and len(data["result"]) > 0:
+            result = data["result"][0]
+            impl = result.get("Implementation")
             # Validate it's actually an address (0x followed by 40 hex chars)
-            if impl and isinstance(impl, str) and impl.startswith('0x') and len(impl) == 42:
+            if impl and isinstance(impl, str) and impl.startswith("0x") and len(impl) == 42:
                 try:
                     # Verify it's valid hex
                     int(impl, 16)
@@ -301,10 +416,8 @@ def detect_proxy_implementation(
 
 
 def fetch_contract_abi(
-    contract_address: str,
-    chain_id: int,
-    etherscan_api_key: str
-) -> Tuple[Optional[List[Dict]], Dict, bool]:
+    contract_address: str, chain_id: int, etherscan_api_key: str
+) -> tuple[list[dict] | None, dict, bool]:
     """
     Fetch contract ABI from Etherscan with proxy detection.
 
@@ -325,7 +438,9 @@ def fetch_contract_abi(
         - is_diamond: True if Diamond proxy detected
     """
     import logging
+
     from .merger import ABIMerger
+
     logger = logging.getLogger(__name__)
 
     # First, check if this is a Diamond proxy
@@ -334,7 +449,7 @@ def fetch_contract_abi(
     if facet_addresses:
         # Diamond proxy: fetch and merge ABIs from all facets
         logger.info(f"Diamond proxy detected with {len(facet_addresses)} facets")
-        logger.info(f"Fetching ABIs from all facets and merging...")
+        logger.info("Fetching ABIs from all facets and merging...")
 
         merger = ABIMerger()
         successful_fetches = 0
@@ -343,12 +458,7 @@ def fetch_contract_abi(
         for i, facet_address in enumerate(facet_addresses, 1):
             logger.info(f"  [{i}/{len(facet_addresses)}] Fetching ABI for facet {facet_address}...")
 
-            params = {
-                'module': 'contract',
-                'action': 'getabi',
-                'address': facet_address,
-                'apikey': etherscan_api_key
-            }
+            params = {"module": "contract", "action": "getabi", "address": facet_address, "apikey": etherscan_api_key}
 
             try:
                 base_url = f"https://api.etherscan.io/v2/api?chainid={chain_id}"
@@ -356,12 +466,14 @@ def fetch_contract_abi(
                 response.raise_for_status()
                 data = response.json()
 
-                if data['status'] == '1':
-                    facet_abi = json.loads(data['result'])
+                if data["status"] == "1":
+                    facet_abi = json.loads(data["result"])
                     # Pass facet_address to track selector -> facet mapping
                     stats = merger.add_abi(facet_abi, chain_id, source_address=facet_address)
-                    logger.info(f"    ✓ Added {stats['new_functions']} functions, {stats['new_events']} events "
-                              f"({stats['duplicate_functions']} duplicates skipped)")
+                    logger.info(
+                        f"    ✓ Added {stats['new_functions']} functions, {stats['new_events']} events "
+                        f"({stats['duplicate_functions']} duplicates skipped)"
+                    )
                     successful_fetches += 1
                 else:
                     logger.warning(f"    ✗ Failed to fetch ABI for facet {facet_address}")
@@ -372,7 +484,7 @@ def fetch_contract_abi(
                 failed_fetches += 1
 
         if successful_fetches == 0:
-            logger.error(f"Failed to fetch ABI from any facet")
+            logger.error("Failed to fetch ABI from any facet")
             return None, {}, False
 
         merged_abi = merger.get_merged_abi()
@@ -401,12 +513,7 @@ def fetch_contract_abi(
     else:
         address_to_fetch = contract_address
 
-    params = {
-        'module': 'contract',
-        'action': 'getabi',
-        'address': address_to_fetch,
-        'apikey': etherscan_api_key
-    }
+    params = {"module": "contract", "action": "getabi", "address": address_to_fetch, "apikey": etherscan_api_key}
 
     try:
         base_url = f"https://api.etherscan.io/v2/api?chainid={chain_id}"
@@ -414,8 +521,8 @@ def fetch_contract_abi(
         response.raise_for_status()
         data = response.json()
 
-        if data['status'] == '1':
-            abi = json.loads(data['result'])
+        if data["status"] == "1":
+            abi = json.loads(data["result"])
             logger.info(f"Fetched ABI with {len(abi)} entries from {address_to_fetch}")
             # Return tuple: (abi, selector_sources, is_diamond)
             return abi, {}, False

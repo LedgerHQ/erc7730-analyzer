@@ -1,112 +1,163 @@
 """ERC-7730 format expansion utilities."""
 
-from typing import Any, Dict
+from typing import Any
 
-def expand_erc7730_format_with_refs(selector_format: Dict[str, Any], full_erc7730: Dict[str, Any], selector: str = None) -> Dict[str, Any]:
+
+def _extract_reference_name(value: str, prefix: str) -> str | None:
+    if not value.startswith(prefix):
+        return None
+    return value[len(prefix) :] or None
+
+
+def _extract_embedded_reference_names(value: str, prefix: str) -> set[str]:
+    names: set[str] = set()
+    start = 0
+    while True:
+        idx = value.find(prefix, start)
+        if idx == -1:
+            break
+        remainder = value[idx + len(prefix) :]
+        name_chars = []
+        for char in remainder:
+            if char.isalnum() or char in {"_", "-"}:
+                name_chars.append(char)
+            else:
+                break
+        if name_chars:
+            names.add("".join(name_chars))
+        start = idx + len(prefix)
+    return names
+
+
+def _scan_string_references(
+    value: str,
+    *,
+    referenced_constants: set[str],
+    referenced_enums: set[str],
+    referenced_maps: set[str],
+) -> None:
+    referenced_constants.update(_extract_embedded_reference_names(value, "$.metadata.constants."))
+    referenced_enums.update(_extract_embedded_reference_names(value, "$.metadata.enums."))
+    referenced_maps.update(_extract_embedded_reference_names(value, "$.metadata.maps."))
+
+
+def expand_erc7730_format_with_refs(
+    selector_format: dict[str, Any],
+    full_erc7730: dict[str, Any],
+    format_key: str = None,
+) -> dict[str, Any]:
     """
-    Expand ERC-7730 format to include referenced definitions, constants, and enums.
+    Expand an ERC-7730 selector format with the metadata it references.
+
+    This keeps prompt payloads compact while still preserving the definitions,
+    constants, enums, maps, and lightweight metadata context needed to audit v2
+    descriptors accurately.
 
     Args:
-        selector_format: The format definition for a specific selector
-        full_erc7730: The complete ERC-7730 data with metadata and display sections
-        selector: The function selector (e.g., "0x54840d1a") to use as key in display.formats
-
-    Returns:
-        Expanded format with inline definitions, constants, and enums, using proper ERC-7730 structure
+        selector_format: The format dict for this selector.
+        full_erc7730: The complete ERC-7730 descriptor.
+        format_key: The original key used in display.formats (function sig or selector).
     """
-    result = {}
+    result: dict[str, Any] = {}
 
-    # Collect referenced definitions
-    referenced_defs = set()
-    referenced_constants = set()
-    referenced_enums = set()
+    referenced_defs: set[str] = set()
+    referenced_constants: set[str] = set()
+    referenced_enums: set[str] = set()
+    referenced_maps: set[str] = set()
 
-    def find_refs(obj):
-        """Recursively find $ref references in the format"""
-        if isinstance(obj, dict):
+    def scan(obj: Any) -> None:
+        if isinstance(obj, str):
+            _scan_string_references(
+                obj,
+                referenced_constants=referenced_constants,
+                referenced_enums=referenced_enums,
+                referenced_maps=referenced_maps,
+            )
+        elif isinstance(obj, dict):
             for key, value in obj.items():
-                if key == '$ref' and isinstance(value, str):
-                    # Extract definition name from $.display.definitions._minAmountOut
-                    if value.startswith('$.display.definitions.'):
-                        def_name = value.replace('$.display.definitions.', '')
+                if key == "$ref" and isinstance(value, str):
+                    def_name = _extract_reference_name(value, "$.display.definitions.")
+                    if def_name:
                         referenced_defs.add(def_name)
-                    # Extract enum name from $.metadata.enums.interestRateMode
-                    elif value.startswith('$.metadata.enums.'):
-                        enum_name = value.replace('$.metadata.enums.', '')
+                    enum_name = _extract_reference_name(value, "$.metadata.enums.")
+                    if enum_name:
                         referenced_enums.add(enum_name)
+                elif key == "map" and isinstance(value, str):
+                    map_name = _extract_reference_name(value, "$.metadata.maps.")
+                    if map_name:
+                        referenced_maps.add(map_name)
+
+                if isinstance(value, str):
+                    _scan_string_references(
+                        value,
+                        referenced_constants=referenced_constants,
+                        referenced_enums=referenced_enums,
+                        referenced_maps=referenced_maps,
+                    )
                 elif isinstance(value, (dict, list)):
-                    find_refs(value)
+                    scan(value)
         elif isinstance(obj, list):
             for item in obj:
-                find_refs(item)
+                scan(item)
 
-    def find_constant_refs(obj):
-        """Recursively find references to $.metadata.constants"""
-        if isinstance(obj, dict):
-            for key, value in obj.items():
-                if isinstance(value, str) and '$.metadata.constants.' in value:
-                    # Extract constant name
-                    const_name = value.replace('$.metadata.constants.', '')
-                    referenced_constants.add(const_name)
-                elif isinstance(value, (dict, list)):
-                    find_constant_refs(value)
-        elif isinstance(obj, list):
-            for item in obj:
-                if isinstance(item, str) and '$.metadata.constants.' in item:
-                    const_name = item.replace('$.metadata.constants.', '')
-                    referenced_constants.add(const_name)
-                else:
-                    find_constant_refs(item)
+    scan(selector_format)
 
-    # Find all references
-    find_refs(selector_format)
-    find_constant_refs(selector_format)
+    metadata = full_erc7730.get("metadata", {})
+    display = full_erc7730.get("display", {})
+    definitions = display.get("definitions", {})
 
-    # Also check definitions for enum and constant references
-    if referenced_defs and 'display' in full_erc7730 and 'definitions' in full_erc7730['display']:
-        for def_name in referenced_defs:
-            if def_name in full_erc7730['display']['definitions']:
-                # Check for both enum and constant references in definitions
-                find_refs(full_erc7730['display']['definitions'][def_name])
-                find_constant_refs(full_erc7730['display']['definitions'][def_name])
+    # Definitions can themselves reference other definitions, constants, enums,
+    # or maps. Resolve the full transitive closure so prompt/report packets keep
+    # all support data needed for nested $ref chains.
+    scanned_defs: set[str] = set()
+    pending_defs = list(referenced_defs)
+    while pending_defs:
+        def_name = pending_defs.pop()
+        if def_name in scanned_defs:
+            continue
+        scanned_defs.add(def_name)
 
-    # Build result with metadata (constants and enums) if any are referenced
-    if referenced_constants or referenced_enums:
-        result['metadata'] = {}
+        definition = definitions.get(def_name)
+        if not definition:
+            continue
 
-        # Add referenced constants
-        if referenced_constants and 'metadata' in full_erc7730 and 'constants' in full_erc7730['metadata']:
-            result['metadata']['constants'] = {}
-            for const_name in referenced_constants:
-                if const_name in full_erc7730['metadata']['constants']:
-                    result['metadata']['constants'][const_name] = full_erc7730['metadata']['constants'][const_name]
+        before_defs = set(referenced_defs)
+        scan(definition)
+        for new_def in referenced_defs - before_defs:
+            if new_def not in scanned_defs:
+                pending_defs.append(new_def)
 
-        # Add referenced enums
-        if referenced_enums and 'metadata' in full_erc7730 and 'enums' in full_erc7730['metadata']:
-            result['metadata']['enums'] = {}
-            for enum_name in referenced_enums:
-                if enum_name in full_erc7730['metadata']['enums']:
-                    result['metadata']['enums'][enum_name] = full_erc7730['metadata']['enums'][enum_name]
+    informative_metadata = {key: metadata[key] for key in ("owner", "contractName", "info", "token") if key in metadata}
+    if informative_metadata or referenced_constants or referenced_enums or referenced_maps:
+        result["metadata"] = {}
+        result["metadata"].update(informative_metadata)
 
-    # Build result with display section (definitions + formats)
+        if referenced_constants and metadata.get("constants"):
+            result["metadata"]["constants"] = {
+                name: metadata["constants"][name] for name in referenced_constants if name in metadata["constants"]
+            }
+
+        if referenced_enums and metadata.get("enums"):
+            result["metadata"]["enums"] = {
+                name: metadata["enums"][name] for name in referenced_enums if name in metadata["enums"]
+            }
+
+        if referenced_maps and metadata.get("maps"):
+            result["metadata"]["maps"] = {
+                name: metadata["maps"][name] for name in referenced_maps if name in metadata["maps"]
+            }
+
     if referenced_defs or selector_format:
-        if 'display' not in result:
-            result['display'] = {}
+        result.setdefault("display", {})
 
-        # Add referenced definitions
-        if referenced_defs:
-            result['display']['definitions'] = {}
-            if 'display' in full_erc7730 and 'definitions' in full_erc7730['display']:
-                for def_name in referenced_defs:
-                    if def_name in full_erc7730['display']['definitions']:
-                        result['display']['definitions'][def_name] = full_erc7730['display']['definitions'][def_name]
+        if referenced_defs and definitions:
+            result["display"]["definitions"] = {
+                name: definitions[name] for name in referenced_defs if name in definitions
+            }
 
-        # Add the selector format in proper ERC-7730 structure: display.formats[selector]
         if selector_format:
-            result['display']['formats'] = {}
-            # Use selector as key if provided, otherwise use $id or fallback
-            format_key = selector or selector_format.get('$id', 'unknown')
-            result['display']['formats'][format_key] = selector_format
+            result["display"]["formats"] = {}
+            key = format_key or selector_format.get("$id", "unknown")
+            result["display"]["formats"][key] = selector_format
 
     return result
-

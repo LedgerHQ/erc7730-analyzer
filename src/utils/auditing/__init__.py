@@ -1,5 +1,6 @@
 """Analyzer audit modules."""
 
+from .agentic import generate_multi_agent_audit_async, record_completed_analysis
 from .batch import (
     generate_clear_signing_audit_async,
     generate_clear_signing_audits_batch,
@@ -20,13 +21,17 @@ from .models import (
     MissingParameter,
     OptionalImprovement,
     OverallAssessment,
+    PrimaryAuditorOutput,
     Recommendations,
     RiskLevel,
     SecurityRisk,
     Severity,
     SpecLimitation,
+    ToolRequest,
     TxSample,
     UserIntentField,
+    ValidatorChange,
+    ValidatorOutput,
 )
 from .rules import (
     SYSTEM_INSTRUCTIONS,
@@ -45,6 +50,7 @@ from .rules import (
 )
 
 __all__ = [
+    "SYSTEM_INSTRUCTIONS",
     "AuditReport",
     "AuditResult",
     "AuditTask",
@@ -58,18 +64,22 @@ __all__ = [
     "MissingParameter",
     "OptionalImprovement",
     "OverallAssessment",
+    "PrimaryAuditorOutput",
     "Recommendations",
     "RiskLevel",
     "SecurityRisk",
     "Severity",
     "SpecLimitation",
-    "SYSTEM_INSTRUCTIONS",
+    "ToolRequest",
     "TxSample",
     "UserIntentField",
+    "ValidatorChange",
+    "ValidatorOutput",
     "build_system_instructions",
     "generate_clear_signing_audit_async",
     "generate_clear_signing_audits_batch",
     "generate_clear_signing_audits_batch_async",
+    "generate_multi_agent_audit_async",
     "get_critical_issues",
     "get_display_issues",
     "get_recommendations",
@@ -82,4 +92,5 @@ __all__ = [
     "load_validation_rules",
     "prepare_audit_task",
     "read_rule",
+    "record_completed_analysis",
 ]

@@ -1,347 +1,284 @@
 """
 Smart format specification optimizer for ERC-7730 audits.
 
-Dynamically selects relevant sections from erc7730_format_reference.json
-based on descriptor features to reduce token usage while maintaining
-comprehensive coverage.
-
-Note: This module ONLY optimizes erc7730_format_reference.json.
-Other audit rule files (validation_rules.json, critical_issues.json)
-should be loaded directly as they are always used in full.
+The optimizer only trims the static format reference. Validation, critical issue,
+recommendation, limitation, and display issue rule sets are always loaded in full.
 """
 
 import json
 import logging
-from typing import Dict, Tuple
+from collections.abc import Iterable
+from typing import Any
 
 from .rules import (
     get_critical_issues,
     get_display_issues,
     get_recommendations,
-    read_rule,
     get_spec_limitations,
     get_validation_rules,
+    read_rule,
 )
 
 logger = logging.getLogger(__name__)
 
-
-# Core sections always included in format reference
 CORE_FORMAT_SECTIONS = [
-    'path_syntax',
-    'validation_notes',
-    'xor_constraints',
-    'special_paths',
-    'alternative_field_value',
+    "overview",
+    "path_syntax",
+    "display_format_keys",
+    "display_structure",
+    "visible_semantics",
+    "xor_constraints",
+    "validation_notes",
+    "container_values",
 ]
 
-# Map format types to relevant rule sections in erc7730_format_reference.json
 FORMAT_TYPE_SECTIONS = {
-    'tokenAmount': [
-        'format_types',
-        'integer_formats',
-        'address_formats',
-        'container_values',
-        'address_sources'
-    ],
-    'nftName': [
-        'format_types',
-        'address_formats',
-        'address_types',
-        'address_sources'
-    ],
-    'addressName': [
-        'format_types',
-        'address_formats',
-        'address_types',
-        'address_sources'
-    ],
-    'amount': [
-        'format_types',
-        'integer_formats'
-    ],
-    'percentage': [
-        'format_types',
-        'integer_formats'
-    ],
-    'date': [
-        'format_types',
-        'integer_formats'
-    ],
-    'duration': [
-        'format_types',
-        'integer_formats'
-    ],
-    'enum': [
-        'format_types',
-        'integer_formats',
-        'string_formats'
-    ],
-    'unit': [
-        'format_types',
-        'integer_formats'
-    ],
-    'calldata': [
-        'format_types',
-        'bytes_formats',
-        'type_casting'
-    ],
-    'raw': [
-        'format_types',
-        'type_casting'
-    ]
+    "raw": ["format_types"],
+    "amount": ["format_types", "container_values"],
+    "tokenAmount": ["format_types", "map_references"],
+    "nftName": ["format_types"],
+    "addressName": ["format_types", "address_sources", "address_types"],
+    "interoperableAddressName": ["format_types", "address_sources", "address_types"],
+    "tokenTicker": ["format_types"],
+    "date": ["format_types"],
+    "duration": ["format_types"],
+    "unit": ["format_types"],
+    "enum": ["format_types", "metadata_section"],
+    "chainId": ["format_types", "container_values"],
+    "calldata": ["format_types", "map_references", "display_format_keys", "container_values"],
 }
 
-# Map structural features to relevant sections
 FEATURE_SECTIONS = {
-    'has_arrays': ['array_indexing'],
-    'has_nested_paths': ['special_paths'],  # Already in core, but emphasize
-    'uses_containers': ['container_values'],
-    'has_exclusions': [],  # No specific sections needed
-    'uses_xor': ['xor_constraints'],  # Already in core
+    "has_arrays": ["field_structures"],
+    "has_nested_paths": ["field_structures"],
+    "has_field_groups": ["field_structures"],
+    "uses_containers": ["container_values"],
+    "uses_maps": ["map_references", "metadata_section"],
+    "uses_visibility": ["visible_semantics"],
+    "uses_interpolated_intent": ["display_structure"],
+    "uses_encryption": ["encrypted_fields", "field_structures"],
 }
 
-# Complexity threshold for fallback to full rules
 COMPLEXITY_FALLBACK_THRESHOLD = 8
 
 
-def _load_format_reference() -> Dict:
-    """Load the ERC-7730 format reference JSON from package resources."""
+def _load_format_reference() -> dict:
     return json.loads(read_rule("erc7730_format_reference.json"))
 
 
-def analyze_descriptor_features(erc7730_format: Dict) -> Dict:
-    """
-    Extract features from ERC-7730 descriptor for smart rule selection.
+def _extract_format_definition(erc7730_format: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(erc7730_format, dict):
+        return {}
 
-    Args:
-        erc7730_format: The ERC-7730 format section (expanded with metadata/display)
+    if "display" in erc7730_format:
+        formats = erc7730_format.get("display", {}).get("formats", {})
+        if isinstance(formats, dict) and formats:
+            return next(iter(formats.values()))
 
-    Returns:
-        Dict containing:
-        - format_types: Set of format type strings used
-        - has_arrays: bool
-        - has_nested_paths: bool
-        - has_exclusions: bool
-        - uses_containers: bool
-        - uses_xor: bool
-        - complexity_score: int (0-10)
-    """
+    if "format" in erc7730_format and isinstance(erc7730_format["format"], dict):
+        return erc7730_format["format"]
+
+    return erc7730_format
+
+
+def _iter_field_nodes(fields: Iterable[Any]) -> Iterable[dict[str, Any]]:
+    for field in fields or []:
+        if not isinstance(field, dict):
+            continue
+        yield field
+        nested_fields = field.get("fields")
+        if isinstance(nested_fields, list):
+            yield from _iter_field_nodes(nested_fields)
+
+
+def _contains_container_reference(value: Any) -> bool:
+    if isinstance(value, str):
+        return "@." in value
+    if isinstance(value, dict):
+        return any(_contains_container_reference(v) for v in value.values())
+    if isinstance(value, list):
+        return any(_contains_container_reference(v) for v in value)
+    return False
+
+
+def _contains_map_reference(value: Any) -> bool:
+    if isinstance(value, dict):
+        if "map" in value:
+            return True
+        return any(_contains_map_reference(v) for v in value.values())
+    if isinstance(value, list):
+        return any(_contains_map_reference(v) for v in value)
+    if isinstance(value, str):
+        return "$.metadata.maps." in value
+    return False
+
+
+def analyze_descriptor_features(erc7730_format: dict) -> dict:
+    format_def = _extract_format_definition(erc7730_format)
+    fields = format_def.get("fields", []) if isinstance(format_def, dict) else []
+
     features = {
-        'format_types': set(),
-        'has_arrays': False,
-        'has_nested_paths': False,
-        'has_exclusions': False,
-        'uses_containers': False,
-        'uses_xor': False,
-        'complexity_score': 0
+        "format_types": set(),
+        "has_arrays": False,
+        "has_nested_paths": False,
+        "has_field_groups": False,
+        "uses_containers": False,
+        "uses_maps": False,
+        "uses_visibility": False,
+        "uses_interpolated_intent": bool(format_def.get("interpolatedIntent"))
+        if isinstance(format_def, dict)
+        else False,
+        "uses_encryption": False,
+        "complexity_score": 0,
     }
 
-    # Get the actual format definition
-    format_def = erc7730_format.get('format', {})
-    fields = format_def.get('fields', [])
+    for field in _iter_field_nodes(fields):
+        fmt = field.get("format")
+        if isinstance(fmt, str):
+            features["format_types"].add(fmt)
 
-    for field in fields:
-        # Extract format types
-        if 'format' in field:
-            fmt = field['format']
-            if isinstance(fmt, str):
-                features['format_types'].add(fmt)
-            elif isinstance(fmt, dict):
-                # Handle nested format objects (e.g., {"tokenAmount": {...}})
-                for key in fmt.keys():
-                    features['format_types'].add(key)
+        path = field.get("path", "")
+        if isinstance(path, str):
+            if "[" in path or "]" in path:
+                features["has_arrays"] = True
+            if path.startswith("@.") or _contains_container_reference(path):
+                features["uses_containers"] = True
+            stripped = path[2:] if path.startswith("#.") else path
+            if "." in stripped:
+                features["has_nested_paths"] = True
 
-        # Check path complexity
-        path = field.get('path', '')
-        if '[' in path or ']' in path:
-            features['has_arrays'] = True
-            features['complexity_score'] += 1
+        if "visible" in field:
+            features["uses_visibility"] = True
 
-        if '.' in path:
-            depth = path.count('.')
-            if depth > 1:
-                features['has_nested_paths'] = True
-                features['complexity_score'] += 1
+        if "encryption" in field:
+            features["uses_encryption"] = True
 
-        # Check for container references ($)
-        if '$' in path or ('$ref' in field):
-            features['uses_containers'] = True
-            features['complexity_score'] += 2
+        if isinstance(field.get("fields"), list):
+            features["has_field_groups"] = True
 
-        # Check for XOR (alternative values)
-        if 'value' in field and isinstance(field['value'], list):
-            features['uses_xor'] = True
-            features['complexity_score'] += 2
+        params = field.get("params")
+        if _contains_map_reference(params) or _contains_map_reference(field):
+            features["uses_maps"] = True
+        if _contains_container_reference(params):
+            features["uses_containers"] = True
 
-    # Check for exclusions
-    if format_def.get('excluded'):
-        features['has_exclusions'] = True
-        features['complexity_score'] += 1
+    metadata = erc7730_format.get("metadata", {}) if isinstance(erc7730_format, dict) else {}
+    if isinstance(metadata, dict) and metadata.get("maps"):
+        features["uses_maps"] = True
 
-    # Cap complexity at 10
-    features['complexity_score'] = min(features['complexity_score'], 10)
+    complexity_weights = {
+        "has_arrays": 1,
+        "has_nested_paths": 1,
+        "has_field_groups": 2,
+        "uses_containers": 1,
+        "uses_maps": 2,
+        "uses_visibility": 1,
+        "uses_interpolated_intent": 1,
+        "uses_encryption": 2,
+    }
+    features["complexity_score"] = min(
+        10,
+        len(features["format_types"])
+        + sum(weight for feature, weight in complexity_weights.items() if features[feature]),
+    )
 
-    # Log detected features
-    logger.info(f"📊 Descriptor analysis:")
-    logger.info(f"  - Format types: {sorted(features['format_types']) if features['format_types'] else 'none'}")
-    logger.info(f"  - Complexity score: {features['complexity_score']}/10")
+    logger.info("📊 Descriptor analysis:")
+    logger.info(
+        "  - Format types: %s",
+        sorted(features["format_types"]) if features["format_types"] else "none",
+    )
+    logger.info("  - Complexity score: %s/10", features["complexity_score"])
 
-    detected_features = []
-    if features['has_arrays']:
-        detected_features.append('arrays')
-    if features['has_nested_paths']:
-        detected_features.append('nested paths')
-    if features['has_exclusions']:
-        detected_features.append('exclusions')
-    if features['uses_containers']:
-        detected_features.append('$ref containers')
-    if features['uses_xor']:
-        detected_features.append('XOR values')
-
-    if detected_features:
-        logger.info(f"  - Features detected: {', '.join(detected_features)}")
-    else:
-        logger.info(f"  - Features detected: none (simple descriptor)")
+    detected_features = [
+        feature.replace("_", " ")
+        for feature in (
+            "has_arrays",
+            "has_nested_paths",
+            "has_field_groups",
+            "uses_containers",
+            "uses_maps",
+            "uses_visibility",
+            "uses_interpolated_intent",
+            "uses_encryption",
+        )
+        if features[feature]
+    ]
+    logger.info(
+        "  - Features detected: %s",
+        ", ".join(detected_features) if detected_features else "none (simple descriptor)",
+    )
 
     return features
 
 
 def load_optimized_format_spec(
-    descriptor_features: Dict,
-    use_smart_referencing: bool = True
-) -> Tuple[Dict, Dict]:
-    """
-    Load optimized ERC-7730 format specification based on descriptor features.
-
-    This function ONLY optimizes erc7730_format_reference.json. Other rule files
-    should be loaded directly as they are always used in full.
-
-    Args:
-        descriptor_features: Output from analyze_descriptor_features()
-        use_smart_referencing: If False, load full format spec
-
-    Returns:
-        Tuple of (format_spec_dict, metadata_dict) where:
-        - format_spec_dict: Optimized or full format specification
-        - metadata_dict: Info about what was included/excluded
-    """
-    # Load full format reference
+    descriptor_features: dict,
+    use_smart_referencing: bool = True,
+) -> tuple[dict, dict]:
     full_format_ref = _load_format_reference()
-
-    # Check for fallback conditions
-    complexity = descriptor_features['complexity_score']
-    should_fallback = (
-        not use_smart_referencing or
-        complexity >= COMPLEXITY_FALLBACK_THRESHOLD
-    )
+    complexity = descriptor_features["complexity_score"]
+    should_fallback = not use_smart_referencing or complexity >= COMPLEXITY_FALLBACK_THRESHOLD
 
     if should_fallback:
-        reason = 'high_complexity' if complexity >= COMPLEXITY_FALLBACK_THRESHOLD else 'disabled'
+        reason = "high_complexity" if complexity >= COMPLEXITY_FALLBACK_THRESHOLD else "disabled"
         logger.info(
-            f"Using FULL format spec (complexity={complexity}, "
-            f"smart_ref={use_smart_referencing})"
+            "Using FULL format spec (complexity=%s, smart_ref=%s)",
+            complexity,
+            use_smart_referencing,
         )
         return full_format_ref, {
-            'mode': 'full',
-            'reason': reason,
-            'complexity': complexity
+            "mode": "full",
+            "reason": reason,
+            "complexity": complexity,
         }
 
-    # Smart referencing: select relevant sections
-    logger.info(
-        f"Using SMART format spec (complexity={complexity}, "
-        f"format_types={descriptor_features['format_types']})"
-    )
-
-    # Start with core sections
     sections_to_include = set(CORE_FORMAT_SECTIONS)
-    logger.debug(f"  📋 Core sections: {sorted(CORE_FORMAT_SECTIONS)}")
+    for fmt_type in descriptor_features["format_types"]:
+        sections_to_include.update(FORMAT_TYPE_SECTIONS.get(fmt_type, ["format_types"]))
 
-    # Add format-type-specific sections
-    format_type_sections_added = {}
-    for fmt_type in descriptor_features['format_types']:
-        if fmt_type in FORMAT_TYPE_SECTIONS:
-            added_sections = FORMAT_TYPE_SECTIONS[fmt_type]
-            sections_to_include.update(added_sections)
-            format_type_sections_added[fmt_type] = sorted(added_sections)
+    for feature, section_names in FEATURE_SECTIONS.items():
+        if descriptor_features.get(feature):
+            sections_to_include.update(section_names)
 
-    if format_type_sections_added:
-        logger.info(f"  📦 Format-specific sections added:")
-        for fmt_type, sections in format_type_sections_added.items():
-            logger.info(f"    - {fmt_type}: {sections}")
-
-    # Add feature-specific sections
-    feature_sections_added = {}
-    for feature, is_present in descriptor_features.items():
-        if is_present and feature in FEATURE_SECTIONS:
-            added_sections = FEATURE_SECTIONS[feature]
-            sections_to_include.update(added_sections)
-            feature_sections_added[feature] = sorted(added_sections)
-
-    if feature_sections_added:
-        logger.info(f"  🔧 Feature-specific sections added:")
-        for feature, sections in feature_sections_added.items():
-            logger.info(f"    - {feature}: {sections}")
-
-    # Always include complete_examples if complexity >= 5
     if complexity >= 5:
-        sections_to_include.add('complete_examples')
-        logger.info(f"  ⚠️  High complexity ({complexity}), including complete_examples")
+        sections_to_include.add("complete_examples")
 
-    # Filter to selected sections
-    special_keys = {'title', 'description', 'version'}
-    schema_keys = {k for k in full_format_ref.keys() if k.startswith('$')}
-    available_sections = {
-        k for k in full_format_ref.keys()
-        if k not in schema_keys and k not in special_keys
-    }
+    special_keys = {"$schema", "title", "description", "version"}
+    available_sections = {key for key in full_format_ref if key not in special_keys}
     included_section_names = available_sections & sections_to_include
     excluded_section_names = available_sections - included_section_names
 
     filtered_format_ref = {
-        k: v for k, v in full_format_ref.items()
-        if k in schema_keys or k in special_keys or k in included_section_names
+        key: value for key, value in full_format_ref.items() if key in special_keys or key in included_section_names
     }
 
-    # Calculate metadata
-    total_sections = len(available_sections)
-    included_sections = len(included_section_names)
-    excluded_sections = len(excluded_section_names)
-    reduction_percent = round((excluded_sections / total_sections) * 100, 1) if total_sections else 0.0
-
     metadata = {
-        'mode': 'smart',
-        'complexity': complexity,
-        'format_types': sorted(descriptor_features['format_types']),
-        'total_format_sections': total_sections,
-        'included_format_sections': included_sections,
-        'excluded_format_sections': excluded_sections,
-        'reduction_percent': reduction_percent,
-        'sections_included': sorted(included_section_names),
-        'sections_excluded': sorted(excluded_section_names),
+        "mode": "smart",
+        "complexity": complexity,
+        "format_types": sorted(descriptor_features["format_types"]),
+        "total_format_sections": len(available_sections),
+        "included_format_sections": len(included_section_names),
+        "excluded_format_sections": len(excluded_section_names),
+        "reduction_percent": round((len(excluded_section_names) / len(available_sections)) * 100, 1)
+        if available_sections
+        else 0.0,
+        "sections_included": sorted(included_section_names),
+        "sections_excluded": sorted(excluded_section_names),
     }
 
     logger.info(
-        f"Smart format spec: {included_sections}/{total_sections} sections "
-        f"({metadata['reduction_percent']}% reduction)"
+        "Smart format spec: %s/%s sections (%s%% reduction)",
+        metadata["included_format_sections"],
+        metadata["total_format_sections"],
+        metadata["reduction_percent"],
     )
-
-    # Log detailed breakdown
-    logger.info(f"  ✅ Included sections ({included_sections}): {sorted(sections_to_include)}")
-    if metadata['sections_excluded']:
-        logger.info(f"  ❌ Excluded sections ({excluded_sections}): {sorted(metadata['sections_excluded'])}")
-
     return filtered_format_ref, metadata
 
 
 def load_relevant_rules(
-    descriptor_features: Dict,
+    descriptor_features: dict,
     use_smart_referencing: bool = True,
-) -> Tuple[Dict, Dict]:
-    """
-    Backward-compatible wrapper returning optimized format rules + static rule sets.
-    """
+) -> tuple[dict, dict]:
     format_spec, metadata = load_optimized_format_spec(
         descriptor_features,
         use_smart_referencing=use_smart_referencing,
@@ -357,44 +294,30 @@ def load_relevant_rules(
     return rules_dict, metadata
 
 
-def format_optimization_note(metadata: Dict) -> str:
-    """
-    Format a note about format specification optimization for inclusion in prompt.
-
-    Args:
-        metadata: Metadata dict from load_optimized_format_spec()
-
-    Returns:
-        Formatted string to include in prompt
-    """
-    if metadata['mode'] == 'full':
+def format_optimization_note(metadata: dict) -> str:
+    if metadata["mode"] == "full":
         reason_text = {
-            'high_complexity': f"descriptor complexity is high ({metadata['complexity']}/10)",
-            'disabled': "smart referencing is disabled"
-        }.get(metadata['reason'], metadata['reason'])
-
+            "high_complexity": f"descriptor complexity is high ({metadata['complexity']}/10)",
+            "disabled": "smart referencing is disabled",
+        }.get(metadata["reason"], metadata["reason"])
         return f"""
 **📋 Format Specification: FULL**
 
-All format specification sections included because {reason_text}.
+All format reference sections are included because {reason_text}.
 """
 
-    # Smart mode
-    format_types_text = ', '.join(sorted(metadata['format_types'])) if metadata['format_types'] else 'none'
-
+    format_types_text = ", ".join(sorted(metadata["format_types"])) if metadata["format_types"] else "none"
     return f"""
 **🎯 Format Specification: OPTIMIZED**
 
 Based on descriptor features:
 - Format types detected: {format_types_text}
-- Complexity score: {metadata['complexity']}/10
-- Format sections included: {metadata['included_format_sections']}/{metadata['total_format_sections']} ({100 - metadata['reduction_percent']:.0f}%)
+- Complexity score: {metadata["complexity"]}/10
+- Format sections included: {metadata["included_format_sections"]}/{metadata["total_format_sections"]} ({100 - metadata["reduction_percent"]:.0f}%)
 
-Only format specification sections relevant to detected format types are included.
-Validation rules and critical criteria are always loaded in full separately.
+Only the relevant v2 format-reference sections are included. Validation, critical issue, recommendation, limitation, and display issue rule sets are still loaded in full.
 """
 
 
-def format_smart_rules_note(metadata: Dict) -> str:
-    """Backward-compatible alias for optimization note formatting."""
+def format_smart_rules_note(metadata: dict) -> str:
     return format_optimization_note(metadata)

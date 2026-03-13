@@ -15,9 +15,6 @@ from .parsing import (
 
 __all__ = [
     "expand_erc7730_format_with_refs",
-    "generate_criticals_report",
-    "generate_summary_file",
-    "save_json_results",
     "extract_coverage_score",
     "extract_critical_issues",
     "extract_display_issues",
@@ -25,5 +22,8 @@ __all__ = [
     "extract_recommendations",
     "extract_risk_level",
     "extract_second_report",
+    "generate_criticals_report",
+    "generate_summary_file",
     "parse_first_report",
+    "save_json_results",
 ]

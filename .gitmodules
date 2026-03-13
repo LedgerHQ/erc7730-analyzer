@@ -1,0 +1,3 @@
+[submodule "tests/benchmark/raw"]
+	path = tests/benchmark/raw
+	url = https://github.com/LedgerHQ/clear-signing-erc7730-registry.git

@@ -2,14 +2,15 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "ERC-7730 Specification Limitations",
   "description": "Common spec limitations to detect when certain parameters cannot be clear signed with current ERC-7730 spec",
-  "version": "1.0.0",
+  "version": "1.1.0",
 
   "when_to_flag_as_spec_limitation": [
     "Bitpacked parameters (bitwise operations in source code)",
     "Output tokens determined by pool/DEX (not in function inputs)",
     "Deeply nested arrays beyond ERC-7730 capabilities",
     "Dynamic/computed data not available in inputs",
-    "Concatenated bytes with separate length array requiring dynamic slicing"
+    "Concatenated bytes with separate length array requiring dynamic slicing",
+    "Legitimate user-controlled runtime modes where the only truthful broad-flow fix would be to narrow the descriptor with invariants such as visible.mustBe"
   ],
 
   "required_information": [
@@ -17,6 +18,13 @@
     "Why it cannot be signed (specific technical reason)",
     "Impact on users (what information they're missing)",
     "Detected code pattern (evidence from source code)"
+  ],
+
+  "v2_conservatism": [
+    "Before calling something a spec limitation, verify that v2 features like `fieldGroup`, `visible`, `maps`, `tokenTicker`, `interoperableAddressName`, `encryption`, and `format: calldata` do not already provide a truthful solution.",
+    "Optional v2 features are not mandatory. Do not criticize a descriptor merely for not using them.",
+    "If the only remaining fix would ban a legitimate supported flow, document the limitation instead of pretending the issue has a neutral v2 fix.",
+    "Do not call a fixed-size destination identifier a spec limitation merely because there is no dedicated formatter. If a bytes32 recipient, token, or asset identifier can still be shown in raw form and that raw value is user-verifiable, raw display is a valid fix rather than a limitation."
   ],
 
   "common_spec_limitations": [
@@ -99,8 +107,8 @@
     {
       "id": 5,
       "type": "Arbitrary low-level calls",
-      "description": "Functions that execute arbitrary calldata (multicall, delegatecall to self)",
-      "why_limitation": "Not necessary to decode arbitrary actions, users understand these are generic execution functions",
+      "description": "Functions that execute genuinely open-ended arbitrary calldata where no bounded, truthful nested decoding strategy exists",
+      "why_limitation": "This is a limitation of open-ended execution, not of `delegatecall` or `call` themselves. If target/value/calldata are structured and resolvable, they can often be clear signed with `format: calldata`.",
       "examples": [
         "multicall(bytes[] calldata data)",
         "execute(bytes calldata data)",
@@ -113,12 +121,33 @@
       ],
       "output_format": {
         "title": "**Nested call data cannot be fully clear signed:**",
-        "explanation": "This function executes arbitrary encoded calldata. While the high-level function can be clear signed, the nested calls within the calldata parameter {calldata_param_name} would require recursive ERC-7730 descriptors for each possible nested function.",
-        "why_matters": "**Why this matters:** This is acceptable for generic execution functions where users understand they're batching multiple operations. Each nested operation should ideally have its own ERC-7730 descriptor if it's a known function."
+        "explanation": "This function executes arbitrary encoded calldata. While the high-level function can be clear signed, the nested calls within the calldata parameter {calldata_param_name} require wallet-resolvable ERC-7730 coverage for each nested function that the wallet chooses to decode.",
+        "why_matters": "**Why this matters:** This is acceptable for generic execution functions where users understand they're batching multiple operations. Do not claim a hard failure from current-file absence alone; the practical limit is whether the wallet can resolve suitable nested descriptors."
       }
     },
     {
       "id": 6,
+      "type": "Opaque runtime mode / price-limit knob",
+      "description": "A user-controlled field materially changes execution semantics, but the only truthful broad-flow options are opaque raw display or narrowing the descriptor to a fixed subset",
+      "why_limitation": "If the descriptor cannot explain the field in a human-verifiable way without banning valid modes via `visible.mustBe`, the limitation is in the expressiveness/UX, not necessarily in a missing critical field.",
+      "examples": [
+        "Destination-call enable flags paired with opaque destination message bytes",
+        "Price-bound parameters such as non-zero swap limits where exact outcome stops being guaranteed"
+      ],
+      "source_code_patterns": [
+        "A boolean/enum/limit input switches between materially different execution paths",
+        "The switched path depends on opaque bytes or protocol-specific math that is not meaningfully displayable",
+        "The only obvious descriptor 'fix' is to force one branch with visible.mustBe"
+      ],
+      "output_format": {
+        "title": "**{parameter_name} cannot be broadly clear signed without narrowing the supported flow:**",
+        "explanation": "This parameter changes execution semantics, but current ERC-7730 display options do not provide a clear, user-verifiable representation for every supported runtime mode. The only obvious descriptor change would be to constrain the field to a subset of valid values, which narrows functionality rather than neutrally fixing the descriptor.",
+        "why_matters": "**Why this matters:** Users may not fully understand how this runtime mode changes execution, but treating the issue as a mandatory critical fix would incorrectly force a narrower product decision.",
+        "detected_pattern": "**Detected pattern:** Source code shows runtime branching or guarantee changes based on {parameter_name}: {code_pattern}"
+      }
+    },
+    {
+      "id": 7,
     "type": "Role/context information not in function parameters",
     "description": "Function behavior varies by role/context (e.g., validator vs attestation signer) but the role is hardcoded in the function or determined by the function selector itself, not passed as a parameter",
     "why_limitation": "ERC-7730 can only display parameters from the function inputs. It cannot inject contextual information about which role a function operates on when that role is implicit in the function name/selector",

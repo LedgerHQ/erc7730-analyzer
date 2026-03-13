@@ -1,7 +1,7 @@
 """Core setup and chain-level API metadata helpers."""
 
 import logging
-from typing import Any, Dict, Optional
+from typing import Any
 
 import requests
 from web3 import Web3
@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 
 
 class TransactionFetcherCoreBaseMixin:
-    def __init__(self, etherscan_api_key: Optional[str] = None, lookback_days: int = 20):
+    def __init__(self, etherscan_api_key: str | None = None, lookback_days: int = 20):
         """
         Initialize the transaction fetcher.
 
@@ -26,7 +26,6 @@ class TransactionFetcherCoreBaseMixin:
         self.token_decimals_cache = {}
         self.token_symbol_cache = {}
         self.api_type_per_chain = {}  # Track which API worked for each chain
-
 
     def _get_api_base_url(self, chain_id: int, use_blockscout: bool = False) -> str:
         """
@@ -44,8 +43,7 @@ class TransactionFetcherCoreBaseMixin:
             return BLOCKSCOUT_URLS[chain_id]
         return f"https://api.etherscan.io/v2/api?chainid={chain_id}"
 
-
-    def _get_current_block_number(self, chain_id: int, use_blockscout: bool = False) -> Optional[int]:
+    def _get_current_block_number(self, chain_id: int, use_blockscout: bool = False) -> int | None:
         """
         Get the current block number using eth_blockNumber.
 
@@ -65,25 +63,25 @@ class TransactionFetcherCoreBaseMixin:
         # Use Blockscout v2 API if available
         if use_blockscout and chain_id in BLOCKSCOUT_URLS:
             stats = self._fetch_blockscout_v2_stats(chain_id)
-            if stats and 'total_blocks' in stats:
+            if stats and "total_blocks" in stats:
                 try:
                     # total_blocks is a string like "60681962"
-                    block_number = int(stats['total_blocks'])
+                    block_number = int(stats["total_blocks"])
                     return block_number
                 except (ValueError, TypeError):
                     logger.debug("Failed to parse block number from Blockscout v2 stats")
             return None
 
         params = {
-            'module': 'proxy',
-            'action': 'eth_blockNumber',
+            "module": "proxy",
+            "action": "eth_blockNumber",
         }
 
         # Etherscan requires API key
         if not use_blockscout:
             if not self.etherscan_api_key:
                 return None
-            params['apikey'] = self.etherscan_api_key
+            params["apikey"] = self.etherscan_api_key
 
         try:
             base_url = self._get_api_base_url(chain_id, use_blockscout)
@@ -91,17 +89,16 @@ class TransactionFetcherCoreBaseMixin:
             response.raise_for_status()
             data = response.json()
 
-            if data.get('result'):
+            if data.get("result"):
                 # Result is in hex format (0x...)
-                block_number = int(data['result'], 16)
+                block_number = int(data["result"], 16)
                 return block_number
             return None
         except Exception as e:
             logger.debug(f"Failed to get current block number: {e}")
             return None
 
-
-    def _get_coredao_block_number(self) -> Optional[int]:
+    def _get_coredao_block_number(self) -> int | None:
         """
         Get current block number from Core DAO API.
 
@@ -109,27 +106,26 @@ class TransactionFetcherCoreBaseMixin:
             Current block number or None if error
         """
         try:
-            from dotenv import load_dotenv
             import os
+
+            from dotenv import load_dotenv
+
             load_dotenv(override=True)
-            coredao_api_key = os.getenv('COREDAO_API_KEY', '')
+            coredao_api_key = os.getenv("COREDAO_API_KEY", "")
 
             base_url = BLOCKSCOUT_URLS[1116]
-            params = {
-                'module': 'proxy',
-                'action': 'eth_blockNumber'
-            }
+            params = {"module": "proxy", "action": "eth_blockNumber"}
 
             if coredao_api_key:
-                params['apikey'] = coredao_api_key
+                params["apikey"] = coredao_api_key
 
             response = requests.get(base_url, params=params, timeout=10)
             response.raise_for_status()
             data = response.json()
 
-            if data.get('result'):
+            if data.get("result"):
                 # Result is in hex format (0x...)
-                block_number = int(data['result'], 16)
+                block_number = int(data["result"], 16)
                 logger.info(f"Core DAO current block number: {block_number}")
                 return block_number
             return None
@@ -137,8 +133,7 @@ class TransactionFetcherCoreBaseMixin:
             logger.debug(f"Failed to get Core DAO block number: {e}")
             return None
 
-
-    def _fetch_blockscout_v2_stats(self, chain_id: int) -> Optional[Dict[str, Any]]:
+    def _fetch_blockscout_v2_stats(self, chain_id: int) -> dict[str, Any] | None:
         """
         Fetch stats from Blockscout v2 API to get current block number.
 
@@ -161,4 +156,3 @@ class TransactionFetcherCoreBaseMixin:
         except Exception as e:
             logger.debug(f"Failed to fetch Blockscout v2 stats: {e}")
             return None
-

@@ -1,7 +1,5 @@
 """Selector computation and inheritance-aware signature normalization."""
 
-from typing import Dict, List, Optional, Set
-
 from eth_utils import keccak
 
 from ..shared import logger
@@ -11,8 +9,8 @@ class SourceCodeSignatureSelectorMixin:
     def _compute_function_selector(
         self,
         function_signature: str,
-        custom_type_mapping: Optional[Dict[str, str]] = None,
-        struct_type_mapping: Optional[Dict[str, str]] = None
+        custom_type_mapping: dict[str, str] | None = None,
+        struct_type_mapping: dict[str, str] | None = None,
     ) -> str:
         """
         Compute the 4-byte function selector from a function signature.
@@ -27,21 +25,14 @@ class SourceCodeSignatureSelectorMixin:
         """
         # Normalize the signature to handle custom types and structs
         normalized_sig = self._normalize_signature_for_matching(
-            function_signature,
-            custom_type_mapping or {},
-            struct_type_mapping or {}
+            function_signature, custom_type_mapping or {}, struct_type_mapping or {}
         )
 
         # Compute keccak256 hash and take first 4 bytes
         selector = "0x" + keccak(text=normalized_sig).hex()[:8]
         return selector
 
-
-    def _build_inheritance_hierarchy(
-        self,
-        contract_name: str,
-        inheritance_map: Dict[str, List[str]]
-    ) -> List[str]:
+    def _build_inheritance_hierarchy(self, contract_name: str, inheritance_map: dict[str, list[str]]) -> list[str]:
         """
         Build the full inheritance hierarchy for a contract, ordered by priority.
 
@@ -59,8 +50,8 @@ class SourceCodeSignatureSelectorMixin:
             return []
 
         # Use depth-first search with post-order traversal to build hierarchy
-        visited: Set[str] = set()
-        hierarchy: List[str] = []
+        visited: set[str] = set()
+        hierarchy: list[str] = []
 
         def dfs(current: str):
             if current in visited:
@@ -85,12 +76,11 @@ class SourceCodeSignatureSelectorMixin:
         logger.debug(f"Built inheritance hierarchy for {contract_name}: {hierarchy}")
         return hierarchy
 
-
     def _normalize_signature_for_matching(
         self,
         signature: str,
-        custom_type_mapping: Optional[Dict[str, str]] = None,
-        struct_type_mapping: Optional[Dict[str, str]] = None
+        custom_type_mapping: dict[str, str] | None = None,
+        struct_type_mapping: dict[str, str] | None = None,
     ) -> str:
         """
         Normalize a function signature to just function name and parameter types for matching.
@@ -116,11 +106,11 @@ class SourceCodeSignatureSelectorMixin:
             custom_type_mapping = {}
         if struct_type_mapping is None:
             struct_type_mapping = {}
-        if '(' not in signature or ')' not in signature:
+        if "(" not in signature or ")" not in signature:
             return signature
 
-        func_name = signature[:signature.index('(')]
-        params_str = signature[signature.index('(') + 1:signature.rindex(')')]
+        func_name = signature[: signature.index("(")]
+        params_str = signature[signature.index("(") + 1 : signature.rindex(")")]
 
         if not params_str.strip():
             return f"{func_name}()"
@@ -131,22 +121,22 @@ class SourceCodeSignatureSelectorMixin:
         paren_depth = 0
 
         for char in params_str:
-            if char == '(':
+            if char == "(":
                 paren_depth += 1
                 current_param.append(char)
-            elif char == ')':
+            elif char == ")":
                 paren_depth -= 1
                 current_param.append(char)
-            elif char == ',' and paren_depth == 0:
+            elif char == "," and paren_depth == 0:
                 # Top-level comma - parameter separator
-                params.append(''.join(current_param).strip())
+                params.append("".join(current_param).strip())
                 current_param = []
             else:
                 current_param.append(char)
 
         # Don't forget the last parameter
         if current_param:
-            params.append(''.join(current_param).strip())
+            params.append("".join(current_param).strip())
 
         # Extract only the type (first token) from each parameter
         types = []
@@ -154,14 +144,14 @@ class SourceCodeSignatureSelectorMixin:
             if not param:
                 continue
             # For tuple types like "(address,address,uint256) paramName", split and take just the tuple
-            if param.startswith('('):
+            if param.startswith("("):
                 # Find the closing parenthesis
                 paren_depth = 0
                 tuple_end = 0
                 for i, char in enumerate(param):
-                    if char == '(':
+                    if char == "(":
                         paren_depth += 1
-                    elif char == ')':
+                    elif char == ")":
                         paren_depth -= 1
                         if paren_depth == 0:
                             tuple_end = i + 1
@@ -170,9 +160,9 @@ class SourceCodeSignatureSelectorMixin:
                 tuple_type = param[:tuple_end]
                 # Check if there's an array bracket after the tuple
                 remaining = param[tuple_end:].strip()
-                if remaining.startswith('['):
+                if remaining.startswith("["):
                     # Handle tuple arrays like "(uint256,uint256)[]"
-                    bracket_end = remaining.find(']') + 1
+                    bracket_end = remaining.find("]") + 1
                     tuple_type += remaining[:bracket_end]
                 types.append(tuple_type)
             else:
@@ -182,15 +172,15 @@ class SourceCodeSignatureSelectorMixin:
                 if tokens:
                     param_type = tokens[0]
                     # Handle array types: might be split like "uint256 [ ]" or "uint256[]"
-                    if len(tokens) > 1 and tokens[1].startswith('['):
+                    if len(tokens) > 1 and tokens[1].startswith("["):
                         param_type += tokens[1]
 
                     # Resolve custom types to their underlying types
                     # Handle arrays: "CustomType[]" -> resolve CustomType, keep []
                     base_type = param_type
-                    array_suffix = ''
-                    if '[' in param_type:
-                        bracket_pos = param_type.index('[')
+                    array_suffix = ""
+                    if "[" in param_type:
+                        bracket_pos = param_type.index("[")
                         base_type = param_type[:bracket_pos]
                         array_suffix = param_type[bracket_pos:]
 
@@ -205,18 +195,24 @@ class SourceCodeSignatureSelectorMixin:
                     # Try direct lookup in structs
                     elif lookup_name in struct_type_mapping:
                         resolved_type = struct_type_mapping[lookup_name]
-                        logger.debug(f"    Resolved struct type: {base_type}{array_suffix} -> {resolved_type}{array_suffix}")
+                        logger.debug(
+                            f"    Resolved struct type: {base_type}{array_suffix} -> {resolved_type}{array_suffix}"
+                        )
                     # If not found and contains '.', try unqualified name (handles ANY qualified type)
-                    elif '.' in lookup_name:
-                        unqualified_name = lookup_name.split('.')[-1]
+                    elif "." in lookup_name:
+                        unqualified_name = lookup_name.split(".")[-1]
                         # Try custom types (enums, interfaces, UDVTs)
                         if unqualified_name in custom_type_mapping:
                             resolved_type = custom_type_mapping[unqualified_name]
-                            logger.debug(f"    Resolved qualified type: {base_type}{array_suffix} -> {resolved_type}{array_suffix}")
+                            logger.debug(
+                                f"    Resolved qualified type: {base_type}{array_suffix} -> {resolved_type}{array_suffix}"
+                            )
                         # Try structs
                         elif unqualified_name in struct_type_mapping:
                             resolved_type = struct_type_mapping[unqualified_name]
-                            logger.debug(f"    Resolved qualified struct type: {base_type}{array_suffix} -> {resolved_type}{array_suffix}")
+                            logger.debug(
+                                f"    Resolved qualified struct type: {base_type}{array_suffix} -> {resolved_type}{array_suffix}"
+                            )
 
                     # Apply resolved type or keep original
                     if resolved_type:

@@ -2,7 +2,7 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "ERC-7730 Critical Issues Criteria",
   "description": "Detailed criteria for what constitutes a CRITICAL issue in ERC-7730 clear signing security audits",
-  "version": "2.0.0",
+  "version": "2.1.0",
 
   "definition": "CRITICAL = USER LOSES MONEY OR GETS WRONG TOKENS/AMOUNTS IN FINAL OUTCOME. Only flag if a normal user would be shocked by what actually happens.",
 
@@ -35,23 +35,21 @@
     },
     {
       "requirement": "CRITICAL: Understanding null values in ERC-7730",
-      "rule": "null is a VALID value in JSON and ERC-7730 - it means 'explicitly not set' (different from omitting the field)",
-      "description": "Fields set to null are valid according to the ERC-7730 spec and JSON Schema. They will not cause validation failures.",
+      "rule": "Null handling follows the ACTUAL v2 schema branch. Do NOT assume null is broadly valid just because JSON supports it.",
+      "description": "Some v2 locations allow null (for example metadata constants/maps values or `visible.ifNotIn` / `visible.mustBe` entries), but many field properties do NOT. Only accept null where the schema explicitly allows it.",
       "examples": [
-        "\"$id\": null - VALID (field is explicitly not set)",
-        "\"value\": null - VALID (no default value)",
-        "\"sources\": null - VALID (no custom address sources)",
-        "\"excluded\": null - VALID (no excluded fields)",
-        "\"screens\": null - VALID (using default single-screen layout)"
+        "\"metadata.constants.nullSentinel\": null - VALID (constants may be null)",
+        "\"metadata.maps.routerByChain\": {\"1\": null} - VALID (map values may be null)",
+        "\"visible\": {\"mustBe\": [null]} - VALID if null is the intended invariant",
+        "\"visible\": {\"ifNotIn\": [null]} - VALID if null is one of the suppressed values"
       ],
       "DO_NOT_FLAG_AS_CRITICAL": [
-        "Fields with null values - this is valid JSON and valid ERC-7730",
-        "\"params.sources\": null - VALID (uses default address sources)",
-        "Top-level null fields like $id, excluded, screens - VALID",
-        "Any field explicitly set to null - VALID"
+        "A null metadata constant or map value where the schema allows it",
+        "Null values inside visible.mustBe / visible.ifNotIn arrays",
+        "Any null value explicitly permitted by the matching v2 schema branch"
       ],
-      "when_to_flag": "NEVER flag null values as critical. They are completely valid.",
-      "optional_improvement": "While null is valid, some fields could optionally be removed entirely instead of setting to null (style preference only, NOT critical)",
+      "when_to_flag": "NEVER flag null values as critical by default. First verify whether the specific property actually allows null in the v2 schema. If it does not, treat it as a validation/migration issue, not an automatic critical issue.",
+      "optional_improvement": "If a property allows null but a clearer non-null representation exists, mention it as style/cleanup only, NOT critical.",
       "severity": "not_critical"
     },
     {
@@ -67,6 +65,10 @@
       "description": "Parameters that can ONLY be shown as incomprehensible raw data (packed bits, liquidity numbers, technical params) are NOT critical to hide"
     },
     {
+      "requirement": "V2 field accounting",
+      "description": "For v2 descriptors, reason from `fields`, `visible`, nested `fieldGroup` coverage, `$ref` reuse, maps, and formatter params. Do NOT rely on v1 required/excluded arrays as the primary model of coverage."
+    },
+    {
       "requirement": "Slicing uint256 values",
       "description": "When field paths use slice syntax (e.g., `[-20:]`, `[0:16]`):",
       "rules": [
@@ -74,6 +76,10 @@
         "NOT CRITICAL if slicing **packed address types** where source code shows custom types (`type X is uint256`) with flags/metadata in high bits → intentional extraction",
         "**Be consistent**: similar patterns across different functions must receive the same assessment unless there's material contextual difference"
       ]
+    },
+    {
+      "requirement": "No fake fixability via narrowing",
+      "description": "If the only proposed remediation is to constrain a legitimate user-controlled mode, limit, selector, or payload to a smaller safe subset (for example via `visible.mustBe` on a real runtime option), that is optional scope narrowing rather than a neutral critical fix."
     }
   ],
 
@@ -118,6 +124,24 @@
         "why_NOT_critical": "ERC-7730 cannot inject contextual metadata that isn't in the function inputs. Adding literal value fields ({value: 'Validator', label: 'Role'}) creates confusing separate hardware wallet screens showing standalone text. The intent field can partially address this (e.g., 'Authorize Validator') within the 20-character limit, but cannot fully convey complex multi-part information like 'authorizes validator AND sets as default'.",
         "action": "Add to spec limitations, NOT critical issues. Do NOT recommend adding literal value fields for role/context - they create poor UX on hardware wallets.",
         "example": "authorizeValidatorSigner(address signer, ...) where 'Validator' role is implicit in function name, or setIndexedSigner() where 'sets as default' is implicit behavior"
+      },
+      {
+        "parameter": "Legitimate user-controlled runtime options whose only fix is mustBe narrowing",
+        "what_it_controls": "Real runtime modes such as destination-call flags, price limits, selectors, or other user-supplied behavior knobs",
+        "why_NOT_critical": "If the descriptor can only be made fully truthful by banning valid runtime modes with `visible.mustBe`, that is optional scope restriction rather than a neutral critical fix.",
+        "action": "Downgrade to a spec limitation or non-critical note unless there is another truthful, non-narrowing display fix."
+      },
+      {
+        "parameter": "Nested calldata missing only from the current ERC-7730 file",
+        "what_it_controls": "Embedded calldata that may be resolved by wallet-wide registry lookup rather than this file alone",
+        "why_NOT_critical": "Some wallets resolve nested calldata using other installed ERC-7730 descriptors. Absence from the current file alone does NOT prove the nested call is not clear signed in practice.",
+        "action": "Do NOT claim 'no descriptor exists' unless registry- or wallet-scope lookup has actually been ruled out."
+      },
+      {
+        "parameter": "Bounded wrapped-native funding where the spend bound is already shown",
+        "what_it_controls": "Payable/native funding used to source the same bounded spend already displayed elsewhere",
+        "why_NOT_critical": "If the descriptor already shows the effective bounded spend amount and any surplus native value is deterministically refunded or otherwise does not increase user loss, prefer a recommendation or limitation note over a critical issue.",
+        "action": "Escalate only if hidden native value can exceed the displayed bound, remain trapped, or materially change the user's real asset outflow."
       }
     ],
     "key_principle": "Only flag as CRITICAL if showing the parameter would help users UNDERSTAND and VERIFY what they're signing. If the value would be INCOMPREHENSIBLE raw hex/numbers, it's NOT critical to hide it."
@@ -135,12 +159,12 @@
         "Step-by-step analysis of the source code",
         "Multiple sentences explaining the background"
       ],
-      "structure": "Missing display of [WHAT], while the contract [WHAT HAPPENS], and [PARAMETER] is excluded/wrong, so the user cannot see [CRITICAL INFO] which is a direct [RISK TYPE] and therefore critical."
+      "structure": "Missing or misleading display of [WHAT], while the contract [WHAT HAPPENS], and the v2 descriptor coverage is missing/wrong/over-hidden, so the user cannot see [CRITICAL INFO] which is a direct [RISK TYPE] and therefore critical."
     },
-    "bad_example": "Target address embedded in 'args' can change the external target to which the order is filled but 'args' is excluded from the descriptor and no field shows this target address or its presence. When takerTraits.argsHasTarget() is set, the contract reads the first 20 bytes of args as the target address (target = address(bytes20(args))). The current ERC-7730 descriptor excludes 'args' entirely and does not display the extracted target address nor indicate that a target override is present. This hides a security-critical fact: the order fill may be sent to a third-party contract or recipient different from the default (msg.sender). Users will not see or be warned that the order's execution target is changed by the hidden 'args' bytes and could be sending funds or invoking logic on an unexpected contract.",
-    "good_example": "Missing display of the actual recipient (the resolved 'target' parsed from args) while the contract sends the maker's token to that target, and args is excluded from display, so the user cannot see where the maker-side tokens will be delivered which is a direct recipient risk and therefore critical.",
+    "bad_example": "Target address embedded in 'args' can change the external target to which the order is filled but the descriptor does not account for the relevant args-derived target in its v2 fields, and no field shows this target address or its presence. When takerTraits.argsHasTarget() is set, the contract reads the first 20 bytes of args as the target address (target = address(bytes20(args))). This hides a security-critical fact: the order fill may be sent to a third-party contract or recipient different from the default (msg.sender). Users will not see or be warned that the order's execution target is changed by the hidden 'args' bytes and could be sending funds or invoking logic on an unexpected contract.",
+    "good_example": "Missing display of the actual recipient (the resolved 'target' parsed from args) while the contract sends the maker's token to that target, and the v2 descriptor does not account for that args-derived recipient, so the user cannot see where the maker-side tokens will be delivered which is a direct recipient risk and therefore critical.",
     "key_difference": "The good example is ONE concise sentence that states: what's missing + what the contract does + why user can't see it + what the risk is. The bad example has 4-5 sentences with excessive technical details about how the contract works internally.",
-    "template": "Missing display of [WHAT USER NEEDS TO SEE] while the contract [WHAT IT DOES WITH USER'S MONEY/TOKENS], and [DESCRIPTOR PROBLEM], so the user cannot see [CRITICAL INFORMATION] which is a direct [recipient/amount/token] risk and therefore critical."
+    "template": "Missing display of [WHAT USER NEEDS TO SEE] while the contract [WHAT IT DOES WITH USER'S MONEY/TOKENS], and [V2 DESCRIPTOR COVERAGE PROBLEM], so the user cannot see [CRITICAL INFORMATION] which is a direct [recipient/amount/token] risk and therefore critical."
   },
 
   "critical_criteria": [
@@ -216,6 +240,17 @@
       "id": 6,
       "title": "Broken $ref references",
       "description": "Format references non-existent definitions/constants (display will fail)",
+      "severity": "critical"
+    },
+    {
+      "id": "6b",
+      "title": "Descriptor bound to the wrong function signature",
+      "description": "The analyzed selector/ABI function and the display.formats key describe different functions or different parameter types",
+      "examples": [
+        "Selector resolves to execTransaction(...) but the descriptor format key is fillContractOrder(...)",
+        "The descriptor binding key has the right function name but wrong parameter types, so it hashes to another selector",
+        "The descriptor format key and function_signature disagree on the function being audited"
+      ],
       "severity": "critical"
     },
     {
@@ -383,32 +418,31 @@
         },
         {
           "type": "Decimals parameter in unit format - string vs number",
-          "description": "The params.decimals field in unit formatting accepts BOTH string and numeric values - they are equivalent",
+          "description": "In v2, `unit.params.decimals` is numeric. String decimals are legacy/migration syntax, not the preferred v2 form.",
           "examples": [
-            "{\"format\": \"unit\", \"params\": {\"decimals\": \"18\", \"prefix\": \"false\"}} - VALID",
-            "{\"format\": \"unit\", \"params\": {\"decimals\": 18, \"prefix\": \"false\"}} - VALID (same as string)",
-            "{\"format\": \"unit\", \"params\": {\"decimals\": \"6\", \"prefix\": true}} - VALID",
-            "{\"format\": \"unit\", \"params\": {\"decimals\": 6, \"prefix\": false}} - VALID (same as string)"
+            "{\"format\": \"unit\", \"params\": {\"decimals\": 18, \"prefix\": false}} - VALID v2",
+            "{\"format\": \"unit\", \"params\": {\"decimals\": 6, \"prefix\": true}} - VALID v2",
+            "{\"format\": \"unit\", \"params\": {\"decimals\": \"18\"}} - legacy-style / migration issue, NOT preferred v2"
           ],
-          "rule": "DO NOT flag as critical or incorrect if decimals is a string instead of a number (or vice versa). The ERC-7730 spec accepts both formats and treats them identically.",
-          "important": "Both \"18\" and 18 decode to the same value. This is NOT a type mismatch or validation error.",
-          "action": "NEVER flag this as an issue. Both formats are correct and equivalent.",
-          "severity": "not_an_issue"
+          "rule": "Do NOT flag string decimals as a critical issue by themselves, but do treat them as stale/legacy syntax when adapting to the latest v2 schema.",
+          "important": "The current v2 schema defines `unit.params.decimals` as an integer.",
+          "action": "Mention as a validation/migration cleanup, not as a critical issue.",
+          "severity": "migration_issue"
         },
         {
-          "type": "Transaction envelope paths in required/excluded arrays",
-          "description": "Using @ paths (like @.from, @.value, @.to) in required or excluded arrays",
-          "explanation": "The required/excluded arrays are meant for ABI parameters (# paths), not transaction envelope fields (@ paths). While technically imprecise, this is NOT critical because:",
+          "type": "Legacy v1 required/excluded arrays",
+          "description": "Using `required` / `excluded` arrays in a v2 descriptor or recommendations",
+          "explanation": "The latest v2 model uses explicit `fields` coverage plus `visible` semantics instead of `required` / `excluded` arrays. Treat those arrays as migration artifacts, not current v2 guidance.",
           "reasons": [
-            "Transaction envelope fields are always available (from, value, to are on every transaction)",
-            "Hardware wallets can still display these fields correctly",
-            "This doesn't cause display failures or mislead users about amounts/tokens/recipients"
+            "They reflect older descriptor structure, not the current v2 model",
+            "They should not be proposed in new fixes for v2 descriptors",
+            "Their presence alone is a migration problem, not automatically a critical issue"
           ],
-          "severity": "recommendation_not_critical",
-          "action": "Add to RECOMMENDATIONS (NOT critical issues): 'The required/excluded arrays contain transaction envelope references (@.from, @.value, @.to). These arrays should only reference ABI parameters. Transaction envelope fields are always available and don't need to be in required/excluded.'",
+          "severity": "migration_issue",
+          "action": "Recommend migrating to v2 `fields` plus `visible` semantics. Do NOT propose new `required` / `excluded` arrays in v2 fixes.",
           "examples": {
-            "imprecise_but_not_critical": "\"required\": [\"@.value\", \"baseRequest.fromToken\"]",
-            "correct": "\"required\": [\"baseRequest.fromToken\", \"baseRequest.fromTokenAmount\"]"
+            "legacy_example": "\"excluded\": [\"action\"]",
+            "v2_direction": "{\"fields\": [{\"path\": \"action\", \"visible\": \"never\"}]}"
           }
         },
         {
@@ -527,15 +561,15 @@
             "Function does NOT display @.value in ERC-7730"
           ],
           "why_not_critical": [
-            "The value is forwarded entirely to a nested call",
-            "The nested call (typically decoded from a bytes calldata parameter like action, data, or calls) will have its own ERC-7730 descriptor",
-            "That nested descriptor SHOULD display @.value",
-            "Users see multiple clear signing screens: one for the wrapper, one for the nested call",
+            "The wrapper does not independently change the user-facing spend logic",
+            "The nested call (typically decoded from a bytes calldata parameter like action, data, or calls) may be covered by another ERC-7730 descriptor resolved by the wallet",
+            "That nested descriptor, if resolved, should display @.value at the appropriate level",
+            "Users may see multiple clear signing screens: one for the wrapper, one for the nested call",
             "The value is shown on the nested call's screen, not the wrapper's screen",
             "Wallet UI also shows total transaction value regardless"
           ],
           "wrapper_patterns": [
-            "delegatecall(...) - automatically forwards msg.value",
+            "delegatecall(...) - preserves the same msg.value context for nested logic",
             ".call{value: msg.value}(...) - explicitly forwards full msg.value",
             ".call{value: address(this).balance}(...) - forwards all received ETH"
           ],
@@ -591,10 +625,10 @@
           "description": "Generic execution functions (execute, call, multicall) can have generic or specific intent labels",
           "examples": [
             "execute(bytes data) with intent 'Execute' - OK (generic)",
-            "execute(bytes data) with intent 'Swap' - OK if the nested calldata will be decoded on next screen",
+            "execute(bytes data) with intent 'Swap' - OK if the wallet can resolve and decode the nested calldata",
             "permitAndCall(permit, action) with intent 'Execute with Permit' - OK"
           ],
-          "reason": "For wrapper/execution functions, the label on the wrapper is less important since users will see the decoded nested call on subsequent screens"
+          "reason": "For wrapper/execution functions, the label on the wrapper is less important if the wallet can resolve and separately show the nested call details"
         }
       },
       "check_label_accuracy": {
@@ -623,7 +657,7 @@
         "NOT_critical_for_generic_calldata": {
           "description": "For arbitrary execution functions, calldata labels can be generic or specific",
           "example": "execute(bytes action) with label 'Swap' on action field is acceptable if nested call is decoded",
-          "reason": "Users will see the actual operation on the next screen when nested calldata is decoded"
+          "reason": "Users may separately see the actual operation if the wallet resolves the nested calldata"
         }
       },
       "validation": [
@@ -730,10 +764,11 @@
     "human_readability": {
       "description": "Parameters that can ONLY be shown as incomprehensible raw data (packed bits, liquidity numbers, technical params) are NOT critical to hide",
       "readable_format": "Can be clear signed in READABLE format (address, token amount, date) → If missing, this IS critical",
-      "incomprehensible_format": "Can only be shown as RAW/incomprehensible data (packed bits, raw bytes32, complex flags, large computed values like liquidity) → If missing, this is NOT critical",
+      "incomprehensible_format": "Can only be shown as RAW/incomprehensible data (packed bits, opaque blobs, complex flags, large computed values like liquidity) → If missing, this is NOT critical",
+      "important_exception": "A fixed-size identifier is NOT automatically incomprehensible just because it is bytes32 or lacks a dedicated formatter. If the raw value itself lets the user verify an important destination recipient, token, or asset identifier (for example a non-EVM bytes32 receiver or asset ID), hiding it can still be critical.",
       "key_question": "Would displaying this as 'raw' format help the user understand what they're signing?",
       "answers": {
-        "yes": "Critical if missing (e.g., address as hex, token amount as number)",
+        "yes": "Critical if missing (e.g., address as hex, bytes32 destination recipient/token identifier, token amount as number)",
         "no": "NOT critical (e.g., 0x000000000000001a4 for packed traits, 1582938471982347 for liquidity)"
       }
     }

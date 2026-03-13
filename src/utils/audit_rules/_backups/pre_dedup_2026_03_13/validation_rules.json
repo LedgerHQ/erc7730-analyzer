@@ -1,0 +1,682 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "ERC-7730 Validation Rules - Complete Reference",
+  "description": "Complete validation rules including format specifications and critical/non-critical criteria",
+  "version": "3.1.0",
+  "critical_validation": {
+    "critical_definition": "USER LOSES MONEY OR GETS WRONG TOKENS/AMOUNTS IN FINAL OUTCOME. Only flag if a normal user would be shocked or mislead by what actually happens.",
+    "key_question": "Would a regular user be shocked by the FINAL tokens/amounts sent and received, or WHO receives them? NO \u2192 DO NOT flag. YES \u2192 Flag as critical.",
+    "supplementary_rules": [
+      "For v2, coverage comes from `fields`, nested `fieldGroup`, `$ref`, `visible`, maps, and formatter params. Do NOT rely on v1 required/excluded arrays as the main coverage model.",
+      "Check binding consistency: the analyzed selector, ABI function_signature, and descriptor display.format key must describe the same function. If the format key normalizes or hashes to a different function, treat that as a serious descriptor mistake.",
+      "If the only truthful remediation would narrow a legitimate user-controlled mode, limit, selector, or payload to a fixed safe subset, do not treat that narrowing as the default critical fix. Frame it as optional scope restriction or downgrade the issue.",
+      "For calldata fields, absence of a nested descriptor in the current file is NOT enough to conclude the wallet cannot clear-sign the nested call. Some wallets resolve embedded calldata against other installed ERC-7730 descriptors.",
+      "The current v2 schema regex accepts both bare tuple `(...)` and `tuple(...)` spellings in format keys. Prefer bare `(...)` in new examples/recommendations, but do not flag `tuple(...)` alone as a critical issue if it still matches the schema.",
+      "If you cannot provide a concrete, truthful, non-scope-restricting recommendation, prefer a spec limitation or lower-severity issue over a critical finding."
+    ],
+    "v2_mandatory_changes": [
+      "New v2 descriptors should use explicit `fields` coverage plus `visible` semantics instead of `required` / `excluded` arrays.",
+      "display.formats bindings are full function signatures with parameter names (or EIP-712 encodeType strings), not selector-only keys.",
+      "The display.formats binding key must still match the actual analyzed selector/function. A full signature with the wrong function name or wrong parameter types is a binding error, not a cosmetic issue.",
+      "If a value is intentionally hidden or constrained, account for it in `fields` using `visible`, not by omitting it from v1 arrays.",
+      "`unit.params.decimals` is numeric in the current v2 schema.",
+      "Use the latest schema field name `$comment`, not `$comments`."
+    ],
+    "v2_optional_features": [
+      "`fieldGroup` with `iteration` is optional but fully valid v2.",
+      "`interpolatedIntent` is optional software-wallet UX and never replaces structured fields.",
+      "`metadata.maps`, `tokenTicker`, `chainId` / `chainIdPath`, `interoperableAddressName`, `encryption`, and `metadata.contractName` are optional valid v2 features.",
+      "Do NOT require optional v2 features merely because they exist in the schema; only assess them when the descriptor uses them or when they would materially improve a real user-facing risk."
+    ],
+    "not_critical_patterns": [
+      {
+        "id": "amount_capped",
+        "title": "Amount capped to user's available balance/debt",
+        "description": "If a function takes an amount parameter from user and caps the actual transferred amount to user's balance/debt/limit (using min() or similar)",
+        "patterns": [
+          "amount = min(amount, userBalance)",
+          "if (amount > debt) amount = debt",
+          "paybackAmount = amount < debt ? amount : debt"
+        ],
+        "common_functions": [
+          "repay()",
+          "withdraw()",
+          "redeem()"
+        ],
+        "reason": "The cap is a PROTECTIVE mechanism, not a risk. User cannot be charged more than they owe or lose more than they have.",
+        "action": "Mark as NOT CRITICAL but add to RECOMMENDATIONS: 'Amount may be capped to user's outstanding debt/balance. This protects user from overpaying. Consider updating label to show this.'",
+        "counter_example": "If user can be charged MORE than they specify (amount multiplied/increased) \u2192 CRITICAL"
+      },
+      {
+        "id": "funds_to_msg_sender",
+        "title": "Funds always sent to msg.sender",
+        "description": "If a function has no recipient parameter OR recipient parameter defaults to msg.sender, and transfers tokens/ETH exclusively to msg.sender",
+        "patterns": [
+          "transfer(msg.sender, amount)",
+          "safeTransfer(msg.sender, ...)",
+          "recipient = msg.sender",
+          "to = msg.sender"
+        ],
+        "common_functions": [
+          "withdraw()",
+          "claim()",
+          "claimRewards()",
+          "redeem()",
+          "unwrap()",
+          "unstake()"
+        ],
+        "reason": "There is no risk of funds going to wrong address - hardcoded to caller",
+        "action": "Mark as NOT CRITICAL but add to RECOMMENDATIONS: 'Function sends funds to msg.sender (caller). Consider adding {\"path\": \"@.from\", \"label\": \"Beneficiary\", \"format\": \"addressName\"} for clarity'",
+        "counter_example": "If recipient CAN be different from msg.sender (user-supplied parameter) \u2192 CRITICAL to show"
+      },
+      {
+        "id": "cryptographically_protected",
+        "title": "Cryptographically protected parameters (signed orders/meta-transactions)",
+        "description": "If a parameter is part of a struct that is hashed and signature-verified (e.g., EIP-712 signed orders), it cannot be changed by an attacker without making signature validation fail",
+        "patterns": [
+          "orderHash = order.hash() or similar EIP-712 hashing",
+          "isValidSignature(signer, hash, signature)",
+          "ECDSA.recover(hash, signature) == signer"
+        ],
+        "common_patterns": [
+          "Limit orders (0x, 1inch, CoW)",
+          "Meta-transactions",
+          "Signed permits"
+        ],
+        "reason": "The parameter is tamper-proof. An attacker cannot modify it without the private key that created the signature.",
+        "action": "Mark as NOT CRITICAL but add to RECOMMENDATIONS: 'Parameter is cryptographically protected by signature validation and cannot be tampered with'",
+        "counter_example": "If the parameter is NOT signature-verified OR can be modified after signature check \u2192 CRITICAL"
+      },
+      {
+        "id": "bundled_permit",
+        "title": "Bundled permit/approval parameters",
+        "description": "If a function has a permit or approval parameter that is hidden/accounted for in v2 (for example with `visible: \"never\"`), executes permit/approval logic, performs OTHER actions beyond just approval, and the approval is consumed atomically in the SAME transaction",
+        "common_patterns": [
+          "permitAndCall()",
+          "swapWithPermit()",
+          "depositWithPermit()"
+        ],
+        "reason": "The permit is an implementation detail for the main action. Users care about the MAIN ACTION (swap, deposit), not the approval mechanism. The approval scope is limited to this transaction and consumed immediately.",
+        "action": "Mark as NOT CRITICAL",
+        "counter_example": "Standalone approve() or permit() function with no other action \u2192 MUST show token/spender/amount"
+      },
+      {
+        "id": "bitpacked_parameters",
+        "title": "Bitpacked/flags parameters hidden or not shown but control behavior",
+        "description": "Any parameter that uses bitpacking (bit shifts, bit masks, flags) to control multiple behaviors in a single uint256 cannot be meaningfully displayed to users",
+        "patterns": [
+          "flags & _SHOULD_CLAIM != 0",
+          "param & MASK",
+          "if (param & CONSTANT != 0)",
+          "MakerTraitsLib.useBitInvalidator(traits)",
+          "traits.useBitInvalidator()"
+        ],
+        "examples": [
+          {
+            "function": "cancelOrders(makerTraits[], orderHashes[])",
+            "parameter": "makerTraits",
+            "what_it_controls": "Whether to use per-order cancellation or mass invalidation (bit invalidator) via useBitInvalidator() flag, plus nonce/epoch value",
+            "why_not_critical": "makerTraits is a bitpacked uint256 that encodes multiple flags and fields. Displaying as raw (0x00000000000000000000000000000000000000000000000000000000000001a4) is meaningless - users cannot determine if bit invalidator is used or what epoch/nonce applies. This is an ERC-7730 SPEC LIMITATION, not a critical issue."
+          }
+        ],
+        "reason": "Displaying as raw would show '0x00000000000000000000000000000000000000000000000000000000000001a4' - users CANNOT understand what this hex means or determine operation mode from it. This is a COMPREHENSION LIMITATION.",
+        "action": "Add to spec limitations section with explanation: '[Parameter name] bitpacked parameter controls [behavior description] but cannot be meaningfully displayed. Users cannot determine [specific modes/options] from raw hex.' NOT in critical issues.",
+        "critical_only_if": "The parameter can be meaningfully displayed in a way users can understand AND verify. If only displayable as incomprehensible raw hex, it is NOT critical."
+      },
+      {
+        "id": "wrapper_forwarding",
+        "title": "Payable wrapper/forwarding pattern",
+        "description": "Payable function that forwards execution and value entirely. Pattern detection: (1) Function body does NOT manipulate msg.value in its own logic, (2) Function forwards the ENTIRE value via delegatecall or .call{value: msg.value}, (3) Function does NOT display @.value in ERC-7730",
+        "patterns": [
+          "delegatecall(...) - preserves the same msg.value context for nested logic",
+          ".call{value: msg.value}(...) - explicitly forwards full msg.value",
+          ".call{value: address(this).balance}(...) - forwards all received ETH"
+        ],
+        "reason": "For `.call{value: ...}`, value is explicitly transferred. For `delegatecall`, native ETH is not transferred to another address, but nested logic still executes with the same msg.value context. If the nested call is resolvable with `format: calldata`, it can often be clear signed similarly to a normal call. Do not assume wrapper-level omission alone is critical if the real user-facing value and nested action are shown downstream.",
+        "action": "Mark as INFORMATIONAL (not CRITICAL) only when the nested action is genuinely resolvable or the real user-facing outcome is already shown. Otherwise continue auditing the nested calldata/value path normally.",
+        "counter_example": "If function validates or manipulates msg.value (e.g., require(msg.value == desc.amount)) \u2192 CRITICAL"
+      },
+      {
+        "id": "nested_calldata",
+        "title": "Nested calldata parameter hidden/accounted or shown with format: calldata",
+        "description": "When a function contains nested calldata (e.g., action bytes passed to delegatecall/call), nested clear signing depends on wallet resolution of the embedded callee/selector and is not necessarily limited to the current file.",
+        "examples": [
+          "permitAndCall(permit, action) may show a high-level wrapper action first and then a decoded swap/transfer if the wallet resolves the nested calldata",
+          "execute(address target, bytes data) with data formatted as calldata with calleePath: 'target'",
+          "swap(SwapDescription desc, bytes data) where desc shows amounts and tokens, data contains encoded executor calls that the wallet may decode separately"
+        ],
+        "two_valid_approaches": {
+          "approach_1": {
+            "description": "Use format: calldata with proper calleePath/amountPath/spenderPath",
+            "example": {
+              "path": "action",
+              "label": "Action",
+              "format": "calldata",
+              "params": {
+                "calleePath": "@.to",
+                "amountPath": "@.value"
+              }
+            },
+            "when_to_use": "When you want to show a label for the calldata field and ensure proper value/spender context is passed to nested descriptor"
+          },
+          "approach_2": {
+            "description": "Account for the parent-level calldata field in v2 while intentionally hiding it",
+            "example": {
+              "fields": [
+                {
+                  "path": "action",
+                  "visible": "never"
+                }
+              ]
+            },
+            "when_to_use": "When the calldata is not meaningful to show at the parent level and the outer descriptor already shows the user-facing outcome. Use v2 field accounting rather than v1 excluded arrays."
+          }
+        },
+        "executor_and_data_pattern": {
+          "description": "Common pattern: execute(address executor, bytes data) or swap(desc, bytes data)",
+          "when_not_critical": [
+            "If the descriptor ALREADY shows the critical user-facing information (amounts in/out, tokens, recipient) from OTHER parameters (e.g., SwapDescription struct)",
+            "The executor/data parameters are implementation details for HOW the swap/action happens, not WHAT the user is sending/receiving",
+            "The nested calls may be decoded if the wallet can resolve suitable ERC-7730 descriptors for them, including registry entries outside the current file",
+            "Users don't need to verify intermediate routing/execution steps if final amounts and tokens are clearly shown"
+          ],
+          "example_not_critical": {
+            "function": "swap(SwapDescription desc, bytes data)",
+            "what_is_shown": "desc.srcToken, desc.dstToken, desc.amount, desc.minReturnAmount, desc.dstReceiver",
+            "what_is_hidden": "executor address and data bytes at the parent level",
+            "why_not_critical": "User sees what they're sending (srcToken + amount) and what they'll receive (dstToken + minReturn + recipient). The intermediate execution steps in 'data' are implementation details - users care about the OUTCOME, not the routing."
+          },
+          "critical_only_if": [
+            "The executor/data contain information about WHERE final funds go (recipient) that is NOT shown elsewhere",
+            "The executor/data determine WHAT tokens/amounts the user receives that are NOT shown elsewhere",
+            "The descriptor shows NOTHING about the swap/action (no amounts, no tokens, no recipient)"
+          ]
+        },
+        "reason": "Whether the outer descriptor uses format: calldata or intentionally hides the parent-level calldata field can be fine - the outer function only needs to show what's relevant at its level. If critical user-facing information (amounts, tokens, recipient) is already displayed elsewhere, nested execution details are not automatically critical. Also, absence from the current file alone is not proof that nested descriptor coverage is unavailable in the wallet.",
+        "action": "DO NOT flag as critical if the descriptor already shows the user-facing transaction details (what they send, what they receive, where it goes). ONLY flag as critical if executor/data hide information about final amounts/tokens/recipients that is not shown anywhere else, or if a genuine wallet-scope nested coverage failure is established.",
+        "important_validation": "If format: calldata IS used, verify it has required calleePath/callee parameter and follows XOR constraints. Do NOT overclaim about missing nested descriptors based only on current-file lookup."
+      },
+      {
+        "id": "incomprehensible_raw_data",
+        "title": "Parameters only displayable as incomprehensible raw hex/numbers",
+        "description": "Even if technically possible to show as 'raw' format, if the value is meaningless to users, it's NOT critical to hide",
+        "examples": [
+          {
+            "param": "Bitpacked parameter",
+            "display": "0x00000000000000000000000000000000000000000000000000000000000001a4",
+            "reason": "Users cannot understand packed bits"
+          },
+          {
+            "param": "liquidity",
+            "display": "1582938471982347",
+            "reason": "Large computed value requiring mathematical context"
+          },
+          {
+            "param": "sqrtPriceX96, tick, feeGrowthGlobal0X128",
+            "display": "Various large numbers",
+            "reason": "Uniswap V3 technical parameters - users cannot verify correctness without deep protocol knowledge"
+          }
+        ],
+        "rule": "Do NOT recommend displaying parameters as 'raw' format unless the raw value is meaningful to users. If the only way to show something is incomprehensible, it's acceptable to hide it."
+      },
+      {
+        "id": "sentinel_values",
+        "title": "Sentinel values like CONTRACT_BALANCE, ADDRESS_THIS",
+        "description": "Implementation details users don't see",
+        "action": "NOT critical"
+      },
+      {
+        "id": "eth_weth_wrapping",
+        "title": "ETH/WETH wrapping scenarios",
+        "description": "When transaction value is non-zero (user sends ETH) but tokenIn parameter is WETH, this is VALID if the function automatically wraps ETH\u2192WETH",
+        "common_functions": [
+          "swapExactETHForTokens"
+        ],
+        "reason": "The user KNOWS they're sending ETH (shown in wallet UI), and seeing WETH in the clear signing is correct because that's what the contract receives after wrapping",
+        "action": "NOT critical"
+      },
+      {
+        "id": "internal_approvals",
+        "title": "Internal approvals/transfers done BY the protocol during execution",
+        "description": "If not triggered by user params",
+        "action": "NOT critical"
+      },
+      {
+        "id": "recipient_sentinel",
+        "title": "Recipient being a constant/sentinel value",
+        "description": "As long as user receives tokens",
+        "action": "NOT critical"
+      },
+      {
+        "id": "contract_balance_logic",
+        "title": "Contract balance logic",
+        "description": "Implementation detail",
+        "action": "NOT critical"
+      },
+      {
+        "id": "internal_routing",
+        "title": "Internal routing",
+        "description": "Users don't care HOW swap happens",
+        "action": "NOT critical"
+      },
+      {
+        "id": "technical_parameters",
+        "title": "ANY parameter regular users wouldn't understand without reading contract source code",
+        "description": "Solidity/Vyper implementation details",
+        "action": "NOT critical"
+      },
+      {
+        "id": "unpredictable_state",
+        "title": "State changes that cannot be predicted from function parameters alone",
+        "action": "NOT critical"
+      },
+      {
+        "id": "unused_metadata",
+        "title": "Unused definitions/constants in metadata",
+        "description": "Cleanup issue, NOT critical",
+        "action": "Mention in detailed report"
+      },
+      {
+        "id": "negative_array_indices",
+        "title": "Negative array indices",
+        "description": "This is part of the ERC-7730 spec to access last element and is REQUIRED to work",
+        "action": "NOT critical - spec compliant"
+      },
+      {
+        "id": "spec_features",
+        "title": "ERC-7730 spec features",
+        "description": "Do NOT flag spec-compliant features as 'may not be supported' - they MUST be supported",
+        "action": "NOT critical"
+      },
+      {
+        "id": "token_display_differs",
+        "title": "Token type display uses user input but contract mechanism differs",
+        "description": "When the display uses a user-supplied parameter for token type (e.g., sendingAssetId) but the contract's internal logic uses a different mechanism (e.g., native ETH from address(this).balance)",
+        "reason": "This is a DISPLAY ISSUE for the detailed report, NOT critical. The user specified the token in their input, so the display is showing what they requested.",
+        "action": "Display issue, not critical"
+      },
+      {
+        "id": "token_fixed_address",
+        "title": "tokenAmount uses 'token' parameter instead of 'tokenPath'",
+        "description": "Using 'token': '0x...' is valid for hardcoded token addresses",
+        "example": "Migration contracts that only operate on one specific token like CHSB",
+        "action": "NOT critical - valid alternative to tokenPath"
+      },
+      {
+        "id": "token_amount_no_tokenpath",
+        "title": "tokenAmount with ONLY nativeCurrencyAddress (no tokenPath or token)",
+        "description": "NOT CRITICAL if function ONLY supports native ETH OR destination token is not in inputs (computed on-chain) OR token address cannot be determined from inputs due to 7730 limitation AND has nativeCurrencyAddress",
+        "detailed_explanation": {
+          "when_NOT_critical": [
+            "Output token is determined by pool/DEX address (not an explicit function parameter)",
+            "Output token is computed on-chain from routing logic or encoded in bytes",
+            "The definition includes nativeCurrencyAddress to handle native ETH",
+            "For ERC20 outputs, wallet shows raw amount without token symbol (acceptable spec limitation)"
+          ],
+          "valid_example": {
+            "function": "ethUnoswap2(uint256 minReturn, bytes32[] dex)",
+            "definition": "{\"label\": \"Minimum to Receive\", \"format\": \"tokenAmount\", \"params\": {\"nativeCurrencyAddress\": [\"$.metadata.constants.addressAsEth\", \"$.metadata.constants.addressAsNull\"]}}",
+            "why_valid": "Output token is determined by DEX routing (not in inputs). Native ETH displays correctly. ERC20s show as raw amounts (acceptable limitation).",
+            "do_NOT_flag": "This is correct usage, NOT an issue"
+          },
+          "only_critical_if": "Token address IS in function inputs but descriptor doesn't use tokenPath to reference it",
+          "spec_limitation_note": "If token truly cannot be determined from inputs, mention in spec limitations (NOT critical issues): 'Output token determined by DEX/pool routing, so ERC20 amounts display without symbol.'"
+        },
+        "action": "NOT CRITICAL - Do NOT flag as issue. Only add to spec limitations if you want to note the ERC20 limitation."
+      },
+      {
+        "id": "token_amount_raw_format",
+        "title": "Token amount displayed as raw format instead of tokenAmount",
+        "description": "NOT CRITICAL if the token address cannot be determined from function inputs (e.g., output token computed from pools/routes)",
+        "reason": "This is an acceptable concession",
+        "action": "Only mention in recommendations: 'User will see raw amount without token symbol/decimals because output token cannot be determined from inputs.'"
+      },
+      {
+        "id": "type_casting_uint_address",
+        "title": "Type mismatch: uint256 displayed as addressName",
+        "description": "NOT CRITICAL - valid casting",
+        "example": "pools.[-1] as uint256 can be cast to address by taking 20 bytes",
+        "action": "NOT critical"
+      },
+      {
+        "id": "type_casting_bytes_address",
+        "title": "Type mismatch: bytes32 displayed as addressName",
+        "description": "NOT CRITICAL - valid casting, bytes32 can be interpreted as address",
+        "action": "NOT critical"
+      },
+      {
+        "id": "bitmask_not_displayed",
+        "title": "Bitmask flags parameter not displayed",
+        "description": "NOT CRITICAL if source code shows bitwise AND operations (e.g., flags & _SHOULD_CLAIM) because ERC-7730 spec cannot display bitmasks",
+        "action": "Add to 'Parameters that cannot be clear signed' section with explanation"
+      },
+      {
+        "id": "output_token_from_pool",
+        "title": "Output token determined by pool/DEX not shown",
+        "description": "NOT CRITICAL (SPEC LIMITATION)",
+        "example": "minReturn in ethUnoswap where DEX/pool determines output token. Cannot reliably map to specific ERC20 address.",
+        "action": "Add to spec limitations section"
+      },
+      {
+        "id": "arbitrary_lowlevel_calls",
+        "title": "Arbitrary low-level call details not shown",
+        "description": "NOT CRITICAL only for genuinely open-ended generic execution flows where the user-facing outcome is already shown elsewhere or the calldata is not reasonably enumerable",
+        "reason": "Do not treat `call` or `delegatecall` itself as inherently unclear-signing-resistant. If target/value/calldata are structured and resolvable, they can often be clear signed with `format: calldata`.",
+        "action": "NOT critical"
+      },
+      {
+        "id": "recipient_senderaddress_missing",
+        "title": "Recipient field without senderAddress param when source code has zero-check fallback",
+        "description": "NOT CRITICAL but add WARNING in detailed report",
+        "pattern": "recipient = (param == address(0)) ? msg.sender : param",
+        "action": "Recommend adding 'senderAddress': ['0x0000000000000000000000000000000000000000'] to handle zero address fallback"
+      },
+      {
+        "id": "nonpayable_eth_option",
+        "title": "Non-payable function shows ETH as possible input (nativeCurrencyAddress present)",
+        "description": "NOT CRITICAL (UX improvement only). Transaction will revert if user tries to send ETH to non-payable function - no funds lost. UI/frontend likely prevents this.",
+        "action": "Add to RECOMMENDATIONS: 'Consider removing nativeCurrencyAddress for better UX' but do NOT flag as critical"
+      },
+      {
+        "id": "enum_path_variants",
+        "title": "Enum references $.metadata.enums instead of $.metadata.constants",
+        "description": "NOT CRITICAL. `$.metadata.enums.*` is the v2-preferred location for enum mappings. Treat other legacy locations as migration/quality issues only if they still resolve correctly.",
+        "example": "\"$ref\": \"$.metadata.enums.interestRateMode\" is correct",
+        "action": "NOT critical"
+      },
+      {
+        "id": "scope_restricting_fix_only",
+        "title": "Only available fix is to narrow a legitimate runtime path",
+        "description": "If the report can only be 'fixed' by banning a valid user-controlled flow with `visible.mustBe` or a similar invariant, that is optional scoping rather than evidence of a default critical descriptor failure.",
+        "action": "Downgrade to a spec limitation or lower-severity note unless another truthful non-narrowing fix exists."
+      },
+      {
+        "id": "same_file_nested_descriptor_absence",
+        "title": "Nested selector absent from the current file only",
+        "description": "A same-file miss is not proof of wallet-wide miss for calldata formatting.",
+        "action": "Do not escalate unless registry- or wallet-scope absence is actually established."
+      },
+      {
+        "id": "bounded_wrapped_native_funding",
+        "title": "Bounded wrapped-native funding already covered by another amount bound",
+        "description": "If the descriptor already shows the effective user spend bound and hidden native value only transiently funds that same bounded amount, prefer a recommendation or limitation note unless the hidden native path can increase loss, strand value, or materially change the asset-outflow story.",
+        "action": "NOT critical by default."
+      },
+      {
+        "id": "byte_slicing_implicit_conversion",
+        "title": "Byte slicing - type does NOT change",
+        "description": "CRITICAL MISUNDERSTANDING TO AVOID: Byte slicing (.[:N], .[-N:], .[N:M]) does NOT change the parameter's type. A uint256 with byte slicing is STILL a uint256. Implicit type conversions happen automatically.",
+        "fundamental_rule": "You can byte slice ANY type you want and its type is NOT going to change. Implicit conversions handle the rest. What matters is if the values at the end are correct, or if they are truncated and have no meaning, or if they represent something semantically different.",
+        "how_byte_slicing_works": {
+          "explanation": "At the bytecode level, everything is bytes. Byte slicing extracts a portion of those bytes. The TYPE remains the same - only the VALUE changes.",
+          "examples": [
+            {
+              "path": "minReturn.[-20:]",
+              "abi_type": "uint256",
+              "result_type": "uint256 (NOT address!)",
+              "what_happens": "Takes the last 20 bytes of the uint256 value. The result is STILL a uint256, just with the upper bytes zeroed out.",
+              "format_compatibility": "Can use with ANY format that accepts uint256 (tokenAmount, amount, raw, etc.)"
+            },
+            {
+              "path": "takerTraits.[:1]",
+              "abi_type": "uint256",
+              "result_type": "uint256 (NOT bytes1!)",
+              "what_happens": "Takes the first byte of the uint256 value. The result is STILL a uint256, representing that single byte as a number.",
+              "format_compatibility": "Can use with enum, raw, or amount formats"
+            },
+            {
+              "path": "data.[-20:]",
+              "abi_type": "bytes",
+              "result_type": "bytes (NOT address!)",
+              "what_happens": "Takes the last 20 bytes. The result is STILL bytes, can be cast to address via addressName format.",
+              "format_compatibility": "Can use with addressName (implicit conversion bytes\u2192address), or raw"
+            }
+          ]
+        },
+        "validation_rule": "DO NOT flag byte slicing syntax as type mismatch or invalid. Instead, validate ONLY the semantic correctness:",
+        "critical_only_if": [
+          {
+            "condition": "The sliced value is TRUNCATED in a way that loses critical information",
+            "example": "amount.[:1] on a uint256 amount - takes only first byte, losing 31 bytes of the actual amount value",
+            "why_critical": "User sees 0-255 instead of the full amount (e.g., sees '5' instead of '500000000000000000000')"
+          },
+          {
+            "condition": "The sliced value represents something SEMANTICALLY DIFFERENT than the parameter's purpose",
+            "example": "Using minReturn.[-20:] when minReturn should show the full numeric amount, but the slice extracts only the lowest 20 bytes",
+            "why_critical": "If minReturn is 1000 USDC (1000000000 with 6 decimals), taking last 20 bytes gives 1000000000, which when displayed as tokenAmount would show as 1000 USDC (happens to be correct by coincidence). But if the amount is larger than 20 bytes can represent, it gets truncated."
+          },
+          {
+            "condition": "The sliced value has NO SEMANTIC MEANING",
+            "example": "Extracting middle bytes from a packed parameter without any clear purpose",
+            "why_critical": "Random bytes shown to user without meaning"
+          }
+        ],
+        "NOT_critical_if": "The byte slice produces a semantically correct value that users can understand and verify, even if the slicing seems unusual. The format and slice combination must produce the INTENDED value.",
+        "key_validation_questions": [
+          "Does the FINAL DISPLAYED VALUE show what users need to see?",
+          "Is the value TRUNCATED in a way that loses important information?",
+          "Does the value SEMANTICALLY REPRESENT what the parameter is supposed to show?"
+        ],
+        "action": "NEVER flag byte slicing as 'invalid syntax' or 'type mismatch'. Focus ONLY on: does the final value make sense and show users what they need to see?"
+      },
+      {
+        "id": "function_return_values",
+        "title": "Function return values cannot be displayed in ERC-7730",
+        "description": "Issues about function return values or what the function returns are NOT valid critical issues. ERC-7730 clear signing only displays what users SEE BEFORE signing - the function inputs and transaction metadata. Return values are NOT part of the signing screen.",
+        "reason": "Return values are computed AFTER transaction execution. Users cannot see or verify return values during the signing process. Hardware wallets show the signing screen BEFORE execution, not after.",
+        "examples": [
+          {
+            "issue": "The function returns the input parameter 'outputAmount' instead of the actual amount received from the exchange",
+            "why_not_critical": "Return values are not displayed to users in hardware wallet signing screens. Users only see function inputs before signing.",
+            "correct_focus": "Only flag issues if the DISPLAYED INPUT PARAMETER misleads users about what will happen"
+          },
+          {
+            "issue": "Function returns incorrect token balance after swap",
+            "why_not_critical": "Return value is not part of ERC-7730 descriptor - cannot be displayed on signing screen"
+          },
+          {
+            "issue": "Return value doesn't match actual outcome",
+            "why_not_critical": "This is a smart contract logic issue, not an ERC-7730 clear signing issue"
+          }
+        ],
+        "what_to_focus_on": {
+          "critical": [
+            "Input parameters that mislead users about tokens/amounts SENT",
+            "Input parameters that mislead users about tokens/amounts RECEIVED",
+            "Input parameters about WHERE funds go (recipient addresses)",
+            "Input parameters shown on signing screen that are WRONG or MISLEADING"
+          ],
+          "not_critical": [
+            "What the function returns to the caller",
+            "Post-execution state changes not visible in inputs",
+            "Smart contract internal logic after signing",
+            "Discrepancies between return values and actual outcomes"
+          ]
+        },
+        "key_principle": "Only accepted issue if it's misleading user/wrong AND can be corrected using ERC-7730 format specification AND relates to function inputs or transaction metadata that users see BEFORE signing.",
+        "action": "Mark as NOT CRITICAL. Add reminder: 'ERC-7730 clear signing only displays transaction inputs shown to users BEFORE signing. Return values are not part of the signing screen and cannot be fixed by updating the descriptor.'"
+      },
+      {
+        "id": "non_viable_solutions",
+        "title": "Issues where the only 'solution' would not help users",
+        "description": "Do NOT flag as critical if the proposed fix would display incomprehensible data that users cannot understand or verify",
+        "examples": [
+          {
+            "issue": "takerTraits.[:1] doesn't show argsHasTarget bit (in high-order byte)",
+            "proposed_fix": "Show full takerTraits raw value (uint256)",
+            "why_NOT_critical": "Displaying the full uint256 as raw hex (0x0000...01a4) doesn't help users - they cannot interpret bitpacked flags. If the only solution is incomprehensible raw data, it's NOT critical.",
+            "correct_action": "Add to spec limitations, NOT critical issues"
+          },
+          {
+            "issue": "Missing display of bitpacked flags parameter",
+            "proposed_fix": "Show raw uint256 value",
+            "why_NOT_critical": "Raw hex like 0x06 or 0x00...01a4 is meaningless to users - they cannot determine which flags are set or what modes are active",
+            "correct_action": "Add to spec limitations, NOT critical issues"
+          }
+        ],
+        "validation_rule": "Before flagging as critical, ask: 'If we add this field, can users UNDERSTAND and VERIFY it?' If NO \u2192 NOT critical, it's a spec limitation.",
+        "action": "Do NOT flag as critical if the only fix is to show incomprehensible raw data. Add to spec limitations instead."
+      },
+      {
+        "id": "intermediate_routing",
+        "title": "Intermediate token routing/recipients in swaps",
+        "description": "During swaps, intermediate routing steps and temporary recipients are NOT critical - only the final destination matters",
+        "examples": [
+          {
+            "issue": "Missing display of desc.srcReceiver (intermediate recipient during swap)",
+            "why_NOT_critical": "During a swap, the source tokens may be routed through intermediate contracts (DEX, router, pool). Users care about WHERE THE FINAL OUTPUT TOKENS GO, not intermediate routing. As long as the final recipient (dstReceiver) is shown, intermediate routing is implementation detail.",
+            "what_matters": "Final destination of output tokens (dstReceiver or equivalent)"
+          },
+          {
+            "issue": "Source tokens sent to contract address before swap",
+            "why_NOT_critical": "Common pattern: user's tokens \u2192 DEX/router \u2192 swap \u2192 output tokens \u2192 final recipient. The intermediate steps are not user-facing concerns.",
+            "what_matters": "User sees: what they send, what they receive, where output goes"
+          }
+        ],
+        "validation_rule": "For swap/exchange functions: ONLY flag as critical if the FINAL DESTINATION of output tokens is missing. Intermediate routing (srcReceiver, pool addresses, router addresses) is NOT critical.",
+        "what_to_verify": [
+          "Is the final output token recipient shown? (e.g., dstReceiver, recipient, @.from)",
+          "Are the input token and amount shown?",
+          "Are the output token and minimum amount shown?"
+        ],
+        "action": "NOT critical - intermediate routing doesn't affect final outcome users see"
+      },
+      {
+        "id": "erc4626_vault_share_token",
+        "title": "ERC4626 vault: @.to used for share token amounts",
+        "description": "In ERC4626 tokenized vaults, the vault contract itself IS the share token (it's an ERC20). Using `tokenPath: @.to` for displaying shares in deposit/mint/withdraw/redeem is CORRECT.",
+        "detection": "Check if contract implements ERC4626 standard (inheritance, asset() function, or descriptor includes erc4626 reference)",
+        "erc4626_semantics": {
+          "vault_is_share_token": "The vault contract address = share token address. @.to correctly resolves to the share token.",
+          "underlying_asset": "The underlying asset is a DIFFERENT token (returned by asset() function)",
+          "function_behavior": {
+            "deposit": "Input: assets (underlying) → Output: shares (vault token)",
+            "mint": "Input: shares (vault token) → Output: assets withdrawn",
+            "withdraw": "Input: assets (underlying) → Output: shares burned",
+            "redeem": "Input: shares (vault token) → Output: assets received"
+          },
+          "computed_amounts": "In ERC4626, one amount is input, the other is computed on-chain during execution. ERC-7730 can only show the input amount, not the computed output."
+        },
+        "NOT_critical_patterns": [
+          "`tokenPath: @.to` for shares parameter in deposit/mint/withdraw/redeem",
+          "Using vault contract address as token for shares amounts",
+          "Share amount displayed with vault contract as the token",
+          "Missing display of computed amounts (e.g., assets in mint(), shares in deposit())"
+        ],
+        "ONLY_critical_if": [
+          "`@.to` used for the underlying asset amount (should use the asset() address)",
+          "Underlying asset amount shown with wrong token address",
+          "Both share and asset amounts missing (at least the input amount should be shown)"
+        ],
+        "computed_amounts_are_spec_limitation": {
+          "explanation": "ERC-7730 cannot display computed amounts - only input parameters. In ERC4626: deposit(assets)→shares computed, mint(shares)→assets computed, withdraw(assets)→shares computed, redeem(shares)→assets computed.",
+          "action": "Do NOT flag missing computed amounts as critical. Add to spec limitations: 'Exact [computed amount type] is calculated on-chain and cannot be pre-computed from calldata.'"
+        },
+        "action": "NOT CRITICAL - @.to for shares in ERC4626 vaults is correct. Only flag if @.to used incorrectly for underlying asset or if critical context is missing."
+      },
+      {
+        "id": "missing_msg_value_when_tokenAmount_has_nativeCurrencyAddress",
+        "title": "Missing @.value when tokenAmount field already displays native ETH",
+        "description": "If a payable function has a tokenAmount field with nativeCurrencyAddress that displays ETH amounts via token parameter, adding @.value would create DUPLICATE display",
+        "patterns": [
+          "Field has $ref pointing to definition with nativeCurrencyAddress",
+          "Field uses tokenPath pointing to token address parameter",
+          "Token parameter can be ETH sentinel (0xEeee...eE or 0x0000...00)",
+          "When token is ETH sentinel, the tokenAmount field shows native ETH"
+        ],
+        "detection_steps": [
+          "Step 1: Check if descriptor has tokenAmount field with tokenPath to token parameter",
+          "Step 2: Check if field has $ref - if yes, look up the definition in display.definitions",
+          "Step 3: Check if definition (or field itself) has nativeCurrencyAddress",
+          "Step 4: If YES → Field ALREADY displays native ETH amounts when token is sentinel"
+        ],
+        "concrete_example": {
+          "descriptor_field": "{\"path\": \"baseRequest.fromTokenAmount\", \"$ref\": \"$.display.definitions.sendAmount\", \"params\": {\"tokenPath\": \"baseRequest.fromToken.[-20:]\"}}",
+          "definition": "{\"sendAmount\": {\"format\": \"tokenAmount\", \"params\": {\"nativeCurrencyAddress\": [\"0xEeee...eE\", \"0x0000...00\"]}}}",
+          "why_NOT_critical": "The sendAmount definition has nativeCurrencyAddress. When baseRequest.fromToken equals the ETH sentinel address, fromTokenAmount displays as native ETH. This ALREADY shows the equivalent of msg.value. Adding a separate @.value field would show the same amount twice (duplicate).",
+          "user_sees": "Amount to Send: 1.5 ETH (when fromToken is 0xEeee...eE)",
+          "if_we_added_at_value": "Amount to Send: 1.5 ETH + ETH Value: 1.5 ETH (DUPLICATE - confusing)"
+        },
+        "when_it_IS_critical": "Only flag missing @.value if NONE of the tokenAmount fields have nativeCurrencyAddress (neither directly nor via $ref)",
+        "action": "Mark as NOT CRITICAL. Do NOT recommend adding @.value field when tokenAmount with nativeCurrencyAddress already exists."
+      }
+    ],
+    "spec_limitations": [
+      {
+        "id": "bitmask_flags",
+        "title": "Bitmask flags / Packed data",
+        "description": "Source code shows param & CONSTANT operations or bitwise shifts",
+        "reason": "ERC-7730 enum cannot display multiple flag combinations or extract packed values",
+        "examples": [
+          "Bitpacked parameters like traits, flags, options with packed nonce/epoch/flags data"
+        ]
+      },
+      {
+        "id": "output_token_pool",
+        "title": "Output token determined by pool/DEX",
+        "description": "Output token computed from pool address, not explicit in inputs",
+        "reason": "Cannot reliably map to specific ERC20 address",
+        "examples": [
+          "minReturn in Uniswap pool swaps where pool determines output token"
+        ]
+      },
+      {
+        "id": "deeply_nested_arrays",
+        "title": "Deeply nested arrays",
+        "description": "Path like orders[].amounts[] beyond spec capabilities"
+      },
+      {
+        "id": "dynamic_computed_data",
+        "title": "Dynamic/computed data",
+        "description": "Values calculated on-chain, not in function inputs"
+      },
+      {
+        "id": "arbitrary_calls",
+        "title": "Arbitrary low-level calls",
+        "description": "Functions that execute genuinely open-ended arbitrary calldata where no bounded, truthful nested decoding strategy exists",
+        "reason": "This is a limitation of open-ended execution, not of `delegatecall` or `call` themselves. Resolvable nested call patterns should still be audited as normal calldata flows."
+      },
+      {
+        "id": "opaque_runtime_mode",
+        "title": "Opaque runtime mode / price-limit knobs",
+        "description": "A user-controlled field materially changes behavior, but the only honest broad-flow options are opaque raw display or narrowing the descriptor to a fixed subset.",
+        "reason": "Treat as limitation/non-critical unless a truthful non-narrowing display exists."
+      }
+    ],
+    "additional_requirements": {
+      "array_indexing_validation": {
+        "description": "When ERC-7730 uses array indexing, verify the index points to actual data relevant to the user (not sentinel values)",
+        "common_issue": "Fixed-size arrays where unused slots contain 0x0000... or other sentinels",
+        "how_to_check": "Look at source code and decoded transaction parameters and verify array indices reference real data, not empty/sentinel slots",
+        "critical_if": "The indexed element is a sentinel (0x00) while real data exists elsewhere in the array"
+      },
+      "can_it_be_fixed": {
+        "description": "ONLY flag as CRITICAL if the issue EXISTS in function inputs AND can be displayed with ERC-7730 spec AND can be shown in human-readable format",
+        "examples": {
+          "critical": "ERC-7730 doesn't show recipient but recipient is an input parameter \u2192 CRITICAL (can be fixed)",
+          "not_critical": "Showing max/min amount not actual amounts (computed on-chain, not in inputs) \u2192 NOT CRITICAL (that's how the function works)"
+        },
+        "rule": "If the information cannot be obtained from input parameters OR cannot be displayed with ERC-7730 spec OR cannot be shown in human-readable format OR can only be 'fixed' by narrowing a legitimate runtime path, it's NOT a default critical issue - it's a SPEC LIMITATION or lower-severity note."
+      },
+      "human_readability": {
+        "description": "Parameters that can ONLY be shown as incomprehensible raw data (packed bits, liquidity numbers, technical params) are NOT critical to hide",
+        "readable_format": "Can be clear signed in READABLE format (address, token amount, date) \u2192 If missing, this IS critical",
+        "incomprehensible_format": "Can only be shown as RAW/incomprehensible data (packed bits, raw bytes32, complex flags, large computed values like liquidity) \u2192 If missing, this is NOT critical",
+        "key_question": "Would displaying this as 'raw' format help the user understand what they're signing?",
+        "answers": {
+          "yes": "Critical if missing (e.g., address as hex, token amount as number)",
+          "no": "NOT critical (e.g., 0x000000000000001a4 for packed traits, 1582938471982347 for liquidity)"
+        }
+      },
+      "validator_false_positive_guards": {
+        "description": "Conservative checks that should be applied before accepting a critical issue or recommendation.",
+        "checks": [
+          "Ask whether the proposed fix preserves the intended supported flow or merely narrows it.",
+          "Ask whether a nested-calldata absence has been proven beyond the current file.",
+          "If the field is only understandable as opaque raw data, prefer a spec limitation.",
+          "If the descriptor already shows the effective bounded amount/outcome elsewhere, avoid duplicative critical escalation."
+        ]
+      }
+    }
+  }
+}

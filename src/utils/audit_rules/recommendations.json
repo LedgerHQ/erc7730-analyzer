@@ -2,7 +2,7 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "ERC-7730 Recommendations Format",
   "description": "Guidelines for writing recommendations in ERC-7730 clear signing audit reports",
-  "version": "1.0.0",
+  "version": "1.1.0",
 
   "always_include": "Even if no critical issues found, ALWAYS include recommendations section",
 
@@ -10,7 +10,10 @@
     "Always provide recommendations even if no critical issues found",
     "Include spec limitations (parameters that CANNOT be clear signed)",
     "For each fix recommendation, include a CLEAR CORRECTION showing exactly what to add or change in the descriptor",
-    "Use concrete examples with actual field definitions, not generic descriptions"
+    "Use concrete examples with actual field definitions, not generic descriptions",
+    "Use current v2 syntax in recommendations. Do NOT propose new `required`, `excluded`, or `screens` arrays for v2 descriptors.",
+    "If an important fixed-size recipient/token/asset identifier can be user-verified in raw form (for example a non-EVM bytes32 destination identifier), prefer recommending a `raw` field instead of calling it a spec limitation.",
+    "If no truthful non-narrowing fix exists, state the issue as a spec limitation instead of inventing a scope-restricting recommendation."
   ],
 
   "validate_existing_descriptor_first": {
@@ -58,6 +61,12 @@
     "no_numbers": "DO NOT start with numbers like '1.', '2.', '3.'",
     "be_specific": "DO NOT write generic recommendations that just repeat the rules. Be SPECIFIC to this descriptor. If you say 'Ensure nested calldata descriptor(s) are available', you are being too generic. Instead, say which specific selector needs a nested descriptor or don't mention it at all.",
     "no_generic_advice": "AVOID generic phrases like 'Ensure...', 'Make sure...', 'Verify...', 'Recommend wallets...'. Only include actionable, specific recommendations for THIS descriptor.",
+    "v2_only": "Use v2 terminology and structures. Prefer `fields`, `visible`, `fieldGroup`, and formatter params. Do NOT recommend selector-only format keys or v1 required/excluded arrays. For tuple signatures in new examples, prefer bare `(...)` style even though the schema regex also accepts `tuple(...)`.",
+    "review_friendly_change_layout": {
+      "rule": "When proposing JSON changes, group them into reviewer-friendly buckets such as `field_to_add`, `field_to_remove`, and `changes_to_make` instead of dumping an unstructured whole-file blob.",
+      "reason": "This makes additions/removals/edits easy to inspect even without color.",
+      "note": "Keep snippets minimal and only include the touched fragments."
+    },
     "CHARACTER_LIMIT_CRITICAL": {
       "rule": "ANY proposed intent MUST be ≤20 characters. ANY proposed label MUST be ≤20 characters.",
       "when_to_check": "Check character count for EVERY intent and label you recommend, regardless of what issue you're fixing",
@@ -88,6 +97,7 @@
         "Description is concise (1-2 sentences), explains WHAT and WHY",
         "Code snippet contains the actual JSON to add/modify, properly formatted",
         "DO NOT embed JSON in description text - use code_snippet field instead",
+        "If the recommendation would only work by constraining a legitimate supported mode (for example `visible.mustBe` on a real runtime option), present that as OPTIONAL scope narrowing or move it to spec limitations instead of presenting it as the default fix",
         "When recommending enum mappings: Use ACTUAL values from source code if available. If values are not visible in the provided source code, use clear placeholders like 'ROLE_VALIDATOR' or '0xROLE_VALUE_FROM_CONTRACT' and explicitly state 'populate with actual role constants from the contract source code'",
         "NEVER use made-up hex values like 0x1111...1111 or 0x2222...2222 that appear to be real constants but are actually placeholders",
         "CRITICAL - Check source code for packed data before recommending tokenPath/field paths: When recommending new fields or fixing tokenPath references, check if the source code contains bit masks, bit shifts, or address casts on that parameter. If the code shows operations like (param & MASK), (param >> 160), address(param), or _bytes32ToAddress(param), you MUST recommend the sliced path (e.g., srcToken.[-20:] to extract address bytes). Do NOT recommend using the raw parameter name without slicing when source code shows casting/masking."
@@ -240,7 +250,8 @@
         "These do NOT go in 'Issues Found' section",
         "List them here in Recommendations with full explanation",
         "Follow the 'ERC-7730 SPEC LIMITATIONS' format",
-        "ALWAYS include these even when no critical issues exist"
+        "ALWAYS include these even when no critical issues exist",
+        "Use this path when the only available 'fix' would narrow a legitimate runtime mode rather than truthfully represent it"
       ],
       "examples": [
         "**Output token cannot be clear signed:** The `minReturn` field displays the minimum amount to receive, but the output token is determined by the pool/DEX address and not available as a function input, so ERC-7730 cannot reliably map this to a specific ERC20 address with tokenPath."
@@ -331,6 +342,7 @@
     "if_truly_no_recommendations": "**No additional recommendations - descriptor is comprehensive.**",
     "avoid_generic_recommendations": [
       "DO NOT say: 'Ensure nested calldata descriptor(s) are available' - this is too generic",
+      "DO NOT say: 'The inner selector is not clear signed' unless you have ruled out wallet-/registry-scope nested descriptor lookup beyond the current file",
       "DO NOT say: 'Recommend wallets verify...' - this is out of scope for descriptor audit",
       "DO NOT say: 'Document as a spec limitation...' - just state the limitation directly",
       "DO NOT say: 'Make sure all labels remain ≤20 characters' - only mention if there's an actual label >20 chars",

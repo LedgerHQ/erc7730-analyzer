@@ -1,11 +1,9 @@
 """Base analyzer state and shared configuration."""
 
-from typing import Optional
-
 from web3 import Web3
 
-from ..extraction.source_code import SourceCodeExtractor
 from ..clients.transactions import TransactionFetcher
+from ..extraction.source_code import SourceCodeExtractor
 
 
 class AnalyzerBase:
@@ -30,13 +28,22 @@ class AnalyzerBase:
 
     def __init__(
         self,
-        etherscan_api_key: Optional[str] = None,
-        coredao_api_key: Optional[str] = None,
+        etherscan_api_key: str | None = None,
+        coredao_api_key: str | None = None,
         lookback_days: int = 20,
         enable_source_code: bool = True,
         use_smart_referencing: bool = True,
-        max_concurrent_api_calls: int = 8,
+        max_concurrent_api_calls: int = 20,
         max_api_retries: int = 3,
+        analysis_mode: str = "single",
+        max_selector_tool_rounds: int = 2,
+        max_tool_requests_per_round: int = 2,
+        llm_model: str = "gpt-5.4",
+        llm_reasoning_effort: str = "high",
+        enable_screenshots: bool = False,
+        screenshot_device: str = "stax",
+        cs_tester_root: str | None = None,
+        coin_apps_path: str | None = None,
     ):
         self.etherscan_api_key = etherscan_api_key
         self.coredao_api_key = coredao_api_key
@@ -45,15 +52,20 @@ class AnalyzerBase:
         self.use_smart_referencing = use_smart_referencing
         self.max_concurrent_api_calls = max_concurrent_api_calls
         self.max_api_retries = max_api_retries
+        self.analysis_mode = analysis_mode
+        self.max_selector_tool_rounds = max_selector_tool_rounds
+        self.max_tool_requests_per_round = max_tool_requests_per_round
+        self.llm_model = llm_model
+        self.llm_reasoning_effort = llm_reasoning_effort
+        self.enable_screenshots = enable_screenshots
+        self.screenshot_device = screenshot_device
+        self.cs_tester_root = cs_tester_root
+        self.coin_apps_path = coin_apps_path
 
         self.w3 = Web3()
         self.abi_helper = None
         self.tx_fetcher = TransactionFetcher(etherscan_api_key, lookback_days)
-        self.source_extractor = (
-            SourceCodeExtractor(etherscan_api_key, coredao_api_key)
-            if enable_source_code
-            else None
-        )
+        self.source_extractor = SourceCodeExtractor(etherscan_api_key, coredao_api_key) if enable_source_code else None
 
         self.selector_to_format_key = {}
         self.selector_sources = {}

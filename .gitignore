@@ -13,7 +13,11 @@ wheels/
 .env.local
 output/
 test/
-tests/
+tests/*
+!tests/benchmark/
+tests/benchmark/*
+!tests/benchmark/raw
+!tests/benchmark/v2/
 results/
 audit_reports/
 *key*

@@ -1,0 +1,207 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "ERC-7730 Specification Limitations",
+  "description": "Common spec limitations to detect when certain parameters cannot be clear signed with current ERC-7730 spec",
+  "version": "1.1.0",
+
+  "when_to_flag_as_spec_limitation": [
+    "Bitpacked parameters (bitwise operations in source code)",
+    "Output tokens determined by pool/DEX (not in function inputs)",
+    "Deeply nested arrays beyond ERC-7730 capabilities",
+    "Dynamic/computed data not available in inputs",
+    "Concatenated bytes with separate length array requiring dynamic slicing",
+    "Legitimate user-controlled runtime modes where the only truthful broad-flow fix would be to narrow the descriptor with invariants such as visible.mustBe"
+  ],
+
+  "required_information": [
+    "Parameter name",
+    "Why it cannot be signed (specific technical reason)",
+    "Impact on users (what information they're missing)",
+    "Detected code pattern (evidence from source code)"
+  ],
+
+  "v2_conservatism": [
+    "Before calling something a spec limitation, verify that v2 features like `fieldGroup`, `visible`, `maps`, `tokenTicker`, `interoperableAddressName`, `encryption`, and `format: calldata` do not already provide a truthful solution.",
+    "Optional v2 features are not mandatory. Do not criticize a descriptor merely for not using them.",
+    "If the only remaining fix would ban a legitimate supported flow, document the limitation instead of pretending the issue has a neutral v2 fix."
+  ],
+
+  "common_spec_limitations": [
+    {
+      "id": 1,
+      "type": "Bitmask flags / Packed data",
+      "description": "Source code shows `param & CONSTANT` operations or bitwise shifts",
+      "why_limitation": "ERC-7730 enum cannot display multiple flag combinations or extract packed values",
+      "examples": [
+        "Bitpacked parameters like `traits`, `flags`, `options` with packed nonce/epoch/flags data"
+      ],
+      "source_code_patterns": [
+        "param & CONSTANT",
+        "param & _SHOULD_CLAIM != 0",
+        "param & _REQUIRES_EXTRA_ETH != 0",
+        "param >> 160",
+        "param << 96"
+      ],
+      "output_format": {
+        "title": "**{parameter_name} cannot be clear signed:**",
+        "explanation": "This parameter is a bitmask combining multiple boolean flags ({flag_names}). ERC-7730's enum format only supports simple 1:1 value→label mappings and cannot perform bitwise AND operations or display multiple flags simultaneously.",
+        "why_matters": "**Why this matters:** Users cannot see which behavior flags are enabled, affecting {impact_description}",
+        "detected_pattern": "**Detected pattern:** Source code shows: {code_patterns}"
+      },
+      "example_output": "**desc.flags cannot be clear signed:** This parameter is a bitmask combining multiple boolean flags (SHOULD_CLAIM=0x04, REQUIRES_EXTRA_ETH=0x02, PARTIAL_FILL=0x01). ERC-7730's enum format only supports simple 1:1 value→label mappings and cannot perform bitwise AND operations or display multiple flags simultaneously.\n\n**Why this matters:** Users cannot see which behavior flags are enabled, affecting token routing (SHOULD_CLAIM changes recipient), ETH requirements (REQUIRES_EXTRA_ETH allows extra msg.value), and partial fill logic.\n\n**Detected pattern:** Source code shows: `if (flags & _SHOULD_CLAIM != 0)`, `if (flags & _REQUIRES_EXTRA_ETH != 0)`, and `if (flags & _PARTIAL_FILL != 0)`"
+    },
+    {
+      "id": 2,
+      "type": "Output token determined by pool/DEX",
+      "description": "Output token computed from pool address, not explicit in inputs",
+      "why_limitation": "Cannot reliably map to specific ERC20 address",
+      "examples": [
+        "`minReturn` in Uniswap pool swaps where pool determines output token"
+      ],
+      "source_code_patterns": [
+        "IPool(pool).token0()",
+        "IPool(pool).token1()",
+        "getPair(tokenA, tokenB)",
+        "getPool(address) returns (IERC20)"
+      ],
+      "output_format": {
+        "title": "**{parameter_name} output token cannot be clear signed:**",
+        "explanation": "The output token for this amount is determined by the pool/DEX address and not available as an explicit function input, so ERC-7730 cannot reliably map this to a specific ERC20 address with tokenPath.",
+        "why_matters": "**Why this matters:** Users will see the amount but not the token symbol/decimals, making it difficult to verify they're receiving the correct token type.",
+        "detected_pattern": "**Detected pattern:** Output token is computed from pool address: {code_pattern}"
+      },
+      "example_output": "**minReturn output token cannot be clear signed:** The output token for this amount is determined by the pool/DEX address and not available as an explicit function input, so ERC-7730 cannot reliably map this to a specific ERC20 address with tokenPath.\n\n**Why this matters:** Users will see the amount but not the token symbol/decimals, making it difficult to verify they're receiving the correct token type.\n\n**Detected pattern:** Output token is computed from pool address: `IUniswapV2Pair(pools[-1]).token1()`"
+    },
+    {
+      "id": 3,
+      "type": "Deeply nested arrays",
+      "description": "Arrays of structs containing arrays",
+      "why_limitation": "Path like `orders[].amounts[]` beyond spec capabilities",
+      "examples": [
+        "orders[].fills[].tokens[]",
+        "routes[].swaps[].pools[]"
+      ],
+      "output_format": {
+        "title": "**{parameter_name} cannot be clear signed:**",
+        "explanation": "This parameter has deeply nested array structure ({path_structure}) that exceeds current ERC-7730 path capabilities for array indexing.",
+        "why_matters": "**Why this matters:** Users cannot see {what_user_misses}."
+      }
+    },
+    {
+      "id": 4,
+      "type": "Dynamic/computed data",
+      "description": "Values calculated on-chain, not in function inputs",
+      "why_limitation": "Data is not available in transaction calldata",
+      "examples": [
+        "Actual swap amounts (only min/max in inputs)",
+        "Computed fees based on on-chain state",
+        "Dynamic recipients based on contract logic"
+      ],
+      "output_format": {
+        "title": "**{data_description} cannot be clear signed:**",
+        "explanation": "This value is computed on-chain during execution and is not present in the function inputs, so ERC-7730 cannot display it (only calldata parameters can be shown).",
+        "why_matters": "**Why this matters:** Users will see {what_they_see_instead} rather than the actual {what_they_miss}."
+      }
+    },
+    {
+      "id": 5,
+      "type": "Arbitrary low-level calls",
+      "description": "Functions that execute genuinely open-ended arbitrary calldata where no bounded, truthful nested decoding strategy exists",
+      "why_limitation": "This is a limitation of open-ended execution, not of `delegatecall` or `call` themselves. If target/value/calldata are structured and resolvable, they can often be clear signed with `format: calldata`.",
+      "examples": [
+        "multicall(bytes[] calldata data)",
+        "execute(bytes calldata data)",
+        "aggregate((address target, bytes calldata)[] calls)"
+      ],
+      "source_code_patterns": [
+        ".delegatecall(data)",
+        ".call(data)",
+        "for (uint256 i = 0; i < data.length; i++) { address(this).delegatecall(data[i]); }"
+      ],
+      "output_format": {
+        "title": "**Nested call data cannot be fully clear signed:**",
+        "explanation": "This function executes arbitrary encoded calldata. While the high-level function can be clear signed, the nested calls within the calldata parameter {calldata_param_name} require wallet-resolvable ERC-7730 coverage for each nested function that the wallet chooses to decode.",
+        "why_matters": "**Why this matters:** This is acceptable for generic execution functions where users understand they're batching multiple operations. Do not claim a hard failure from current-file absence alone; the practical limit is whether the wallet can resolve suitable nested descriptors."
+      }
+    },
+    {
+      "id": 6,
+      "type": "Opaque runtime mode / price-limit knob",
+      "description": "A user-controlled field materially changes execution semantics, but the only truthful broad-flow options are opaque raw display or narrowing the descriptor to a fixed subset",
+      "why_limitation": "If the descriptor cannot explain the field in a human-verifiable way without banning valid modes via `visible.mustBe`, the limitation is in the expressiveness/UX, not necessarily in a missing critical field.",
+      "examples": [
+        "Destination-call enable flags paired with opaque destination message bytes",
+        "Price-bound parameters such as non-zero swap limits where exact outcome stops being guaranteed"
+      ],
+      "source_code_patterns": [
+        "A boolean/enum/limit input switches between materially different execution paths",
+        "The switched path depends on opaque bytes or protocol-specific math that is not meaningfully displayable",
+        "The only obvious descriptor 'fix' is to force one branch with visible.mustBe"
+      ],
+      "output_format": {
+        "title": "**{parameter_name} cannot be broadly clear signed without narrowing the supported flow:**",
+        "explanation": "This parameter changes execution semantics, but current ERC-7730 display options do not provide a clear, user-verifiable representation for every supported runtime mode. The only obvious descriptor change would be to constrain the field to a subset of valid values, which narrows functionality rather than neutrally fixing the descriptor.",
+        "why_matters": "**Why this matters:** Users may not fully understand how this runtime mode changes execution, but treating the issue as a mandatory critical fix would incorrectly force a narrower product decision.",
+        "detected_pattern": "**Detected pattern:** Source code shows runtime branching or guarantee changes based on {parameter_name}: {code_pattern}"
+      }
+    },
+    {
+      "id": 7,
+    "type": "Role/context information not in function parameters",
+    "description": "Function behavior varies by role/context (e.g., validator vs attestation signer) but the role is hardcoded in the function or determined by the function selector itself, not passed as a parameter",
+    "why_limitation": "ERC-7730 can only display parameters from the function inputs. It cannot inject contextual information about which role a function operates on when that role is implicit in the function name/selector",
+    "examples": [
+      "authorizeValidatorSigner() - role is 'Validator' but not a parameter",
+      "authorizeAttestationSigner() - role is 'Attestation' but not a parameter",
+      "setIndexedSigner() - 'sets as default' behavior is implicit, not a boolean parameter"
+    ],
+    "source_code_patterns": [
+      "Function name contains role information (authorizeValidatorSigner, authorizeAttestationSigner)",
+      "setIndexedSigner or similar naming indicating default/indexed behavior",
+      "Hardcoded role constants passed to internal functions"
+    ],
+    "why_literal_fields_dont_work": {
+      "problem": "Adding literal value fields like {value: 'Validator', label: 'Role', format: 'raw'} creates separate hardware wallet screens showing standalone text",
+      "user_experience": "User sees multiple screens: 'Role: Validator', 'Action: Set as default' - confusing and disconnected from the actual signer being authorized",
+      "not_a_fix": "This doesn't provide clear context in a hardware wallet UX - just adds noise screens"
+    },
+    "output_format": {
+      "title": "**Role and default/indexed behavior cannot be clearly represented:**",
+      "explanation": "This function authorizes a signer for the {role_name} role and sets it as the account's default/indexed {role_name} signer. However, the role and defaulting behavior are implicit in the function itself (not parameters), and ERC-7730 cannot inject contextual metadata that flows naturally on hardware wallet displays. Adding literal 'Role' and 'Action' fields would create separate, disconnected screens showing standalone text ('Role: Validator', 'Action: Set as default'), which is confusing rather than helpful.",
+      "why_matters": "**Why this matters:** Users signing this transaction may not understand that (1) this authorizes a {role_name} signing key specifically, and (2) this signer will be set as their account's default {role_name} signer. The intent field can partially address this (e.g., 'Authorize Validator') but cannot fully convey the defaulting behavior within the 20-character limit.",
+      "detected_pattern": "**Detected pattern:** Function name is `{function_name}`, which hardcodes the role. Source code shows calls to setIndexedSigner or equivalent, indicating default signer behavior."
+    },
+    "example_output": "**Role and default/indexed behavior cannot be clearly represented:** This function authorizes a signer for the Validator role and sets it as the account's default/indexed validator signer. However, the role and defaulting behavior are implicit in the function itself (not parameters), and ERC-7730 cannot inject contextual metadata that flows naturally on hardware wallet displays. Adding literal 'Role' and 'Action' fields would create separate, disconnected screens showing standalone text ('Role: Validator', 'Action: Set as default'), which is confusing rather than helpful.\n\n**Why this matters:** Users signing this transaction may not understand that (1) this authorizes a Validator signing key specifically, and (2) this signer will be set as their account's default validator signer. The intent field can partially address this (e.g., 'Authorize Validator') but cannot fully convey the defaulting behavior within the 20-character limit.\n\n**Detected pattern:** Function name is `authorizeValidatorSigner`, which hardcodes the role. Source code shows calls to setIndexedSigner(signer, ValidatorSigner), indicating default signer behavior."
+  }
+
+  ],
+
+  "formatting_requirements": {
+    "always_include_three_parts": [
+      "**{Parameter/concept} cannot be clear signed:** [Main explanation]",
+      "**Why this matters:** [User impact]",
+      "**Detected pattern:** [Code evidence if applicable]"
+    ],
+    "use_bullet_points": false,
+    "note": "Spec limitations are typically written as 2-3 paragraph blocks, not bullet points"
+  },
+
+  "when_to_include": {
+    "rule": "ONLY include spec limitations when they ACTUALLY APPLY to this specific descriptor",
+    "location": "In the Recommendations section, NOT in Critical Issues section",
+    "reasoning": "These are not bugs in the descriptor - they are inherent limitations of what ERC-7730 can express",
+    "critical_rules": [
+      "DO NOT write generic template-style limitations like 'Spec limitation — Bitmask/packed flags cannot be clear signed: parameters encoded as bitmasks...'",
+      "DO NOT list all possible limitation types as if explaining the spec",
+      "ONLY mention a limitation if you detect it applies to THIS specific function/descriptor",
+      "When you mention a limitation, be SPECIFIC: which parameter, what pattern you detected, why it matters for THIS function",
+      "If there are NO spec limitations for this function, do NOT mention spec limitations at all"
+    ],
+    "good_example": "**The makerTraits parameter cannot be clear signed:** This parameter is a bitpacked uint256 that encodes the maker's nonce (bits 0-79), deadline (bits 80-159), and useBitInvalidator flag (bit 255). ERC-7730 cannot extract or display individual flags from bitpacked data. Users will not see whether per-order cancellation or mass invalidation is being used.",
+    "bad_examples": [
+      "Spec limitation — Bitmask/packed flags cannot be clear signed: parameters encoded as bitmasks cannot be meaningfully expanded...",
+      "Spec limitation — Output token determined by pool/DEX cannot be clear signed: when the output token is computed...",
+      "Spec limitation: There are no ERC-7730 spec limitations relevant to this function..."
+    ]
+  }
+}

@@ -1,14 +1,14 @@
 """Public formatting API combining critical and detailed markdown outputs."""
 
 import logging
-from typing import Dict
 
 from .critical import format_critical_report
 from .detailed import format_detailed_report
 
 logger = logging.getLogger(__name__)
 
-def format_audit_reports(report_data: Dict) -> tuple[str, str]:
+
+def format_audit_reports(report_data: dict) -> tuple[str, str]:
     """
     Format both critical and detailed reports from JSON data.
 
@@ -46,6 +46,5 @@ def format_audit_reports(report_data: Dict) -> tuple[str, str]:
         return error_msg, error_msg
     except Exception as e:
         logger.error(f"Error formatting audit reports: {e}")
-        error_msg = f"Error formatting reports: {str(e)}\n\n"
+        error_msg = f"Error formatting reports: {e!s}\n\n"
         return error_msg, error_msg
-

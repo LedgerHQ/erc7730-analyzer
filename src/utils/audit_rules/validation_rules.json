@@ -2,10 +2,33 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "ERC-7730 Validation Rules - Complete Reference",
   "description": "Complete validation rules including format specifications and critical/non-critical criteria",
-  "version": "3.0.0",
+  "version": "3.1.0",
   "critical_validation": {
     "critical_definition": "USER LOSES MONEY OR GETS WRONG TOKENS/AMOUNTS IN FINAL OUTCOME. Only flag if a normal user would be shocked or mislead by what actually happens.",
     "key_question": "Would a regular user be shocked by the FINAL tokens/amounts sent and received, or WHO receives them? NO \u2192 DO NOT flag. YES \u2192 Flag as critical.",
+    "supplementary_rules": [
+      "For v2, coverage comes from `fields`, nested `fieldGroup`, `$ref`, `visible`, maps, and formatter params. Do NOT rely on v1 required/excluded arrays as the main coverage model.",
+      "Check binding consistency: the analyzed selector, ABI function_signature, and descriptor display.format key must describe the same function. If the format key normalizes or hashes to a different function, treat that as a serious descriptor mistake.",
+      "If the only truthful remediation would narrow a legitimate user-controlled mode, limit, selector, or payload to a fixed safe subset, do not treat that narrowing as the default critical fix. Frame it as optional scope restriction or downgrade the issue.",
+      "For calldata fields, absence of a nested descriptor in the current file is NOT enough to conclude the wallet cannot clear-sign the nested call. Some wallets resolve embedded calldata against other installed ERC-7730 descriptors.",
+      "The current v2 schema regex accepts both bare tuple `(...)` and `tuple(...)` spellings in format keys. Prefer bare `(...)` in new examples/recommendations, but do not flag `tuple(...)` alone as a critical issue if it still matches the schema.",
+      "Do NOT assume a fixed-size bytes32 recipient or asset identifier is non-displayable just because there is no dedicated formatter. If the user can still verify the important destination value in raw form, recommend showing it as raw rather than calling it a spec limitation.",
+      "If you cannot provide a concrete, truthful, non-scope-restricting recommendation, prefer a spec limitation or lower-severity issue over a critical finding."
+    ],
+    "v2_mandatory_changes": [
+      "New v2 descriptors should use explicit `fields` coverage plus `visible` semantics instead of `required` / `excluded` arrays.",
+      "display.formats bindings are full function signatures with parameter names (or EIP-712 encodeType strings), not selector-only keys.",
+      "The display.formats binding key must still match the actual analyzed selector/function. A full signature with the wrong function name or wrong parameter types is a binding error, not a cosmetic issue.",
+      "If a value is intentionally hidden or constrained, account for it in `fields` using `visible`, not by omitting it from v1 arrays.",
+      "`unit.params.decimals` is numeric in the current v2 schema.",
+      "Use the latest schema field name `$comment`, not `$comments`."
+    ],
+    "v2_optional_features": [
+      "`fieldGroup` with `iteration` is optional but fully valid v2.",
+      "`interpolatedIntent` is optional software-wallet UX and never replaces structured fields.",
+      "`metadata.maps`, `tokenTicker`, `chainId` / `chainIdPath`, `interoperableAddressName`, `encryption`, and `metadata.contractName` are optional valid v2 features.",
+      "Do NOT require optional v2 features merely because they exist in the schema; only assess them when the descriptor uses them or when they would materially improve a real user-facing risk."
+    ],
     "not_critical_patterns": [
       {
         "id": "amount_capped",
@@ -68,7 +91,7 @@
       {
         "id": "bundled_permit",
         "title": "Bundled permit/approval parameters",
-        "description": "If a function has a permit or approval parameter that is excluded from display, executes permit/approval logic, performs OTHER actions beyond just approval, and the approval is consumed atomically in the SAME transaction",
+        "description": "If a function has a permit or approval parameter that is hidden/accounted for in v2 (for example with `visible: \"never\"`), executes permit/approval logic, performs OTHER actions beyond just approval, and the approval is consumed atomically in the SAME transaction",
         "common_patterns": [
           "permitAndCall()",
           "swapWithPermit()",
@@ -80,7 +103,7 @@
       },
       {
         "id": "bitpacked_parameters",
-        "title": "Bitpacked/flags parameters excluded but control behavior",
+        "title": "Bitpacked/flags parameters hidden or not shown but control behavior",
         "description": "Any parameter that uses bitpacking (bit shifts, bit masks, flags) to control multiple behaviors in a single uint256 cannot be meaningfully displayed to users",
         "patterns": [
           "flags & _SHOULD_CLAIM != 0",
@@ -106,22 +129,22 @@
         "title": "Payable wrapper/forwarding pattern",
         "description": "Payable function that forwards execution and value entirely. Pattern detection: (1) Function body does NOT manipulate msg.value in its own logic, (2) Function forwards the ENTIRE value via delegatecall or .call{value: msg.value}, (3) Function does NOT display @.value in ERC-7730",
         "patterns": [
-          "delegatecall(...) - automatically forwards msg.value",
+          "delegatecall(...) - preserves the same msg.value context for nested logic",
           ".call{value: msg.value}(...) - explicitly forwards full msg.value",
           ".call{value: address(this).balance}(...) - forwards all received ETH"
         ],
-        "reason": "The value is forwarded entirely to a nested call. The nested call will have its own ERC-7730 descriptor that SHOULD display @.value. Users see multiple clear signing screens: one for wrapper, one for nested call. The value is shown on the nested call's screen, not the wrapper's screen.",
-        "action": "Mark as INFORMATIONAL (not CRITICAL) with note: 'This appears to be a wrapper function that forwards execution and value entirely. Verify that nested call descriptors display @.value.'",
+        "reason": "For `.call{value: ...}`, value is explicitly transferred. For `delegatecall`, native ETH is not transferred to another address, but nested logic still executes with the same msg.value context. If the nested call is resolvable with `format: calldata`, it can often be clear signed similarly to a normal call. Do not assume wrapper-level omission alone is critical if the real user-facing value and nested action are shown downstream.",
+        "action": "Mark as INFORMATIONAL (not CRITICAL) only when the nested action is genuinely resolvable or the real user-facing outcome is already shown. Otherwise continue auditing the nested calldata/value path normally.",
         "counter_example": "If function validates or manipulates msg.value (e.g., require(msg.value == desc.amount)) \u2192 CRITICAL"
       },
       {
         "id": "nested_calldata",
-        "title": "Nested calldata parameter excluded or shown with format: calldata",
-        "description": "MULTI-SCREEN CLEAR SIGNING: When a function contains nested calldata (e.g., action bytes passed to delegatecall/call), the nested call gets decoded on SUBSEQUENT screens using its own ERC-7730 descriptor",
+        "title": "Nested calldata parameter hidden/accounted or shown with format: calldata",
+        "description": "When a function contains nested calldata (e.g., action bytes passed to delegatecall/call), nested clear signing depends on wallet resolution of the embedded callee/selector and is not necessarily limited to the current file.",
         "examples": [
-          "permitAndCall(permit, action) shows 'Execute with permit' on screen 1, then the decoded swap/transfer from action bytes on screens 2-3",
+          "permitAndCall(permit, action) may show a high-level wrapper action first and then a decoded swap/transfer if the wallet resolves the nested calldata",
           "execute(address target, bytes data) with data formatted as calldata with calleePath: 'target'",
-          "swap(SwapDescription desc, bytes data) where desc shows amounts and tokens, data contains encoded executor calls that will be decoded on next screen"
+          "swap(SwapDescription desc, bytes data) where desc shows amounts and tokens, data contains encoded executor calls that the wallet may decode separately"
         ],
         "two_valid_approaches": {
           "approach_1": {
@@ -138,13 +161,16 @@
             "when_to_use": "When you want to show a label for the calldata field and ensure proper value/spender context is passed to nested descriptor"
           },
           "approach_2": {
-            "description": "Exclude the calldata parameter entirely",
+            "description": "Account for the parent-level calldata field in v2 while intentionally hiding it",
             "example": {
-              "excluded": [
-                "action"
+              "fields": [
+                {
+                  "path": "action",
+                  "visible": "never"
+                }
               ]
             },
-            "when_to_use": "When the calldata is not meaningful to show at the parent level (user will see it decoded on next screen anyway)"
+            "when_to_use": "When the calldata is not meaningful to show at the parent level and the outer descriptor already shows the user-facing outcome. Use v2 field accounting rather than v1 excluded arrays."
           }
         },
         "executor_and_data_pattern": {
@@ -152,13 +178,13 @@
           "when_not_critical": [
             "If the descriptor ALREADY shows the critical user-facing information (amounts in/out, tokens, recipient) from OTHER parameters (e.g., SwapDescription struct)",
             "The executor/data parameters are implementation details for HOW the swap/action happens, not WHAT the user is sending/receiving",
-            "The nested calls will be decoded on subsequent screens if ERC-7730 descriptors exist for them",
+            "The nested calls may be decoded if the wallet can resolve suitable ERC-7730 descriptors for them, including registry entries outside the current file",
             "Users don't need to verify intermediate routing/execution steps if final amounts and tokens are clearly shown"
           ],
           "example_not_critical": {
             "function": "swap(SwapDescription desc, bytes data)",
             "what_is_shown": "desc.srcToken, desc.dstToken, desc.amount, desc.minReturnAmount, desc.dstReceiver",
-            "what_is_excluded": "executor address and data bytes",
+            "what_is_hidden": "executor address and data bytes at the parent level",
             "why_not_critical": "User sees what they're sending (srcToken + amount) and what they'll receive (dstToken + minReturn + recipient). The intermediate execution steps in 'data' are implementation details - users care about the OUTCOME, not the routing."
           },
           "critical_only_if": [
@@ -167,9 +193,9 @@
             "The descriptor shows NOTHING about the swap/action (no amounts, no tokens, no recipient)"
           ]
         },
-        "reason": "Whether the outer descriptor uses format: calldata or excludes the calldata parameter entirely is fine - users WILL see the nested call details on later screens. The outer function only needs to show what's relevant at its level. If critical user-facing information (amounts, tokens, recipient) is already displayed from other parameters, the nested execution details are NOT critical.",
-        "action": "DO NOT flag as critical if the descriptor already shows the user-facing transaction details (what they send, what they receive, where it goes). ONLY flag as critical if executor/data hide information about final amounts/tokens/recipients that is not shown anywhere else.",
-        "important_validation": "If format: calldata IS used, verify it has required calleePath/callee parameter and follows XOR constraints"
+        "reason": "Whether the outer descriptor uses format: calldata or intentionally hides the parent-level calldata field can be fine - the outer function only needs to show what's relevant at its level. If critical user-facing information (amounts, tokens, recipient) is already displayed elsewhere, nested execution details are not automatically critical. Also, absence from the current file alone is not proof that nested descriptor coverage is unavailable in the wallet.",
+        "action": "DO NOT flag as critical if the descriptor already shows the user-facing transaction details (what they send, what they receive, where it goes). ONLY flag as critical if executor/data hide information about final amounts/tokens/recipients that is not shown anywhere else, or if a genuine wallet-scope nested coverage failure is established.",
+        "important_validation": "If format: calldata IS used, verify it has required calleePath/callee parameter and follows XOR constraints. Do NOT overclaim about missing nested descriptors based only on current-file lookup."
       },
       {
         "id": "incomprehensible_raw_data",
@@ -335,8 +361,8 @@
       {
         "id": "arbitrary_lowlevel_calls",
         "title": "Arbitrary low-level call details not shown",
-        "description": "NOT CRITICAL. Multicall/delegatecall to self with arbitrary actions - users understand these are generic execution functions",
-        "reason": "No need to decode arbitrary calldata",
+        "description": "NOT CRITICAL only for genuinely open-ended generic execution flows where the user-facing outcome is already shown elsewhere or the calldata is not reasonably enumerable",
+        "reason": "Do not treat `call` or `delegatecall` itself as inherently unclear-signing-resistant. If target/value/calldata are structured and resolvable, they can often be clear signed with `format: calldata`.",
         "action": "NOT critical"
       },
       {
@@ -355,9 +381,27 @@
       {
         "id": "enum_path_variants",
         "title": "Enum references $.metadata.enums instead of $.metadata.constants",
-        "description": "NOT CRITICAL. Both $.metadata.enums.* and $.metadata.constants.* are valid paths for enum $ref",
+        "description": "NOT CRITICAL. `$.metadata.enums.*` is the v2-preferred location for enum mappings. Treat other legacy locations as migration/quality issues only if they still resolve correctly.",
         "example": "\"$ref\": \"$.metadata.enums.interestRateMode\" is correct",
         "action": "NOT critical"
+      },
+      {
+        "id": "scope_restricting_fix_only",
+        "title": "Only available fix is to narrow a legitimate runtime path",
+        "description": "If the report can only be 'fixed' by banning a valid user-controlled flow with `visible.mustBe` or a similar invariant, that is optional scoping rather than evidence of a default critical descriptor failure.",
+        "action": "Downgrade to a spec limitation or lower-severity note unless another truthful non-narrowing fix exists."
+      },
+      {
+        "id": "same_file_nested_descriptor_absence",
+        "title": "Nested selector absent from the current file only",
+        "description": "A same-file miss is not proof of wallet-wide miss for calldata formatting.",
+        "action": "Do not escalate unless registry- or wallet-scope absence is actually established."
+      },
+      {
+        "id": "bounded_wrapped_native_funding",
+        "title": "Bounded wrapped-native funding already covered by another amount bound",
+        "description": "If the descriptor already shows the effective user spend bound and hidden native value only transiently funds that same bounded amount, prefer a recommendation or limitation note unless the hidden native path can increase loss, strand value, or materially change the asset-outflow story.",
+        "action": "NOT critical by default."
       },
       {
         "id": "byte_slicing_implicit_conversion",
@@ -590,8 +634,14 @@
       {
         "id": "arbitrary_calls",
         "title": "Arbitrary low-level calls",
-        "description": "Functions that execute arbitrary calldata (multicall, delegatecall to self)",
-        "reason": "Not necessary to decode arbitrary actions, users understand these are generic execution functions"
+        "description": "Functions that execute genuinely open-ended arbitrary calldata where no bounded, truthful nested decoding strategy exists",
+        "reason": "This is a limitation of open-ended execution, not of `delegatecall` or `call` themselves. Resolvable nested call patterns should still be audited as normal calldata flows."
+      },
+      {
+        "id": "opaque_runtime_mode",
+        "title": "Opaque runtime mode / price-limit knobs",
+        "description": "A user-controlled field materially changes behavior, but the only honest broad-flow options are opaque raw display or narrowing the descriptor to a fixed subset.",
+        "reason": "Treat as limitation/non-critical unless a truthful non-narrowing display exists."
       }
     ],
     "additional_requirements": {
@@ -607,7 +657,7 @@
           "critical": "ERC-7730 doesn't show recipient but recipient is an input parameter \u2192 CRITICAL (can be fixed)",
           "not_critical": "Showing max/min amount not actual amounts (computed on-chain, not in inputs) \u2192 NOT CRITICAL (that's how the function works)"
         },
-        "rule": "If the information cannot be obtained from input parameters OR cannot be displayed with ERC-7730 spec OR cannot be shown in human-readable format, it's NOT a critical issue - it's a SPEC LIMITATION"
+        "rule": "If the information cannot be obtained from input parameters OR cannot be displayed with ERC-7730 spec OR cannot be shown in human-readable format OR can only be 'fixed' by narrowing a legitimate runtime path, it's NOT a default critical issue - it's a SPEC LIMITATION or lower-severity note."
       },
       "human_readability": {
         "description": "Parameters that can ONLY be shown as incomprehensible raw data (packed bits, liquidity numbers, technical params) are NOT critical to hide",
@@ -618,6 +668,15 @@
           "yes": "Critical if missing (e.g., address as hex, token amount as number)",
           "no": "NOT critical (e.g., 0x000000000000001a4 for packed traits, 1582938471982347 for liquidity)"
         }
+      },
+      "validator_false_positive_guards": {
+        "description": "Conservative checks that should be applied before accepting a critical issue or recommendation.",
+        "checks": [
+          "Ask whether the proposed fix preserves the intended supported flow or merely narrows it.",
+          "Ask whether a nested-calldata absence has been proven beyond the current file.",
+          "If the field is only understandable as opaque raw data, prefer a spec limitation.",
+          "If the descriptor already shows the effective bounded amount/outcome elsewhere, avoid duplicative critical escalation."
+        ]
       }
     }
   }

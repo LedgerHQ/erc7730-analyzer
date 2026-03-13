@@ -1,0 +1,621 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "ERC-7730 v2 Format Reference",
+  "description": "Working prompt reference for ERC-7730 v2 descriptors. Use the v2 schema as the source of truth and prefer v2 semantics over legacy prompt conventions.",
+  "version": "2.1.0",
+  "overview": {
+    "primary_goal": "Show the user the final recipient, token, amount, permission scope, chain, and execution target before signing.",
+    "source_of_truth": "Use specs/erc7730-v2.schema.json as authoritative. Treat specs/changes.md as rationale and migration notes only.",
+    "core_principles": [
+      "display.formats keys are the schema identifiers themselves: full function signatures with parameter names for contract calls, and EIP-712 encodeType strings for typed data.",
+      "The current schema regex accepts both bare tuple `(...)` and `tuple(...)` spellings inside function signatures. Prefer bare `(...)` in new examples and fixes, but do not treat schema-valid `tuple(...)` alone as a critical issue.",
+      "interpolatedIntent is supplementary UX. It NEVER replaces structured fields for amounts, tokens, recipients, targets, selectors, or chain information.",
+      "Every meaningful input path should be explicitly accounted for in fields. If a field is intentionally hidden or constrained, express that with visible rather than v1 required/excluded arrays.",
+      "v2 field groups, bundled iteration, separators, maps, tokenTicker, chainId, and interoperableAddressName are first-class features. Do not treat them as unsupported just because old v1 examples never mentioned them."
+    ]
+  },
+  "path_syntax": {
+    "root_nodes": {
+      "#": "Structured data path (contract inputs or EIP-712 message fields). This is the default root for regular parameter paths.",
+      "$": "Reference into the merged ERC-7730 document itself, such as $.display.definitions.*, $.metadata.constants.*, $.metadata.enums.*, or $.metadata.maps.*.",
+      "@": "Reference into the transaction/message container, such as @.from, @.to, @.value, or @.chainId."
+    },
+    "relative_paths": {
+      "rule": "Relative paths are equivalent to #. paths.",
+      "examples": [
+        "recipient == #.recipient",
+        "permit.details.token == #.permit.details.token"
+      ]
+    },
+    "array_notation": {
+      "supported_forms": [
+        "path.[0] for a fixed index",
+        "path.[-1] for the last element",
+        "path.[0:4] or path.[-20:] for byte/array slicing",
+        "path.[] for iterating an array"
+      ],
+      "v2_note": "Array iteration is often paired with fieldGroup.iteration and optional separator strings."
+    },
+    "interpolation": {
+      "rule": "interpolatedIntent uses {path} placeholders resolved against the same path rules.",
+      "example": "Bridge {amount} to {recipient} on {@.chainId}",
+      "audit_focus": "Check that every placeholder resolves to a meaningful value and that the same critical facts are still covered by structured fields."
+    }
+  },
+  "display_format_keys": {
+    "rule": "In v2, the schema identifier lives directly in the display.formats key.",
+    "contract_bindings": "Use the full function signature with parameter names, for example transfer(address to,uint256 amount).",
+    "eip712_bindings": "Use the encodeType string of the primary type, for example PermitSingle(address token,address spender,uint256 amount,uint256 expiration,uint256 nonce).",
+    "audit_focus": "Check that the display.formats key really matches the analyzed selector and ABI function signature. A full signature bound to the wrong function name or wrong parameter types is a serious descriptor binding error.",
+    "examples": [
+      "transfer(address to,uint256 amount)",
+      "PermitSingle(address token,address spender,uint256 amount,uint256 expiration,uint256 nonce)"
+    ],
+    "deprecated_context_fields": [
+      "context.contract.abi is deprecated compatibility metadata, not the primary selector/schema binding model.",
+      "context.eip712.schemas is deprecated compatibility metadata, not the primary selector/schema binding model."
+    ]
+  },
+  "metadata_section": {
+    "informative_fields": {
+      "owner": "Trusted human-readable owner or protocol name.",
+      "contractName": "Official contract name added in v2. Use it as context when present.",
+      "info": "Additional metadata such as deploymentDate or URL.",
+      "token": "Trusted token metadata when the token is exported by the descriptor."
+    },
+    "constant_fields": {
+      "constants": "Static constant literals referenced through $.metadata.constants.*.",
+      "enums": "Static value-to-label mappings in $.metadata.enums.*. Do not describe dynamic enum URLs as a v2 feature.",
+      "maps": "Context-dependent constants stored in $.metadata.maps.* and resolved through mapReference objects."
+    },
+    "map_guidance": [
+      "Maps are useful when a fixed callee, selector, token, or spender depends on chain or other visible context.",
+      "A map only helps when the key is itself available through a stable keyPath.",
+      "If the real lookup needs multiple keys, runtime computation, or on-chain discovery, treat it as a limitation rather than pretending a single map can solve it."
+    ]
+  },
+  "display_structure": {
+    "top_level_members": [
+      "intent",
+      "interpolatedIntent",
+      "fields"
+    ],
+    "intent": "Short stable message. Keep it concise and hardware-wallet-friendly.",
+    "interpolatedIntent": "Optional dynamic sentence for software-wallet UX. It can improve readability but does not replace real fields.",
+    "definitions": "display.definitions still holds reusable field definitions referenced with $ref.",
+    "important": "If a descriptor has interpolatedIntent but omits the underlying structured recipient/token/amount fields, coverage is still incomplete."
+  },
+  "visible_semantics": {
+    "default": "If visible is omitted, the field is treated as always displayable.",
+    "modes": {
+      "always": "Always display the field.",
+      "optional": "Wallet may display the field if UX allows.",
+      "never": "Field is intentionally accounted for but never shown. Use only for values that are truly non-user-facing or meaningless to display.",
+      "ifNotIn": "Display only when the value is not one of the listed literals.",
+      "mustBe": "Do not display, but require the value to match one of the listed literals or the descriptor is malformed."
+    },
+    "review_rules": [
+      "Replacing a v1 excluded array entry usually becomes either visible: \"never\" or visible: {\"mustBe\": [...]}, depending on whether the hidden value must be invariant.",
+      "A critical path hidden with visible: \"never\" or an unsupported mustBe assumption can still be a security issue.",
+      "Listing all function paths in fields is mandatory in v2, even when some of them are hidden or conditionally suppressed.",
+      "visible.mustBe is appropriate for real invariants or intentionally scoped subsets, but it is not a neutral fix when it merely bans legitimate user-controlled runtime behavior."
+    ]
+  },
+  "field_structures": {
+    "field": {
+      "shape": [
+        "path or value",
+        "visible",
+        "label",
+        "format",
+        "params",
+        "separator",
+        "encryption"
+      ],
+      "notes": [
+        "path and value are mutually exclusive.",
+        "separator is only meaningful for repeated array output.",
+        "A field can be present purely to account for a path with visible: \"never\" or visible.mustBe.",
+        "If encryption is present, the field value is an encrypted handle and the formatter applies to the decrypted plaintext."
+      ]
+    },
+    "fieldGroup": {
+      "purpose": "Group related fields and control iteration for arrays or nested structures.",
+      "supports": [
+        "optional path to scope nested fields",
+        "optional label for the group",
+        "iteration set to sequential or bundled",
+        "nested fields that can themselves contain fields, groups, or references"
+      ],
+      "bundled_rule": "Bundled iteration means index-aligned arrays are shown together. All bundled arrays must have the same logical length."
+    },
+    "reference": {
+      "purpose": "Reuse a shared display.definitions entry via $ref.",
+      "overrides": [
+        "path",
+        "value",
+        "label",
+        "params"
+      ],
+      "audit_focus": "Check that overrides still make semantic sense for the referenced definition. In the latest schema, reference objects may override label in addition to path, value, and params."
+    },
+    "coverage_rule": "Fields nested inside fieldGroup count toward coverage. Evaluate the leaf fields that carry meaning, not just the top-level group node."
+  },
+  "format_types": {
+    "raw": {
+      "use_case": "Show a primitive as-is when no safer semantic formatter applies.",
+      "audit_focus": "Do not recommend raw for values that users cannot meaningfully verify, such as packed flag words or opaque calldata blobs."
+    },
+    "addressName": {
+      "use_case": "Show trusted names for addresses, falling back to raw addresses.",
+      "optional_params": [
+        "types",
+        "sources",
+        "senderAddress"
+      ],
+      "best_practice": "Use senderAddress when the contract falls back from a sentinel like address(0) to @.from."
+    },
+    "interoperableAddressName": {
+      "use_case": "Show an address using trusted naming or interoperable cross-chain formatting.",
+      "optional_params": [
+        "types",
+        "sources",
+        "senderAddress"
+      ],
+      "audit_focus": "Useful when a user-facing destination can live on multiple chains or address namespaces."
+    },
+    "tokenTicker": {
+      "use_case": "Show a token address as a trusted token ticker when the value itself is a token address.",
+      "good_for": [
+        "reward token",
+        "asset token",
+        "underlying token"
+      ],
+      "not_for": "Do not use tokenTicker to display numeric amounts. Use tokenAmount for amounts.",
+      "optional_params": [
+        "chainId",
+        "chainIdPath"
+      ],
+      "map_support": "tokenTicker may use chainId as a literal or mapReference object for cross-chain metadata resolution."
+    },
+    "amount": {
+      "use_case": "Native currency amount, commonly @.value or an invariant native-asset amount.",
+      "audit_focus": "Use only when the asset is definitively native currency."
+    },
+    "tokenAmount": {
+      "use_case": "Token or native-asset amount with ticker/decimals context.",
+      "required_params": [
+        "Exactly one of token or tokenPath, unless the only truthful statement is a genuine limitation case already explained elsewhere."
+      ],
+      "optional_params": [
+        "nativeCurrencyAddress",
+        "threshold",
+        "message",
+        "chainId",
+        "chainIdPath"
+      ],
+      "map_support": "token may be a literal, a $.metadata.constants reference, or a mapReference object. chainId may also be literal or map-backed when token metadata must be resolved on another chain."
+    },
+    "nftName": {
+      "use_case": "NFT token identifier with collection context.",
+      "required_params": [
+        "Exactly one of collection or collectionPath."
+      ]
+    },
+    "date": {
+      "use_case": "Timestamp or blockheight rendered as a date.",
+      "required_params": [
+        "encoding"
+      ],
+      "audit_focus": "If the observed value is obviously too large to be a timestamp, suspect packed data or the wrong formatter."
+    },
+    "duration": {
+      "use_case": "Duration rendered from seconds.",
+      "audit_focus": "Use only for actual time intervals, not timestamps."
+    },
+    "unit": {
+      "use_case": "Numeric value with a custom unit such as %, bps, or hours.",
+      "required_params": [
+        "base"
+      ],
+      "optional_params": [
+        "decimals",
+        "prefix"
+      ],
+      "audit_focus": "In v2, decimals is numeric. Do not teach the model that string and numeric decimals are interchangeable."
+    },
+    "enum": {
+      "use_case": "Static value-to-label mapping.",
+      "required_params": [
+        "$ref to $.metadata.enums.*"
+      ],
+      "audit_focus": "Prefer metadata.enums for enums. Do not recommend dynamic enum URLs as a v2 pattern."
+    },
+    "chainId": {
+      "use_case": "Render a chain identifier as a user-facing blockchain name.",
+      "good_for": [
+        "bridge source chain",
+        "bridge destination chain",
+        "nested calldata chain context"
+      ]
+    },
+    "calldata": {
+      "use_case": "Recursive clear signing of embedded calldata.",
+      "required_params": [
+        "Exactly one of callee or calleePath."
+      ],
+      "optional_params": [
+        "selector",
+        "selectorPath",
+        "chainId",
+        "chainIdPath",
+        "amount",
+        "amountPath",
+        "spender",
+        "spenderPath"
+      ],
+      "lookup_model": "Wallets may resolve nested calldata using the embedded callee and selector against descriptors beyond the current file, depending on the wallet's installed registry/model.",
+      "map_support": "callee, selector, amount, and spender may use mapReference objects in addition to literal values.",
+      "audit_focus": "A nested calldata field can be security-critical if it determines final target, amount, token, spender, or chain and that information is not shown elsewhere. Do not claim nested coverage is absent based only on the current file unless the relevant wallet/registry lookup scope has actually been ruled out."
+    }
+  },
+  "map_references": {
+    "shape": {
+      "map": "$.metadata.maps.routerByChain",
+      "keyPath": "@.chainId"
+    },
+    "supported_locations": [
+      "tokenAmount.params.token",
+      "nftName.params.collection",
+      "calldata.params.callee",
+      "calldata.params.selector",
+      "calldata.params.amount",
+      "calldata.params.spender"
+    ],
+    "audit_focus": [
+      "Ensure the referenced map exists under metadata.maps.",
+      "Ensure keyPath is meaningful in the current scope.",
+      "If the map controls token, target, selector, or amount resolution, verify that the chosen key really matches user-visible context such as @.chainId."
+    ]
+  },
+  "encrypted_fields": {
+    "purpose": "Represent encrypted handles whose decrypted plaintext should be formatted like the declared field type.",
+    "field_property": "Use the field.encryption object alongside the regular formatter and path/value information.",
+    "parameters": {
+      "scheme": "Required encryption scheme identifier.",
+      "plaintextType": "Optional Solidity type of the decrypted value.",
+      "fallbackLabel": "Optional label to show when decryption is unavailable. Defaults to an encrypted placeholder."
+    },
+    "audit_focus": [
+      "Do not flag encryption as unknown syntax; it is part of the latest v2 schema.",
+      "If an encrypted field is the only place a critical fact appears, assess whether users still have enough context when decryption is unavailable.",
+      "Prefer a meaningful fallbackLabel or companion non-encrypted context for high-value actions."
+    ]
+  },
+  "xor_constraints": [
+    {
+      "context": "field",
+      "options": [
+        "path",
+        "value"
+      ]
+    },
+    {
+      "context": "tokenAmount",
+      "options": [
+        "token",
+        "tokenPath"
+      ]
+    },
+    {
+      "context": "nftName",
+      "options": [
+        "collection",
+        "collectionPath"
+      ]
+    },
+    {
+      "context": "calldata",
+      "options": [
+        "callee",
+        "calleePath"
+      ]
+    },
+    {
+      "context": "calldata",
+      "options": [
+        "selector",
+        "selectorPath"
+      ]
+    },
+    {
+      "context": "calldata",
+      "options": [
+        "chainId",
+        "chainIdPath"
+      ]
+    },
+    {
+      "context": "calldata",
+      "options": [
+        "amount",
+        "amountPath"
+      ]
+    },
+    {
+      "context": "calldata",
+      "options": [
+        "spender",
+        "spenderPath"
+      ]
+    }
+  ],
+  "container_values": {
+    "evm_transaction": {
+      "@.from": "Transaction sender.",
+      "@.to": "Transaction target address.",
+      "@.value": "Native currency sent with the outer transaction.",
+      "@.chainId": "Outer transaction chain ID."
+    },
+    "eip712": {
+      "@.from": "Signer of the typed message.",
+      "@.to": "Verifying contract when known.",
+      "@.value": "Usually zero or absent for typed data.",
+      "@.chainId": "Typed-data domain chain ID when available."
+    }
+  },
+  "address_sources": {
+    "examples": {
+      "local": "Wallet-local trusted alias.",
+      "ens": "ENS name.",
+      "ud": "Unstoppable Domains name.",
+      "lens": "Lens profile handle."
+    },
+    "rule": "If sources is set, wallets should restrict resolution to those sources."
+  },
+  "address_types": {
+    "wallet": "Address controlled by the wallet.",
+    "eoa": "Externally owned account.",
+    "contract": "Well-known smart contract.",
+    "token": "ERC-20 token contract.",
+    "collection": "NFT collection contract."
+  },
+  "validation_notes": {
+    "mandatory_v2_checks": [
+      "Every meaningful path in the function/message should be accounted for in fields, nested groups, or references.",
+      "A hidden or constrained field must still appear in fields with visible semantics.",
+      "Bundled groups require index-aligned arrays.",
+      "interpolatedIntent must resolve cleanly and remain secondary to structured fields.",
+      "Maps, tokenTicker, chainId, interoperableAddressName, and encrypted fields are valid v2 constructs and should not be treated as unsupported."
+    ],
+    "legacy_fields_to_avoid": [
+      "Do not propose required arrays in v2 descriptors.",
+      "Do not propose excluded arrays in v2 descriptors.",
+      "Do not rely on screens as a core descriptor mechanism.",
+      "Do not use selector-only or primaryType-only display.format keys when the v2 schema expects full signature/encodeType identifiers.",
+      "Do not use dynamic enum URLs as if they were part of v2.",
+      "Do not assume old prompt lore about reference-object limits is still correct; check the latest schema shape.",
+      "Do not rely on $comments from draft notes; the schema field is $comment."
+    ],
+    "do_not_assume": [
+      "Do not assume null is valid everywhere. Follow the actual schema shape.",
+      "Do not assume interpolatedIntent or intent alone is enough to cover a missing recipient/token/amount field.",
+      "Do not assume a v1 example remains valid just because a wallet might still parse it."
+    ]
+  },
+  "complete_examples": {
+    "transfer_with_visibility": {
+      "description": "v2 replacement for required/excluded-style descriptors.",
+      "descriptor": {
+        "display": {
+          "formats": {
+            "transfer(address to,address referrer,address rfu,uint256 legacy,uint256 fee)": {
+              "intent": "Send",
+              "interpolatedIntent": "Send fee to {to}",
+              "fields": [
+                {
+                  "path": "to",
+                  "label": "Recipient",
+                  "format": "addressName",
+                  "visible": "always"
+                },
+                {
+                  "path": "referrer",
+                  "label": "Referrer",
+                  "format": "addressName",
+                  "visible": "optional"
+                },
+                {
+                  "path": "rfu",
+                  "visible": "never"
+                },
+                {
+                  "path": "legacy",
+                  "visible": {
+                    "mustBe": [
+                      0
+                    ]
+                  }
+                },
+                {
+                  "path": "fee",
+                  "label": "Fee",
+                  "format": "amount",
+                  "visible": {
+                    "ifNotIn": [
+                      0
+                    ]
+                  }
+                }
+              ]
+            }
+          }
+        }
+      }
+    },
+    "parallel_arrays_bundled": {
+      "description": "Parallel arrays grouped by index using bundled iteration.",
+      "descriptor": {
+        "display": {
+          "formats": {
+            "distribute(address[] recipients,uint256[] percentages)": {
+              "intent": "Distribute",
+              "fields": [
+                {
+                  "label": "Recipients",
+                  "iteration": "bundled",
+                  "fields": [
+                    {
+                      "path": "recipients.[]",
+                      "label": "Recipient",
+                      "format": "addressName",
+                      "separator": "Recipient {index}"
+                    },
+                    {
+                      "path": "percentages.[]",
+                      "label": "Share",
+                      "format": "unit",
+                      "params": {
+                        "base": "%",
+                        "decimals": 2
+                      }
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        }
+      }
+    },
+    "permit_and_call": {
+      "description": "Nested calldata with an explicitly hidden permit blob in v2.",
+      "descriptor": {
+        "display": {
+          "formats": {
+            "permitAndCall(bytes permit,bytes action)": {
+              "intent": "Execute",
+              "fields": [
+                {
+                  "path": "permit",
+                  "visible": "never"
+                },
+                {
+                  "path": "action",
+                  "label": "Action",
+                  "format": "calldata",
+                  "params": {
+                    "calleePath": "@.to"
+                  }
+                }
+              ]
+            }
+          }
+        }
+      }
+    },
+    "map_backed_calldata": {
+      "description": "Chain-aware constant resolution using metadata.maps and @.chainId.",
+      "descriptor": {
+        "metadata": {
+          "maps": {
+            "routerByChain": {
+              "$keyType": "chainId",
+              "values": {
+                "1": "0x1111111111111111111111111111111111111111",
+                "137": "0x2222222222222222222222222222222222222222"
+              }
+            }
+          }
+        },
+        "display": {
+          "formats": {
+            "bridge(bytes data)": {
+              "intent": "Bridge",
+              "fields": [
+                {
+                  "path": "@.chainId",
+                  "label": "Source Chain",
+                  "format": "chainId"
+                },
+                {
+                  "path": "data",
+                  "label": "Action",
+                  "format": "calldata",
+                  "params": {
+                    "callee": {
+                      "map": "$.metadata.maps.routerByChain",
+                      "keyPath": "@.chainId"
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        }
+      }
+    },
+    "cross_chain_token_ticker": {
+      "description": "tokenTicker with explicit chain context for cross-chain metadata resolution.",
+      "descriptor": {
+        "display": {
+          "formats": {
+            "setRewardToken(address token,uint256 chainId)": {
+              "intent": "Set Reward",
+              "fields": [
+                {
+                  "path": "token",
+                  "label": "Reward Token",
+                  "format": "tokenTicker",
+                  "params": {
+                    "chainIdPath": "chainId"
+                  }
+                },
+                {
+                  "path": "chainId",
+                  "label": "Token Chain",
+                  "format": "chainId"
+                }
+              ]
+            }
+          }
+        }
+      }
+    },
+    "encrypted_field": {
+      "description": "Encrypted field with a formatter for the decrypted plaintext and a readable fallback label.",
+      "descriptor": {
+        "display": {
+          "formats": {
+            "submitSecret(uint256 handle)": {
+              "intent": "Submit Secret",
+              "fields": [
+                {
+                  "path": "handle",
+                  "label": "Secret Value",
+                  "format": "raw",
+                  "encryption": {
+                    "scheme": "fhevm",
+                    "plaintextType": "uint256",
+                    "fallbackLabel": "[Encrypted Value]"
+                  }
+                }
+              ]
+            }
+          }
+        }
+      }
+    }
+  },
+  "deprecated_v1_patterns": {
+    "rule": "These may appear in legacy descriptors, but they should not be taught or proposed as v2 fixes.",
+    "patterns": [
+      "required arrays",
+      "excluded arrays",
+      "screens as the main way to define visibility",
+      "selector-only display.formats keys",
+      "dynamic enum URL references",
+      "$comments instead of $comment"
+    ]
+  }
+}

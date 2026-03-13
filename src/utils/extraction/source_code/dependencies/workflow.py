@@ -1,6 +1,6 @@
 """Dependency resolution workflow orchestrator."""
 
-from typing import Any, Dict, Optional
+from typing import Any
 
 from .enrichment import build_dependency_result
 from .target import resolve_target_function
@@ -10,12 +10,12 @@ class SourceCodeDependencyMixin:
     def get_function_with_dependencies(
         self,
         function_name: str,
-        extracted_code: Dict[str, Any],
-        function_signature: Optional[str] = None,
+        extracted_code: dict[str, Any],
+        function_signature: str | None = None,
         max_lines: int = 300,
         selector_only: bool = False,
-        selector: Optional[str] = None,
-    ) -> Dict[str, Any]:
+        selector: str | None = None,
+    ) -> dict[str, Any]:
         target_function, facet_specific_code, facet_addr, empty_result = resolve_target_function(
             self=self,
             function_name=function_name,

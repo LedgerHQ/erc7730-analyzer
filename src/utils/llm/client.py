@@ -6,7 +6,7 @@ import logging
 import time
 from typing import TYPE_CHECKING
 
-from .backends import invoke_anthropic, invoke_cursor, invoke_openai
+from .backends import invoke_anthropic, invoke_bedrock, invoke_cursor, invoke_openai
 
 if TYPE_CHECKING:
     from pydantic import BaseModel
@@ -39,6 +39,7 @@ class LLMClient:
         dispatch = {
             "openai": invoke_openai,
             "anthropic": invoke_anthropic,
+            "bedrock": invoke_bedrock,
             "cursor": invoke_cursor,
         }
         handler = dispatch.get(backend)

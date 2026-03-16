@@ -6,9 +6,9 @@ import os
 from dataclasses import dataclass, field
 from typing import Literal
 
-Backend = Literal["openai", "anthropic", "cursor"]
+Backend = Literal["openai", "anthropic", "bedrock", "cursor"]
 
-VALID_BACKENDS: list[Backend] = ["openai", "anthropic", "cursor"]
+VALID_BACKENDS: list[Backend] = ["openai", "anthropic", "bedrock", "cursor"]
 
 BACKEND_DEFAULTS: dict[str, dict] = {
     "openai": {
@@ -20,6 +20,11 @@ BACKEND_DEFAULTS: dict[str, dict] = {
         "model": "claude-sonnet-4-20250514",
         "url": "https://api.anthropic.com",
         "env_key": "ANTHROPIC_API_KEY",
+    },
+    "bedrock": {
+        "model": "us.anthropic.claude-sonnet-4-20250514-v1:0",
+        "region_env": "AWS_REGION",
+        "region_default": "us-east-1",
     },
     "cursor": {
         "model": "opus-4.6",
@@ -47,7 +52,10 @@ class LLMConfig:
         defaults = BACKEND_DEFAULTS[self.backend]
         self.model = self.model or defaults.get("model")
 
-        if self.backend != "cursor":
+        if self.backend == "bedrock":
+            region_env = defaults.get("region_env", "AWS_REGION")
+            self.api_url = self.api_url or os.environ.get(region_env, defaults.get("region_default", "us-east-1"))
+        elif self.backend != "cursor":
             self.api_url = self.api_url or defaults.get("url")
             env_key = defaults.get("env_key", "")
             self.api_key = self.api_key or os.environ.get(env_key, "")

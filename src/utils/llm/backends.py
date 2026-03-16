@@ -94,6 +94,43 @@ async def invoke_anthropic(
 
 
 # ---------------------------------------------------------------------------
+# AWS Bedrock backend (LangChain ChatBedrockConverse + structured output)
+# ---------------------------------------------------------------------------
+
+
+async def invoke_bedrock(
+    config: LLMConfig,
+    system_prompt: str,
+    user_content: str,
+    output_schema: type[BaseModel],
+) -> BaseModel:
+    """Invoke AWS Bedrock via LangChain with structured output.
+
+    AWS credentials are resolved through the standard boto3 chain:
+    environment variables (AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY),
+    shared credentials file, IAM instance profile, etc.
+    The region is read from config.api_url (repurposed to store region).
+    """
+    from langchain_aws import ChatBedrockConverse
+
+    region = config.api_url or "us-east-1"
+    logger.info(f"[Bedrock] model={config.model}, region={region}")
+
+    llm = ChatBedrockConverse(
+        model=config.model,
+        temperature=0,
+        region_name=region,
+    )
+    structured_llm = llm.with_structured_output(output_schema)
+
+    messages = [
+        ("system", system_prompt),
+        ("human", user_content),
+    ]
+    return await structured_llm.ainvoke(messages)
+
+
+# ---------------------------------------------------------------------------
 # Cursor CLI backend (subprocess + JSON parse)
 # ---------------------------------------------------------------------------
 

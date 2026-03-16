@@ -47,6 +47,7 @@ Environment Variables (can also be set in .env file):
   COREDAO_API_KEY          Core DAO API key (optional, for chain 1116)
   OPENAI_API_KEY           OpenAI API key (for openai backend)
   ANTHROPIC_API_KEY        Anthropic API key (for anthropic backend)
+  AWS_REGION               AWS region for Bedrock backend (default: us-east-1)
   LOOKBACK_DAYS            Number of days to look back (default: 20)
   MAX_CONCURRENT_API_CALLS Maximum concurrent API calls (default: 10)
   MAX_API_RETRIES          Maximum retry attempts per API call (default: 3)
@@ -54,6 +55,7 @@ Environment Variables (can also be set in .env file):
 LLM Backends:
   openai      OpenAI-compatible API (default model: gpt-4o)
   anthropic   Anthropic API (default model: claude-sonnet-4-20250514)
+  bedrock     AWS Bedrock (default model: us.anthropic.claude-sonnet-4-20250514-v1:0, uses AWS credential chain)
   cursor      Cursor agent CLI in ask mode (default model: opus-4.6, no API key needed)
 
 Priority: Command-line arguments > Environment variables > Defaults
@@ -123,7 +125,7 @@ Priority: Command-line arguments > Environment variables > Defaults
         "--llm-api-key", default=None, help="API key for the LLM backend (overrides env var for the selected backend)"
     )
     parser.add_argument(
-        "--llm-api-url", default=None, help="Custom API base URL for the LLM backend (openai/anthropic only)"
+        "--llm-api-url", default=None, help="Custom API base URL (openai/anthropic) or AWS region override (bedrock)"
     )
 
     args = parser.parse_args()

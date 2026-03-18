@@ -8,6 +8,7 @@ import requests
 
 from ....abi import ABI
 from ....extraction.raw_tx_parser import group_transactions_by_selector, load_raw_transactions
+from ....rpc_helpers import is_etherscan_tx_endpoint_unsupported
 from ..constants import BLOCKSCOUT_URLS
 
 logger = logging.getLogger(__name__)
@@ -47,18 +48,37 @@ class TransactionFetcherCoreAggregationMixin:
         Returns:
             Dictionary mapping selector -> list of transaction dictionaries
         """
-        if not self.etherscan_api_key:
-            logger.warning("No block explorer API key provided, cannot fetch transactions")
-            return {s: [] for s in selectors}
-
         if payable_selectors is None:
             payable_selectors = set()
 
         # Ensure chain_id is an int for dictionary lookups
         chain_id = int(chain_id)
+        has_blockscout = chain_id in BLOCKSCOUT_URLS
 
-        # Try Etherscan first, then Blockscout as fallback
-        for api_attempt, use_blockscout in enumerate([False, True]):
+        if not self.etherscan_api_key and not has_blockscout:
+            logger.warning("No block explorer API key provided, cannot fetch transactions")
+            return {s: [] for s in selectors}
+        if not self.etherscan_api_key and has_blockscout:
+            logger.info("No explorer API key provided; using Blockscout-only transaction fallback for chain %s", chain_id)
+
+        preferred_api = self.api_type_per_chain.get(chain_id)
+        skip_etherscan = not self.etherscan_api_key or is_etherscan_tx_endpoint_unsupported(chain_id)
+        api_sequence: list[bool] = []
+        if preferred_api == "Blockscout" and has_blockscout:
+            api_sequence.append(True)
+        if preferred_api != "Blockscout" and not skip_etherscan:
+            api_sequence.append(False)
+        if has_blockscout and True not in api_sequence:
+            api_sequence.append(True)
+        if not skip_etherscan and False not in api_sequence:
+            api_sequence.append(False)
+
+        if not api_sequence:
+            logger.warning("No supported transaction-history fallback is available for chain %s", chain_id)
+            return {s.lower(): [] for s in selectors}
+
+        # Try the preferred API first, then fallback as needed.
+        for api_attempt, use_blockscout in enumerate(api_sequence):
             # Skip Blockscout attempt if chain doesn't have Blockscout support
             if use_blockscout and chain_id not in BLOCKSCOUT_URLS:
                 continue

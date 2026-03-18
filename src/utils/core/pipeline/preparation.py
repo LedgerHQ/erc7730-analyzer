@@ -11,6 +11,50 @@ logger = logging.getLogger(__name__)
 
 
 class AnalyzerPipelinePreparationMixin:
+    def _resolve_function_data_with_abi_status(self, selector: str) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+        """Resolve selector metadata and record whether it truly exists in the merged ABI."""
+        selector_lower = selector.lower()
+        format_key = self.selector_to_format_key.get(selector_lower, selector)
+
+        merged_abi_function = None
+        if self.abi_helper and selector_lower.startswith("0x"):
+            merged_abi_function = self.abi_helper.find_function_by_selector(selector_lower)
+
+        if merged_abi_function:
+            return merged_abi_function, {
+                "status": "merged_abi",
+                "selector": selector_lower,
+                "format_key": format_key,
+                "selector_found_in_merged_abi": True,
+                "error": None,
+            }
+
+        function_data = self.get_function_abi_by_selector(selector)
+        if function_data:
+            error = (
+                f"Selector {selector_lower} was not found in the merged ABI. "
+                f"The analyzer used descriptor-derived fallback metadata from "
+                f"'{format_key}' instead."
+            )
+            logger.error(error)
+            return function_data, {
+                "status": "descriptor_fallback",
+                "selector": selector_lower,
+                "format_key": format_key,
+                "selector_found_in_merged_abi": False,
+                "error": error,
+            }
+
+        error = f"Selector {selector_lower} was not found in the merged ABI and no descriptor fallback metadata was available."
+        logger.error(error)
+        return None, {
+            "status": "not_found",
+            "selector": selector_lower,
+            "format_key": format_key,
+            "selector_found_in_merged_abi": False,
+            "error": error,
+        }
+
     def _log_function_source_block(self, function_source: dict[str, Any]) -> None:
         """Log the final source snippet sent to the model."""
         if not function_source or not function_source.get("function"):
@@ -86,16 +130,75 @@ class AnalyzerPipelinePreparationMixin:
         code_block += f"\n{'=' * 60}\n"
         logger.info(code_block)
 
+    def _build_missing_abi_report_data(
+        self,
+        *,
+        selector: str,
+        function_signature: str,
+        erc7730_format: dict[str, Any],
+        abi_resolution: dict[str, Any],
+        format_key: str,
+    ) -> dict[str, Any]:
+        """Build a synthetic critical report when selector is absent from the merged ABI."""
+        error_text = abi_resolution.get("error") or "Selector was not found in the merged ABI."
+        issue_summary = "Selector not found in merged ABI"
+        details = {
+            "what_descriptor_shows": (
+                "The descriptor defines this function key and the analyzer can calculate a selector from it."
+            ),
+            "what_actually_happens": (
+                "This selector was not found in the merged ABI fetched from the configured deployments, "
+                "so the descriptor could not be anchored to a verified live ABI entry for this run."
+            ),
+            "why_critical": (
+                "Without a merged-ABI match, transaction fetching, source-code resolution, and AI analysis were "
+                "skipped because the descriptor may target an outdated or wrong function."
+            ),
+            "evidence": error_text,
+        }
+        return {
+            "function_signature": function_signature,
+            "selector": selector,
+            "erc7730_format": erc7730_format,
+            "descriptor_format_key": format_key,
+            "abi_resolution": abi_resolution,
+            "critical_issues": [{"issue": issue_summary, "details": details}],
+            "recommendations": {"fixes": [], "spec_limitations": [], "optional_improvements": []},
+            "intent_analysis": {
+                "declared_intent": "Skipped",
+                "assessment": error_text,
+                "spelling_errors": [],
+            },
+            "missing_parameters": [],
+            "display_issues": [],
+            "transaction_samples": [],
+            "overall_assessment": {
+                "coverage_score": {
+                    "score": 0,
+                    "explanation": "Analysis was skipped because the selector is not present in the merged ABI.",
+                },
+                "security_risk": {
+                    "level": "high",
+                    "reasoning": (
+                        "The descriptor is not matched to any function in the merged ABI for this run, so the "
+                        "analyzer cannot verify that it describes a currently deployed function."
+                    ),
+                },
+            },
+        }
+
     def _build_selector_task_entry(
         self,
         *,
         context: dict[str, Any],
         selector: str,
         function_data: dict[str, Any],
+        abi_resolution: dict[str, Any],
         selector_deployment: dict[str, Any],
         decoded_txs: list[dict[str, Any]],
         function_source: dict[str, Any] = None,
         source_resolution: dict[str, Any] = None,
+        synthetic_report_data: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Build one prepared selector entry from already collected inputs."""
         erc7730_data = context["erc7730_data"]
@@ -152,7 +255,7 @@ class AnalyzerPipelinePreparationMixin:
         self._log_function_source_block(function_source)
 
         audit_task = None
-        if erc7730_format:
+        if erc7730_format and abi_resolution.get("status") == "merged_abi":
             has_no_transactions = not decoded_txs
             if has_no_transactions:
                 logger.info(f"Preparing STATIC audit task for {selector} (no transactions)")
@@ -205,6 +308,7 @@ class AnalyzerPipelinePreparationMixin:
                 erc20_context=self.erc20_context,
                 protocol_name=self.protocol_name,
                 descriptor_context=descriptor_context,
+                abi_resolution=abi_resolution,
                 source_resolution=source_resolution,
                 analysis_mode=self.analysis_mode,
                 tool_context={
@@ -230,12 +334,14 @@ class AnalyzerPipelinePreparationMixin:
             "format_key": format_key,
             "function_name": function_name,
             "function_data": function_data,
+            "abi_resolution": abi_resolution,
             "selector_deployment": selector_deployment,
             "decoded_txs": decoded_txs,
             "erc7730_format": erc7730_format,
             "function_source": function_source,
             "source_resolution": source_resolution,
             "audit_task": audit_task,
+            "synthetic_report_data": synthetic_report_data,
         }
 
     def _prepare_selector_audit_tasks(self, context: dict[str, Any]) -> None:
@@ -245,7 +351,8 @@ class AnalyzerPipelinePreparationMixin:
         deployment_per_selector = context["deployment_per_selector"]
         default_deployment = context["default_deployment"]
         erc7730_data = context["erc7730_data"]
-        deployments = context["deployments"]
+        selector_abi_resolution = context.get("selector_abi_resolution", {})
+        selector_function_data = context.get("selector_function_data", {})
         # ====================================================================
         # PHASE 1: PRE-PROCESSING (Sequential - maintains log coherence)
         # ====================================================================
@@ -265,7 +372,10 @@ class AnalyzerPipelinePreparationMixin:
             logger.info(f"{'=' * 60}")
 
             # Get function metadata
-            function_data = self.get_function_abi_by_selector(selector)
+            function_data = selector_function_data.get(selector.lower())
+            abi_resolution = selector_abi_resolution.get(selector.lower())
+            if function_data is None or abi_resolution is None:
+                function_data, abi_resolution = self._resolve_function_data_with_abi_status(selector)
             if not function_data:
                 logger.warning(f"Skipping selector {selector} - no matching ABI entry")
                 continue
@@ -273,6 +383,42 @@ class AnalyzerPipelinePreparationMixin:
             function_name = function_data["name"]
             logger.info(f"Function name: {function_name}")
             logger.info(f"Function signature: {function_data['signature']}")
+
+            if abi_resolution.get("status") != "merged_abi":
+                logger.error(
+                    "Skipping tx/source/AI for %s because it was not found in the merged ABI",
+                    selector,
+                )
+                selector_deployment = deployment_per_selector.get(selector.lower(), default_deployment)
+                synthetic_report_data = self._build_missing_abi_report_data(
+                    selector=selector,
+                    function_signature=function_data["signature"],
+                    erc7730_format=erc7730_data.get("display", {}).get("formats", {}).get(
+                        self.selector_to_format_key.get(selector, selector), {}
+                    ),
+                    abi_resolution=abi_resolution,
+                    format_key=self.selector_to_format_key.get(selector, selector),
+                )
+                prepared_selectors.append(
+                    self._build_selector_task_entry(
+                        context=context,
+                        selector=selector,
+                        function_data=function_data,
+                        abi_resolution=abi_resolution,
+                        selector_deployment=selector_deployment,
+                        decoded_txs=[],
+                        function_source=None,
+                        source_resolution={
+                            "match_mode": "skipped_missing_abi",
+                            "chain_id": None,
+                            "address": None,
+                            "selector_mapped": selector in self.selector_sources,
+                            "truncated": False,
+                        },
+                        synthetic_report_data=synthetic_report_data,
+                    )
+                )
+                continue
 
             # Get the pre-fetched transactions for this selector
             transactions = all_selector_txs.get(selector.lower(), [])
@@ -513,10 +659,12 @@ class AnalyzerPipelinePreparationMixin:
                     context=context,
                     selector=selector,
                     function_data=function_data,
+                    abi_resolution=abi_resolution,
                     selector_deployment=selector_deployment,
                     decoded_txs=decoded_txs,
                     function_source=function_source,
                     source_resolution=source_resolution,
+                    synthetic_report_data=None,
                 )
             )
 
@@ -541,6 +689,8 @@ class AnalyzerPipelinePreparationMixin:
 
         prepared_selector_inputs = prepared_inputs_data.get("selectors") or {}
         extracted_codes = prepared_inputs_data.get("extracted_codes")
+        selector_abi_resolution = context.get("selector_abi_resolution", {})
+        selector_function_data = context.get("selector_function_data", {})
         if not prepared_selector_inputs and isinstance(prepared_inputs_data.get("contracts"), dict):
             prepared_selector_inputs = {}
             extracted_codes = extracted_codes if isinstance(extracted_codes, dict) else {}
@@ -597,7 +747,10 @@ class AnalyzerPipelinePreparationMixin:
             logger.info(f"Preparing selector from frozen inputs: {selector}")
             logger.info(f"{'=' * 60}")
 
-            function_data = self.get_function_abi_by_selector(selector)
+            function_data = selector_function_data.get(selector.lower())
+            abi_resolution = selector_abi_resolution.get(selector.lower())
+            if function_data is None or abi_resolution is None:
+                function_data, abi_resolution = self._resolve_function_data_with_abi_status(selector)
             if not function_data:
                 format_key = self.selector_to_format_key.get(selector, selector)
                 function_data = self._build_function_metadata_from_format_key(
@@ -605,6 +758,17 @@ class AnalyzerPipelinePreparationMixin:
                     selector=selector,
                 )
                 if function_data:
+                    abi_resolution = {
+                        "status": "descriptor_fallback",
+                        "selector": selector.lower(),
+                        "format_key": format_key,
+                        "selector_found_in_merged_abi": False,
+                        "error": (
+                            f"Selector {selector.lower()} was not found in the merged ABI. "
+                            f"The analyzer used descriptor-derived fallback metadata from "
+                            f"'{format_key}' instead."
+                        ),
+                    }
                     logger.info(
                         f"Using descriptor-derived function metadata for {selector}: {function_data['signature']}"
                     )
@@ -633,6 +797,31 @@ class AnalyzerPipelinePreparationMixin:
                 "truncated": False,
             }
 
+            synthetic_report_data = None
+            if abi_resolution.get("status") != "merged_abi":
+                logger.error(
+                    "Skipping cached tx/source/AI for %s because it was not found in the merged ABI",
+                    selector,
+                )
+                decoded_txs = []
+                function_source = None
+                source_resolution = {
+                    "match_mode": "skipped_missing_abi",
+                    "chain_id": None,
+                    "address": None,
+                    "selector_mapped": selector in self.selector_sources,
+                    "truncated": False,
+                }
+                synthetic_report_data = self._build_missing_abi_report_data(
+                    selector=selector,
+                    function_signature=function_data["signature"],
+                    erc7730_format=erc7730_data.get("display", {}).get("formats", {}).get(
+                        self.selector_to_format_key.get(selector, selector), {}
+                    ),
+                    abi_resolution=abi_resolution,
+                    format_key=self.selector_to_format_key.get(selector, selector),
+                )
+
             logger.info(
                 f"Loaded {len(decoded_txs)} decoded transaction(s) and "
                 f"{'found' if function_source else 'did not find'} cached source context for {selector}"
@@ -643,10 +832,12 @@ class AnalyzerPipelinePreparationMixin:
                     context=context,
                     selector=selector,
                     function_data=function_data,
+                    abi_resolution=abi_resolution,
                     selector_deployment=selector_deployment,
                     decoded_txs=decoded_txs,
                     function_source=function_source,
                     source_resolution=source_resolution,
+                    synthetic_report_data=synthetic_report_data,
                 )
             )
 

@@ -6,6 +6,11 @@ from typing import Any
 
 import requests
 
+from ....rpc_helpers import (
+    etherscan_response_indicates_chain_unsupported,
+    is_etherscan_tx_endpoint_unsupported,
+    mark_etherscan_tx_endpoint_unsupported,
+)
 from ..constants import BLOCKSCOUT_URLS
 
 logger = logging.getLogger(__name__)
@@ -235,6 +240,12 @@ class TransactionFetcherCoreExplorerMixin:
 
         # Blockscout doesn't require API key
         if not use_blockscout:
+            if is_etherscan_tx_endpoint_unsupported(chain_id):
+                logger.debug(
+                    "Skipping Etherscan getblocknobytime on chain %s: endpoint already marked unsupported",
+                    chain_id,
+                )
+                return None
             params["apikey"] = self.etherscan_api_key
 
         try:
@@ -242,6 +253,11 @@ class TransactionFetcherCoreExplorerMixin:
             response = requests.get(base_url, params=params, timeout=10)
             response.raise_for_status()
             data = response.json()
+
+            if not use_blockscout and etherscan_response_indicates_chain_unsupported(data):
+                mark_etherscan_tx_endpoint_unsupported(chain_id)
+                logger.debug("Marked Etherscan tx endpoints unsupported for chain %s after getblocknobytime", chain_id)
+                return None
 
             if data["status"] == "1":
                 return int(data["result"])

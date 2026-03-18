@@ -4,6 +4,8 @@ import logging
 from typing import Any
 
 from ...auditing import generate_clear_signing_audits_batch
+from ...auditing.models import AuditResult
+from ...reporting.markdown_formatter import format_audit_reports
 
 logger = logging.getLogger(__name__)
 
@@ -41,5 +43,22 @@ class AnalyzerPipelineBatchMixin:
 
         # Create a map from selector to audit result for easy lookup
         audit_results_map = {r.selector: r for r in audit_results}
+
+        for prepared in prepared_selectors:
+            synthetic_report_data = prepared.get("synthetic_report_data")
+            selector = prepared.get("selector")
+            if not selector or not synthetic_report_data or selector in audit_results_map:
+                continue
+
+            critical_report, detailed_report = format_audit_reports(synthetic_report_data)
+            audit_results_map[selector] = AuditResult(
+                selector=selector,
+                function_signature=prepared["function_data"]["signature"],
+                critical_report=critical_report,
+                detailed_report=detailed_report,
+                report_data=synthetic_report_data,
+                success=True,
+            )
+            logger.info("Synthesized report for %s without AI because selector is missing from merged ABI", selector)
 
         context["audit_results_map"] = audit_results_map

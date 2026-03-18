@@ -185,6 +185,7 @@ class AuditTask:
     erc4626_context: dict | None
     erc20_context: dict | None
     descriptor_context: dict | None
+    abi_resolution: dict | None
     source_resolution: dict | None
     analysis_mode: str
     # Pre-computed payload (built during preparation)

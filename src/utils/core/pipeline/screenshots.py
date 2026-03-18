@@ -113,7 +113,7 @@ class AnalyzerPipelineScreenshotsMixin:
                 deployment_per_selector = prepared_deployments
                 context["deployment_per_selector"] = prepared_deployments
         default_deployment = context.get("default_deployment", {"chainId": 1})
-        selectors = context.get("selectors", [])
+        selectors = context.get("abi_backed_selectors") or context.get("selectors", [])
 
         # Build work items for all selectors that have transactions
         selectors_info = []

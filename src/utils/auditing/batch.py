@@ -71,6 +71,7 @@ def prepare_audit_task(
     erc20_context: dict = None,
     protocol_name: str = None,
     descriptor_context: dict = None,
+    abi_resolution: dict = None,
     source_resolution: dict = None,
     analysis_mode: str = "single",
     tool_context: dict = None,
@@ -111,6 +112,7 @@ def prepare_audit_task(
         "decoded_transactions": decoded_transactions if decoded_transactions else [],  # Empty list if no txs
         "source_code": source_code if source_code else {},  # Include ALL source code fields
         "descriptor_context": descriptor_context if descriptor_context else {},
+        "abi_resolution": abi_resolution if abi_resolution else {},
         "source_resolution": source_resolution if source_resolution else {},
         "erc4626_context": erc4626_context if erc4626_context else {},
         "erc20_context": erc20_context if erc20_context else {},
@@ -130,6 +132,7 @@ def prepare_audit_task(
         erc4626_context=erc4626_context,
         erc20_context=erc20_context,
         descriptor_context=descriptor_context,
+        abi_resolution=abi_resolution,
         source_resolution=source_resolution,
         analysis_mode=analysis_mode,
         audit_payload=audit_payload,
@@ -222,6 +225,7 @@ async def generate_clear_signing_audit_async(
                 report_data["selector"] = task.selector
                 report_data["erc7730_format"] = task.erc7730_format
                 report_data["descriptor_format_key"] = (task.descriptor_context or {}).get("format_key")
+                report_data["abi_resolution"] = task.abi_resolution or {}
 
                 # Enrich transaction samples with actual decoded data
                 if "transaction_samples" in report_data and task.decoded_transactions:

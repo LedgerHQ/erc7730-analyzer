@@ -18,8 +18,8 @@ class ABIMerger:
         self.function_signatures = {}  # signature -> function ABI
         self.event_signatures = {}  # signature -> event ABI
         self.other_items = []  # constructors, fallback, receive
-        # Track where each selector came from: selector -> LIST of {facet_address, chain_id, signature}
-        # Multiple sources allow fallback if one fails during source extraction
+        # Track where each selector came from: selector -> LIST of source descriptors.
+        # Multiple sources allow fallback if one fails during source extraction.
         self.selector_sources = {}
 
     def _compute_selector(self, signature: str) -> str:
@@ -97,14 +97,61 @@ class ABIMerger:
 
         return param_type
 
-    def add_abi(self, abi: list[dict], chain_id: int, source_address: str = None) -> dict[str, int]:
+    def _track_selector_source(
+        self,
+        *,
+        signature: str,
+        chain_id: int,
+        source_address: str | None,
+        source_kind: str,
+    ) -> None:
+        """Record selector provenance for later chain/facet-aware resolution."""
+        if not source_address:
+            return
+
+        selector = self._compute_selector(signature)
+        source_info = {
+            "facet_address": source_address,
+            "chain_id": chain_id,
+            "signature": signature,
+            "source_kind": source_kind,
+        }
+        if selector not in self.selector_sources:
+            self.selector_sources[selector] = []
+
+        existing = self.selector_sources[selector]
+        if not any(
+            s["facet_address"] == source_address
+            and s["chain_id"] == chain_id
+            and s.get("source_kind", "facet") == source_kind
+            for s in existing
+        ):
+            self.selector_sources[selector].append(source_info)
+            logger.debug(
+                "Mapped selector %s -> %s %s (chain %s)",
+                selector,
+                source_kind,
+                source_address,
+                chain_id,
+            )
+
+    def add_abi(
+        self,
+        abi: list[dict],
+        chain_id: int,
+        source_address: str = None,
+        *,
+        source_kind: str = "facet",
+    ) -> dict[str, int]:
         """
         Add an ABI to the merger.
 
         Args:
             abi: ABI entries to add
             chain_id: Chain ID where this ABI came from
-            source_address: Address where this ABI came from (for Diamond facet tracking)
+            source_address: Address where this ABI came from
+            source_kind: Either "facet" for Diamond facet provenance or
+                "deployment" for a normal contract/proxy deployment
 
         Returns dict with counts of new items added:
         - new_functions: Number of new functions
@@ -126,26 +173,15 @@ class ABIMerger:
                         new_functions += 1
                         logger.debug(f"Added new function from chain {chain_id}: {signature}")
 
-                        # Track selector -> source mapping for Diamond proxy support
+                        # Track selector provenance for later source resolution
                         if source_address:
                             try:
-                                selector = self._compute_selector(signature)
-                                source_info = {
-                                    "facet_address": source_address,
-                                    "chain_id": chain_id,
-                                    "signature": signature,
-                                }
-                                if selector not in self.selector_sources:
-                                    self.selector_sources[selector] = []
-                                # Avoid duplicate entries for same address+chain
-                                existing = self.selector_sources[selector]
-                                if not any(
-                                    s["facet_address"] == source_address and s["chain_id"] == chain_id for s in existing
-                                ):
-                                    self.selector_sources[selector].append(source_info)
-                                    logger.debug(
-                                        f"Mapped selector {selector} -> facet {source_address} (chain {chain_id})"
-                                    )
+                                self._track_selector_source(
+                                    signature=signature,
+                                    chain_id=chain_id,
+                                    source_address=source_address,
+                                    source_kind=source_kind,
+                                )
                             except Exception as e:
                                 logger.warning(f"Could not compute selector for {signature}: {e}")
                     else:
@@ -155,19 +191,12 @@ class ABIMerger:
                         # Still track selector source even for duplicates (for fallback)
                         if source_address:
                             try:
-                                selector = self._compute_selector(signature)
-                                source_info = {
-                                    "facet_address": source_address,
-                                    "chain_id": chain_id,
-                                    "signature": signature,
-                                }
-                                if selector not in self.selector_sources:
-                                    self.selector_sources[selector] = []
-                                existing = self.selector_sources[selector]
-                                if not any(
-                                    s["facet_address"] == source_address and s["chain_id"] == chain_id for s in existing
-                                ):
-                                    self.selector_sources[selector].append(source_info)
+                                self._track_selector_source(
+                                    signature=signature,
+                                    chain_id=chain_id,
+                                    source_address=source_address,
+                                    source_kind=source_kind,
+                                )
                             except Exception:
                                 pass
 
@@ -195,7 +224,8 @@ class ABIMerger:
             {
                 'facet_address': '0x...',
                 'chain_id': 1,
-                'signature': 'functionName(type1,type2)'
+                'signature': 'functionName(type1,type2)',
+                'source_kind': 'facet' | 'deployment'
             }
         """
         return self.selector_sources
@@ -255,7 +285,8 @@ def merge_abis_from_deployments(
 
         merged_abi: Combined ABI with all unique functions, or None if all fetches failed
         fetch_results: Dict with per-chain fetch results
-        selector_sources: Dict mapping selector -> list of {facet_address, chain_id, signature}
+        selector_sources: Dict mapping selector -> list of
+            {facet_address, chain_id, signature, source_kind}
     """
     merger = ABIMerger()
     fetch_results = {}
@@ -294,14 +325,19 @@ def merge_abis_from_deployments(
                             existing.append(info)
                 if is_diamond:
                     is_any_diamond = True
-                    logger.info(f"  Diamond proxy: got {len(dep_selector_sources)} selector→facet mappings")
+                    logger.info(f"  Diamond proxy: got {len(dep_selector_sources)} selector provenance entries")
             else:
                 abi = result
 
             if abi:
                 # For non-Diamond, track source address
                 source_addr = address if not is_diamond else None
-                stats = merger.add_abi(abi, chain_id, source_address=source_addr)
+                stats = merger.add_abi(
+                    abi,
+                    chain_id,
+                    source_address=source_addr,
+                    source_kind="deployment" if source_addr else "facet",
+                )
                 fetch_results[chain_id] = {
                     "success": True,
                     "functions_count": len([item for item in abi if item.get("type") == "function"]),
@@ -341,7 +377,7 @@ def merge_abis_from_deployments(
     logger.info(f"  Total unique functions: {stats['total_functions']}")
     logger.info(f"  Total unique events: {stats['total_events']}")
     if selector_sources:
-        logger.info(f"  Selector→Facet mappings: {len(selector_sources)}")
+        logger.info(f"  Selector provenance entries: {len(selector_sources)}")
     logger.info("=" * 60)
 
     return merged_abi, fetch_results, selector_sources

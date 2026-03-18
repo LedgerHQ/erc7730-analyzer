@@ -2,15 +2,24 @@
 
 import logging
 
+from ...rpc_helpers import DEFAULT_RPC_URLS, resolve_rpc_url, rpc_eth_call
+
 logger = logging.getLogger(__name__)
 
-RPC_URLS = {
-    1: "https://eth.llamarpc.com",
-    14: "https://flare-api.flare.network/ext/C/rpc",
-    19: "https://songbird-api.flare.network/ext/C/rpc",  # Songbird Network
-    8453: "https://mainnet.base.org",
-    10: "https://mainnet.optimism.io",
-    137: "https://polygon-rpc.com",
-    100: "https://rpc.gnosischain.com",
-    1116: "https://rpc.coredao.org",  # Core DAO Mainnet
+BLOCKSCOUT_URLS = {
+    56: "https://api.bscscan.com/api",  # BNB Smart Chain
+    97: "https://api-testnet.bscscan.com/api",  # BNB Testnet
+    42220: "https://explorer.celo.org/api",  # Celo Mainnet
+    44787: "https://explorer.celo.org/alfajores/api",  # Celo Alfajores Testnet
+    14: "https://flare-explorer.flare.network",  # Flare Mainnet
+    19: "https://songbird-explorer.flare.network",  # Songbird Network
+    8453: "https://base.blockscout.com",  # Base Mainnet
+    84532: "https://base-sepolia.blockscout.com",  # Base Sepolia
+    10: "https://explorer.optimism.io",  # Optimism Mainnet
+    11155420: "https://testnet-explorer.optimism.io",  # Optimism Sepolia
+    100: "https://gnosis.blockscout.com",  # Gnosis Chain
+    137: "https://polygon.blockscout.com",  # Polygon PoS
+    1116: "https://openapi.coredao.org/api",  # Core DAO Mainnet
 }
+
+RPC_URLS = DEFAULT_RPC_URLS

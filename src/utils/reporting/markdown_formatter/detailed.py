@@ -49,7 +49,10 @@ def format_detailed_report(data: dict) -> str:
         md += "---\n\n"
 
         # 5. Transaction Samples
-        md += _format_transaction_samples(data.get("transaction_samples", []))
+        md += _format_transaction_samples(
+            data.get("transaction_samples", []),
+            abi_resolution=data.get("abi_resolution", {}),
+        )
         md += "---\n\n"
 
         # 6. Overall Assessment (pass recommendations for Key Recommendations section)
@@ -181,11 +184,14 @@ def _format_display_issues(display_issues: list[dict]) -> str:
     return md
 
 
-def _format_transaction_samples(samples: list[dict]) -> str:
+def _format_transaction_samples(samples: list[dict], abi_resolution: dict | None = None) -> str:
     """Format the Transaction Samples section with collapsible decoded parameters."""
     md = "### 5️⃣ Transaction Samples - What Users See\n\n"
 
     if not samples:
+        if isinstance(abi_resolution, dict) and abi_resolution.get("status") != "merged_abi":
+            md += "Skipped because this selector was not found in the merged ABI for this run.\n\n"
+            return md
         md += "⚠️ **Warning: No Historical Transactions Found**\n\n"
         md += "This section is based ONLY on static source code review without real transaction data.\n\n"
         md += "**Impact:** The analysis cannot verify:\n"

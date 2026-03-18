@@ -7,16 +7,26 @@ COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 # Set working directory
 WORKDIR /app
 
-# Copy project metadata + source needed for package build
+# Copy project metadata + lock files
 COPY pyproject.toml uv.lock README.md ./
+COPY package.json package-lock.json ./
+
+# Copy source (includes service/ and utils/)
 COPY src/ ./src/
 
-# Install dependencies and the project package
+# Copy helper scripts (mock OIDC, test harness)
+COPY scripts/ ./scripts/
+
+# Install Python dependencies (no dev deps in production image)
 RUN uv sync --frozen --no-dev
 
 # Set environment variables
 ENV PYTHONUNBUFFERED=1
 
-# Entry point
-ENTRYPOINT ["uv", "run", "analyze_7730"]
-CMD ["--help"]
+# Expose the service port
+EXPOSE 8730
+
+# Default: run the analyzer CLI
+# Override with: docker run <image> python -m service.app  (for service mode)
+ENTRYPOINT ["uv", "run"]
+CMD ["analyze_7730", "--help"]

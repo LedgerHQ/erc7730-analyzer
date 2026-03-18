@@ -1363,6 +1363,7 @@ async def generate_multi_agent_audit_async(
     report_data["selector"] = task.selector
     report_data["erc7730_format"] = task.erc7730_format
     report_data["descriptor_format_key"] = (task.descriptor_context or {}).get("format_key")
+    report_data["abi_resolution"] = task.abi_resolution or {}
     report_data["agentic_trace"] = {
         "primary_summary": primary_output.summary,
         "primary_report": primary_report_dict,

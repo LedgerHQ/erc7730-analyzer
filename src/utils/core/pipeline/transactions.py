@@ -15,6 +15,8 @@ class AnalyzerPipelineTransactionsMixin:
     ) -> None:
         """Fetch transaction samples per selector across deployments."""
         selectors = context["selectors"]
+        abi_backed_selectors = context.get("abi_backed_selectors", selectors)
+        abi_backed_selector_set = {s.lower() for s in abi_backed_selectors}
         deployments = context["deployments"]
         abi = context["abi"]
         # First, identify which selectors are payable by checking their ABI
@@ -23,8 +25,10 @@ class AnalyzerPipelineTransactionsMixin:
         logger.info(f"{'=' * 60}")
 
         payable_selectors = set()
-        for selector in selectors:
-            function_data = self.get_function_abi_by_selector(selector)
+        for selector in abi_backed_selectors:
+            function_data = (context.get("selector_function_data", {}) or {}).get(selector.lower())
+            if function_data is None:
+                function_data = self.get_function_abi_by_selector(selector)
             if function_data and function_data.get("stateMutability") == "payable":
                 payable_selectors.add(selector.lower())
                 logger.info(f"Function {function_data['name']} ({selector}) is payable")
@@ -36,11 +40,18 @@ class AnalyzerPipelineTransactionsMixin:
         logger.info(f"\n{'=' * 60}")
         logger.info(f"Fetching transactions for all {len(selectors)} selectors at once...")
         logger.info(f"{'=' * 60}")
+        skipped_selectors = [s for s in selectors if s.lower() not in abi_backed_selector_set]
+        if skipped_selectors:
+            logger.error(
+                "Skipping transaction fetch for %d selector(s) not found in merged ABI: %s",
+                len(skipped_selectors),
+                skipped_selectors,
+            )
 
         # Initialize transaction storage and track how many samples are still needed
         transactions_per_selector = 5  # Matches tx_fetcher default
         all_selector_txs = {s.lower(): [] for s in selectors}
-        selectors_remaining = {s.lower(): transactions_per_selector for s in selectors}
+        selectors_remaining = {s.lower(): transactions_per_selector for s in abi_backed_selectors}
         deployment_per_selector = {}  # Track which deployment was used for each selector
         default_deployment = deployments[0] if deployments else {"address": "N/A", "chainId": 1}
 

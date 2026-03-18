@@ -26,6 +26,7 @@ class AnalyzerPipelineFinalizeMixin:
             format_key = prepared.get("format_key")
             function_name = prepared["function_name"]
             function_data = prepared["function_data"]
+            abi_resolution = prepared.get("abi_resolution")
             selector_deployment = prepared["selector_deployment"]
             decoded_txs = prepared["decoded_txs"]
             erc7730_format = prepared["erc7730_format"]
@@ -67,6 +68,7 @@ class AnalyzerPipelineFinalizeMixin:
                 "function_name": function_name,
                 "function_signature": function_data["signature"],
                 "descriptor_format_key": format_key,
+                "abi_resolution": abi_resolution,
                 "contract_address": selector_deployment["address"],
                 "chain_id": selector_deployment["chainId"],
                 "transactions": decoded_txs,

@@ -22,7 +22,8 @@ class SourceCodeFetchingExtractionMixin:
             contract_address: Contract address
             chain_id: Chain ID
             selectors: Optional list of selectors to filter diamond facets
-            selector_sources: Optional dict mapping selector -> list of {facet_address, chain_id}
+            selector_sources: Optional dict mapping selector -> list of
+                             {facet_address, chain_id, source_kind}
                              from ABI detection (for efficient Diamond proxy extraction)
 
         Returns:
@@ -51,7 +52,11 @@ class SourceCodeFetchingExtractionMixin:
             # Hash the facet addresses to detect when mappings change
             facet_hash = hash(
                 frozenset(
-                    (sel, sources[0]["facet_address"] if sources else "")
+                    (
+                        sel,
+                        sources[0]["facet_address"] if sources else "",
+                        sources[0].get("source_kind", "facet") if sources else "",
+                    )
                     for sel, sources in selector_sources.items()
                     if sources
                 )
@@ -97,9 +102,16 @@ class SourceCodeFetchingExtractionMixin:
             missing_selectors = []
             for selector in selectors:
                 sources = selector_sources.get(selector, [])
+                facet_sources = [s for s in sources if s.get("source_kind", "facet") == "facet"]
+                if sources and not facet_sources:
+                    logger.debug(
+                        "  Selector %s has only non-facet provenance on chain(s) %s; ignoring for diamond shortcut",
+                        selector,
+                        sorted({s.get('chain_id') for s in sources}),
+                    )
                 # Find a source that matches the current chain_id
                 matching_source = None
-                for source in sources:
+                for source in facet_sources:
                     if source.get("chain_id") == chain_id:
                         matching_source = source
                         break

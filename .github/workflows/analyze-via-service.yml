@@ -1,0 +1,95 @@
+name: Analyze (via Service)
+
+# Same trigger as the existing workflow — fires on PRs that touch descriptors
+on:
+  pull_request:
+    paths:
+      - '**/calldata-*.json'
+
+# OIDC token requires explicit id-token permission
+permissions:
+  contents: read
+  pull-requests: write
+  id-token: write          # <-- request GitHub OIDC JWT
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    steps:
+      - name: Checkout PR branch
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.head_ref }}
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@803947b9bd8e9f986429fa0c5a41c367cd732b41 # v7.2.1
+        with:
+          version: "0.6.14"
+
+      - name: Install analyzer (client only)
+        run: uv pip install --system httpx
+
+      - name: Get changed calldata files
+        id: changed-files
+        uses: tj-actions/changed-files@e0021407031f5be11a464abee9a0776171c79891 # v47.0.1
+        with:
+          files: |
+            **/calldata-*.json
+
+      - name: Run analysis via service
+        if: steps.changed-files.outputs.any_changed == 'true'
+        id: run-analyzer
+        env:
+          ANALYZER_SERVICE_URL: ${{ vars.ANALYZER_SERVICE_URL }}
+        run: |
+          EXIT_CODE=0
+          for file in ${{ steps.changed-files.outputs.all_changed_files }}; do
+            echo "Analyzing: $file"
+            if ! python -m service.client \
+                --service-url "$ANALYZER_SERVICE_URL" \
+                --descriptor "$file" \
+                --analysis-mode multi \
+                --enable-screenshots \
+                --lookback-days 20; then
+              echo "❌ Critical issues found in $file"
+              EXIT_CODE=1
+            fi
+          done
+
+          if [ $EXIT_CODE -eq 1 ]; then
+            echo "has_criticals=true" >> $GITHUB_OUTPUT
+            exit 1
+          else
+            echo "has_criticals=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Upload analysis reports
+        if: always() && steps.changed-files.outputs.any_changed == 'true'
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: analysis-reports
+          path: output/
+          retention-days: 30
+
+      - name: Add reports to job summary
+        if: always() && steps.changed-files.outputs.any_changed == 'true'
+        run: |
+          echo "## 📊 ERC-7730 Analysis Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          CRITICALS_FILE=$(ls output/CRITICALS_*.md 2>/dev/null | head -1)
+          if [ -f "$CRITICALS_FILE" ]; then
+            echo "### 🔴 Critical Issues Report" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            cat "$CRITICALS_FILE" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "✅ No critical issues found." >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: Block merge if critical issues found
+        if: always() && steps.run-analyzer.outputs.has_criticals == 'true'
+        run: |
+          echo "::error::❌ BLOCKING MERGE - Critical issues found"
+          exit 1

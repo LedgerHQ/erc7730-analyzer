@@ -10,13 +10,18 @@ class AnalyzerPipelineSourceMixin:
     def _extract_source_and_context(self, context: dict[str, Any]) -> None:
         """Extract source code and build ERC4626/ERC20 context when possible."""
         deployments = context["deployments"]
-        selectors = context["selectors"]
+        selectors = context.get("abi_backed_selectors") or context["selectors"]
         erc7730_data = context["erc7730_data"]
         # Extract source code from ALL deployments (multi-chain support)
         if self.enable_source_code and self.source_extractor and deployments:
             logger.info(f"\n{'=' * 60}")
             logger.info("Extracting contract source code from all deployments...")
             logger.info(f"{'=' * 60}")
+
+            if not selectors:
+                logger.error("Skipping source extraction because no selectors were found in the merged ABI")
+                self.extracted_codes = {}
+                return
 
             # Clear cache to ensure fresh extraction with current selector_sources
             self.source_extractor.clear_cache()
@@ -40,7 +45,7 @@ class AnalyzerPipelineSourceMixin:
                 if self.selector_sources:
                     # Show a few sample mappings
                     sample_sels = list(self.selector_sources.keys())[:3]
-                    logger.info(f"  Using {len(self.selector_sources)} selector→facet mappings (sample: {sample_sels})")
+                    logger.info(f"  Using {len(self.selector_sources)} selector provenance entries (sample: {sample_sels})")
                 else:
                     logger.warning("  No selector_sources available - Diamond detection may have failed")
 
@@ -48,7 +53,7 @@ class AnalyzerPipelineSourceMixin:
                     address,
                     chain_id,
                     selectors=selectors,
-                    selector_sources=self.selector_sources,  # Pass selector→facet mapping for efficient Diamond extraction
+                    selector_sources=self.selector_sources,  # Pass selector provenance for efficient Diamond extraction
                 )
 
                 if extracted_code["source_code"]:

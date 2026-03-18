@@ -6,6 +6,11 @@ from typing import Any
 
 import requests
 
+from ....rpc_helpers import (
+    etherscan_response_indicates_chain_unsupported,
+    is_etherscan_tx_endpoint_unsupported,
+    mark_etherscan_tx_endpoint_unsupported,
+)
 from ..constants import BLOCKSCOUT_URLS
 
 logger = logging.getLogger(__name__)
@@ -184,6 +189,13 @@ class TransactionFetcherCoreQueryMixin:
                 contract_address, selectors, chain_id, per_selector, payable_selectors
             )
 
+        if not use_blockscout and is_etherscan_tx_endpoint_unsupported(chain_id):
+            logger.info(
+                "Skipping Etherscan transaction scan on chain %s: tx endpoints already marked unsupported for this run",
+                chain_id,
+            )
+            return {s.lower(): [] for s in selectors}
+
         # Normalize selectors to lowercase for consistent dictionary keys
         selectors = [s.lower() for s in selectors]
         selector_txs = {s: [] for s in selectors}
@@ -292,6 +304,13 @@ class TransactionFetcherCoreQueryMixin:
                         data = response.json()
 
                         if data["status"] != "1":
+                            if not use_blockscout and etherscan_response_indicates_chain_unsupported(data):
+                                mark_etherscan_tx_endpoint_unsupported(chain_id)
+                                logger.warning(
+                                    "Etherscan transaction-history endpoints are unsupported for chain %s; switching to fallback explorer",
+                                    chain_id,
+                                )
+                                return selector_txs
                             if "No transactions found" in data.get("message", ""):
                                 txs = []
                                 consecutive_failures = 0  # Reset on successful response (even if no txs)

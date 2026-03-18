@@ -3,7 +3,12 @@
 import requests
 from web3 import Web3
 
-from ..shared import BLOCKSCOUT_URLS, RPC_URLS, logger
+from ....rpc_helpers import (
+    etherscan_response_indicates_chain_unsupported,
+    is_etherscan_proxy_eth_call_unsupported,
+    mark_etherscan_proxy_eth_call_unsupported,
+)
+from ..shared import BLOCKSCOUT_URLS, logger, resolve_rpc_url, rpc_eth_call
 
 
 class SourceCodeFetchingProxyMixin:
@@ -30,10 +35,11 @@ class SourceCodeFetchingProxyMixin:
             impl_slot = "0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc"
 
             # Try RPC FIRST (most reliable) if we have an RPC URL
-            if chain_id in RPC_URLS:
+            rpc_url = resolve_rpc_url(chain_id)
+            if rpc_url:
                 logger.info("  Trying direct RPC call to read storage slot...")
                 try:
-                    w3 = Web3(Web3.HTTPProvider(RPC_URLS[chain_id], request_kwargs={"timeout": 10}))
+                    w3 = Web3(Web3.HTTPProvider(rpc_url, request_kwargs={"timeout": 10}))
                     if w3.is_connected():
                         # Read the EIP-1967 implementation storage slot
                         storage_value = w3.eth.get_storage_at(
@@ -244,45 +250,73 @@ class SourceCodeFetchingProxyMixin:
             # Selector for facets(): 0x7a0ed627
             facets_selector = "0x7a0ed627"
 
-            params = {
-                "module": "proxy",
-                "action": "eth_call",
-                "to": contract_address,
-                "data": facets_selector,
-                "tag": "latest",
-                "apikey": self.etherscan_api_key,
-            }
-
             base_url = f"https://api.etherscan.io/v2/api?chainid={chain_id}"
             logger.info("Testing Diamond proxy using facets() function")
             logger.info(f"Call data: {facets_selector}")
 
-            response = requests.get(base_url, params=params)
-            data = response.json()
-
-            # Trim response for logging (can be very large for Diamond proxies)
-            data_str = str(data)
-            if len(data_str) > 100:
-                logger.info(f"facets() API response: {data_str[:100]}... (truncated, {len(data_str)} chars total)")
-            else:
-                logger.info(f"facets() API response: {data_str}")
-
-            # Check if the call succeeded
-            # Etherscan API returns status: '1' for success, '0' for failure
-            if "error" in data or data.get("status") == "0" or data.get("message") == "NOTOK":
-                if "error" in data:
-                    error_msg = data.get("error", {}).get("message", "unknown error")
+            def _log_call_payload(label: str, payload: object) -> None:
+                payload_str = str(payload)
+                if len(payload_str) > 100:
+                    logger.info(f"{label} response: {payload_str[:100]}... (truncated, {len(payload_str)} chars total)")
                 else:
-                    error_msg = data.get("result", "API error")
-                logger.info(f"facets() call failed: {error_msg}")
-                logger.info("Trying fallback detection method...")
-                return self._detect_diamond_via_sourcecode(contract_address, chain_id)
+                    logger.info(f"{label} response: {payload_str}")
 
-            if not data.get("result") or data["result"] == "0x":
+            def _explorer_eth_call(call_data: str, label: str) -> tuple[str | None, str | None]:
+                if is_etherscan_proxy_eth_call_unsupported(chain_id):
+                    return None, "explorer proxy eth_call already marked unsupported for this chain"
+                params = {
+                    "module": "proxy",
+                    "action": "eth_call",
+                    "to": contract_address,
+                    "data": call_data,
+                    "tag": "latest",
+                    "apikey": self.etherscan_api_key,
+                }
+                try:
+                    response = requests.get(base_url, params=params, timeout=10)
+                    response.raise_for_status()
+                    data = response.json()
+                except Exception as exc:
+                    return None, str(exc)
+
+                _log_call_payload(label, data)
+
+                if "error" in data or data.get("status") == "0" or data.get("message") == "NOTOK":
+                    if etherscan_response_indicates_chain_unsupported(data):
+                        mark_etherscan_proxy_eth_call_unsupported(chain_id)
+                    if "error" in data:
+                        error_msg = data.get("error", {}).get("message", "unknown error")
+                    else:
+                        error_msg = data.get("result", "API error")
+                    return None, error_msg
+
+                if "result" not in data:
+                    return None, "missing result"
+
+                return data.get("result"), None
+
+            def _rpc_eth_call_logged(call_data: str, label: str) -> tuple[str | None, str | None]:
+                result, error_msg, rpc_url = rpc_eth_call(chain_id, contract_address, call_data, timeout=10)
+                if error_msg:
+                    logger.info(f"{label} RPC fallback ({rpc_url or 'no rpc url'}): {error_msg}")
+                    return None, error_msg
+                _log_call_payload(f"{label} RPC fallback via {rpc_url}", result)
+                return result, None
+
+            result, error_msg = _explorer_eth_call(facets_selector, "facets()")
+            use_rpc_for_followups = False
+            if error_msg:
+                logger.info(f"facets() call failed: {error_msg}")
+                logger.info("Trying direct RPC fallback...")
+                result, error_msg = _rpc_eth_call_logged(facets_selector, "facets()")
+                if error_msg:
+                    logger.info("Trying fallback detection method...")
+                    return self._detect_diamond_via_sourcecode(contract_address, chain_id)
+                use_rpc_for_followups = True
+
+            if not result or result == "0x":
                 logger.info("facets() returned empty result - not a Diamond proxy")
                 return {}
-
-            result = data["result"]
             logger.info(f"✓ facets() succeeded! Response length: {len(result)} chars")
 
             # Parse the ABI-encoded Facet[] array to get the number of facets
@@ -327,47 +361,23 @@ class SourceCodeFetchingProxyMixin:
                     # Call facetAddress(selector)
                     call_data = facet_address_selector + selector[2:10].ljust(64, "0")
 
-                    facet_params = {
-                        "module": "proxy",
-                        "action": "eth_call",
-                        "to": contract_address,
-                        "data": call_data,
-                        "tag": "latest",
-                        "apikey": self.etherscan_api_key,
-                    }
-
-                    facet_response = requests.get(base_url, params=facet_params)
-                    facet_data = facet_response.json()
-
-                    # Trim response for logging
-                    facet_data_str = str(facet_data)
-                    if len(facet_data_str) > 100:
-                        logger.info(f"  facetAddress({selector}) response: {facet_data_str[:100]}... (truncated)")
+                    if use_rpc_for_followups:
+                        facet_result, facet_error = _rpc_eth_call_logged(call_data, f"facetAddress({selector})")
                     else:
-                        logger.info(f"  facetAddress({selector}) response: {facet_data_str}")
+                        facet_result, facet_error = _explorer_eth_call(call_data, f"facetAddress({selector})")
+                        if facet_error:
+                            logger.info(f"  Falling back to direct RPC for selector {selector}...")
+                            facet_result, facet_error = _rpc_eth_call_logged(call_data, f"facetAddress({selector})")
 
-                    # Check if facetAddress() call succeeded
-                    if (
-                        facet_data.get("result")
-                        and "error" not in facet_data
-                        and facet_data.get("status") != "0"
-                        and facet_data.get("message") != "NOTOK"
-                        and facet_data["result"] != "0x"
-                    ):
+                    if facet_result and facet_result != "0x":
                         # Extract facet address from result (last 20 bytes / 40 hex chars)
-                        facet_address = "0x" + facet_data["result"][-40:].lower()
+                        facet_address = "0x" + facet_result[-40:].lower()
                         # Check it's not zero address
                         if facet_address != "0x" + "0" * 40:
                             selector_to_facet[selector] = facet_address
                             logger.info(f"  Selector {selector} -> Facet {facet_address}")
                     else:
-                        if "error" in facet_data:
-                            error_msg = facet_data.get("error", {}).get("message", "no result")
-                        elif facet_data.get("status") == "0":
-                            error_msg = facet_data.get("result", "API error")
-                        else:
-                            error_msg = "no result"
-                        logger.warning(f"  Failed to get facet for selector {selector}: {error_msg}")
+                        logger.warning(f"  Failed to get facet for selector {selector}: {facet_error or 'no result'}")
 
                 if selector_to_facet:
                     unique_facets = len(set(selector_to_facet.values()))

@@ -1,4 +1,4 @@
-"""Reconstruct raw signed transactions from Etherscan eth_getTransactionByHash fields."""
+"""Reconstruct raw signed transactions from explorer or RPC transaction fields."""
 
 import asyncio
 import logging
@@ -7,6 +7,13 @@ from typing import Any
 
 import requests
 import rlp
+
+from ..rpc_helpers import (
+    etherscan_response_indicates_chain_unsupported,
+    is_etherscan_tx_endpoint_unsupported,
+    mark_etherscan_tx_endpoint_unsupported,
+    rpc_get_transaction_by_hash,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -120,46 +127,93 @@ def _fetch_tx_fields(
     chain_id: int,
     etherscan_api_key: str,
 ) -> dict[str, Any] | None:
-    """Fetch transaction fields with retry on transient failures / rate limits."""
-    url = f"https://api.etherscan.io/v2/api?chainid={chain_id}"
-    params = {
-        "module": "proxy",
-        "action": "eth_getTransactionByHash",
-        "txhash": tx_hash,
-        "apikey": etherscan_api_key,
-    }
+    """Fetch transaction fields with explorer-first behavior and RPC fallback."""
+    use_explorer = bool(etherscan_api_key) and not is_etherscan_tx_endpoint_unsupported(chain_id)
+    if use_explorer:
+        url = f"https://api.etherscan.io/v2/api?chainid={chain_id}"
+        params = {
+            "module": "proxy",
+            "action": "eth_getTransactionByHash",
+            "txhash": tx_hash,
+            "apikey": etherscan_api_key,
+        }
+
+        for attempt in range(RAW_TX_MAX_RETRIES):
+            try:
+                resp = requests.get(url, params=params, timeout=15)
+                resp.raise_for_status()
+                data = resp.json()
+                result = data.get("result")
+                if result and isinstance(result, dict):
+                    return result
+
+                if etherscan_response_indicates_chain_unsupported(data):
+                    mark_etherscan_tx_endpoint_unsupported(chain_id)
+                    logger.info(
+                        "[RAW_TX] Etherscan tx endpoints unsupported on chain %d, falling back to direct RPC",
+                        chain_id,
+                    )
+                    break
+
+                if attempt < RAW_TX_MAX_RETRIES - 1:
+                    logger.debug(
+                        "[RAW_TX] Attempt %d/%d returned null for %s on chain %d, retrying...",
+                        attempt + 1,
+                        RAW_TX_MAX_RETRIES,
+                        tx_hash,
+                        chain_id,
+                    )
+                    time.sleep(RAW_TX_RETRY_DELAY * (attempt + 1))
+                else:
+                    logger.warning(
+                        "[RAW_TX] eth_getTransactionByHash returned no result for %s on chain %d after %d attempts",
+                        tx_hash,
+                        chain_id,
+                        RAW_TX_MAX_RETRIES,
+                    )
+            except Exception as exc:
+                if attempt < RAW_TX_MAX_RETRIES - 1:
+                    logger.debug("[RAW_TX] Attempt %d failed for %s: %s", attempt + 1, tx_hash, exc)
+                    time.sleep(RAW_TX_RETRY_DELAY * (attempt + 1))
+                else:
+                    logger.warning(
+                        "[RAW_TX] Failed to fetch tx %s after %d attempts: %s",
+                        tx_hash,
+                        RAW_TX_MAX_RETRIES,
+                        exc,
+                    )
+    elif not etherscan_api_key:
+        logger.debug("[RAW_TX] No explorer API key for %s on chain %d, using direct RPC fallback", tx_hash, chain_id)
+    else:
+        logger.debug(
+            "[RAW_TX] Skipping explorer tx lookup for %s on chain %d: endpoint already marked unsupported",
+            tx_hash,
+            chain_id,
+        )
 
     for attempt in range(RAW_TX_MAX_RETRIES):
-        try:
-            resp = requests.get(url, params=params, timeout=15)
-            resp.raise_for_status()
-            data = resp.json()
-            result = data.get("result")
-            if result and isinstance(result, dict):
-                return result
-
-            if attempt < RAW_TX_MAX_RETRIES - 1:
-                logger.debug(
-                    "[RAW_TX] Attempt %d/%d returned null for %s on chain %d, retrying...",
-                    attempt + 1,
-                    RAW_TX_MAX_RETRIES,
-                    tx_hash,
-                    chain_id,
-                )
-                time.sleep(RAW_TX_RETRY_DELAY * (attempt + 1))
-            else:
-                logger.warning(
-                    "[RAW_TX] eth_getTransactionByHash returned no result for %s on chain %d after %d attempts",
-                    tx_hash,
-                    chain_id,
-                    RAW_TX_MAX_RETRIES,
-                )
-        except Exception as exc:
-            if attempt < RAW_TX_MAX_RETRIES - 1:
-                logger.debug("[RAW_TX] Attempt %d failed for %s: %s", attempt + 1, tx_hash, exc)
-                time.sleep(RAW_TX_RETRY_DELAY * (attempt + 1))
-            else:
-                logger.warning("[RAW_TX] Failed to fetch tx %s after %d attempts: %s", tx_hash, RAW_TX_MAX_RETRIES, exc)
+        result, error_msg, rpc_url = rpc_get_transaction_by_hash(chain_id, tx_hash, timeout=15)
+        if result:
+            logger.info("[RAW_TX] Loaded tx %s via RPC fallback %s", tx_hash, rpc_url)
+            return result
+        if attempt < RAW_TX_MAX_RETRIES - 1:
+            logger.debug(
+                "[RAW_TX] RPC attempt %d/%d returned %s for %s on chain %d, retrying...",
+                attempt + 1,
+                RAW_TX_MAX_RETRIES,
+                error_msg or "no result",
+                tx_hash,
+                chain_id,
+            )
+            time.sleep(RAW_TX_RETRY_DELAY * (attempt + 1))
+        else:
+            logger.warning(
+                "[RAW_TX] RPC fallback failed for %s on chain %d after %d attempts: %s",
+                tx_hash,
+                chain_id,
+                RAW_TX_MAX_RETRIES,
+                error_msg or "no result",
+            )
     return None
 
 
@@ -169,12 +223,12 @@ def fetch_raw_transaction(
     etherscan_api_key: str,
 ) -> str | None:
     """
-    Fetch a transaction by hash from Etherscan and return its raw RLP-encoded form.
+    Fetch a transaction by hash and return its raw RLP-encoded form.
 
     Args:
         tx_hash: Transaction hash (0x-prefixed).
         chain_id: Chain ID.
-        etherscan_api_key: Etherscan API key.
+        etherscan_api_key: Explorer API key, used before RPC fallback when supported.
 
     Returns:
         Raw signed transaction hex string, or None on failure.

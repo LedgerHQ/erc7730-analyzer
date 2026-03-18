@@ -14,6 +14,13 @@ from eth_utils.abi import (
     function_signature_to_4byte_selector,
 )
 
+from ..rpc_helpers import (
+    etherscan_response_indicates_chain_unsupported,
+    is_etherscan_proxy_eth_call_unsupported,
+    mark_etherscan_proxy_eth_call_unsupported,
+    rpc_eth_call,
+)
+
 
 class ABI:
     """
@@ -248,6 +255,8 @@ def detect_diamond_proxy(contract_address: str, chain_id: int, etherscan_api_key
         # Selector: 0x7a0ed627
         facets_selector = "0x7a0ed627"
 
+        base_url = f"https://api.etherscan.io/v2/api?chainid={chain_id}"
+
         params = {
             "module": "proxy",
             "action": "eth_call",
@@ -257,21 +266,44 @@ def detect_diamond_proxy(contract_address: str, chain_id: int, etherscan_api_key
             "apikey": etherscan_api_key,
         }
 
-        base_url = f"https://api.etherscan.io/v2/api?chainid={chain_id}"
-        response = requests.get(base_url, params=params, timeout=10)
-        data = response.json()
+        result = None
+        if is_etherscan_proxy_eth_call_unsupported(chain_id):
+            logger.info(
+                "Skipping explorer facets() call on chain %s: proxy eth_call already marked unsupported for this run",
+                chain_id,
+            )
+        else:
+            try:
+                response = requests.get(base_url, params=params, timeout=10)
+                response.raise_for_status()
+                data = response.json()
 
-        # Check if the call succeeded
-        # Etherscan API returns status: '1' for success, '0' for failure
-        if "error" in data or data.get("status") == "0" or data.get("message") == "NOTOK":
-            logger.debug("Not a Diamond proxy (facets() call failed)")
-            return None
+                if "error" in data or data.get("status") == "0" or data.get("message") == "NOTOK":
+                    error_msg = data.get("result") or data.get("message") or "API error"
+                    logger.info(f"facets() explorer call failed on chain {chain_id}: {error_msg}")
+                    if etherscan_response_indicates_chain_unsupported(data):
+                        mark_etherscan_proxy_eth_call_unsupported(chain_id)
+                else:
+                    result = data.get("result")
+            except Exception as exc:
+                logger.info(f"facets() explorer call raised on chain {chain_id}: {exc}")
 
-        if not data.get("result") or data["result"] == "0x":
+        if result is None:
+            logger.info("Trying direct RPC fallback for facets() on chain %s...", chain_id)
+            rpc_result, rpc_error, rpc_url = rpc_eth_call(chain_id, contract_address, facets_selector, timeout=10)
+            if rpc_error:
+                logger.info("facets() RPC fallback (%s): %s", rpc_url or "no rpc url", rpc_error)
+                logger.debug(
+                    "Not a Diamond proxy (facets() failed via explorer and RPC%s)",
+                    f" {rpc_url}" if rpc_url else "",
+                )
+                return None
+            result = rpc_result
+            logger.info("facets() RPC fallback via %s succeeded", rpc_url)
+
+        if not result or result == "0x":
             logger.debug("Not a Diamond proxy (empty result)")
             return None
-
-        result = data["result"]
         logger.info(f"✓ facets() call succeeded - this is a Diamond proxy (response: {len(result)} chars)")
 
         # Parse the ABI-encoded Facet[] array
@@ -469,7 +501,7 @@ def fetch_contract_abi(
                 if data["status"] == "1":
                     facet_abi = json.loads(data["result"])
                     # Pass facet_address to track selector -> facet mapping
-                    stats = merger.add_abi(facet_abi, chain_id, source_address=facet_address)
+                    stats = merger.add_abi(facet_abi, chain_id, source_address=facet_address, source_kind="facet")
                     logger.info(
                         f"    ✓ Added {stats['new_functions']} functions, {stats['new_events']} events "
                         f"({stats['duplicate_functions']} duplicates skipped)"
@@ -498,7 +530,7 @@ def fetch_contract_abi(
         logger.info(f"  Failed fetches: {failed_fetches}")
         logger.info(f"  Total unique functions: {stats['total_functions']}")
         logger.info(f"  Total unique events: {stats['total_events']}")
-        logger.info(f"  Selector→Facet mappings: {len(selector_sources)}")
+        logger.info(f"  Selector provenance entries: {len(selector_sources)}")
         logger.info("=" * 60)
 
         # Return tuple: (abi, selector_sources, is_diamond)

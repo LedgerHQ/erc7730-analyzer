@@ -17,6 +17,11 @@ dependencies = [
     "requests>=2.31.0",
     "rlp>=4.0.0",
     "web3>=6.0.0",
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.32.0",
+    "sse-starlette>=2.0.0",
+    "PyJWT[crypto]>=2.9.0",
+    "httpx>=0.28.0",
 ]
 
 authors = [{ name = "Maroutis"}]
@@ -32,6 +37,7 @@ dev = [
 
 [project.scripts]
 analyze_7730 = "main:main"
+analyze_7730_service = "service.app:main"
 
 # Specific to uv but previous declaration is enough for setuptools
 [tool.uv]

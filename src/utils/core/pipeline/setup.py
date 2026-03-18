@@ -40,7 +40,7 @@ class AnalyzerPipelineSetupMixin:
 
             address = contract_entry.get("address") or contract_key
             chain_id = int(contract_entry.get("chainId") or 1)
-            merger.add_abi(contract_abi, chain_id, str(address))
+            merger.add_abi(contract_abi, chain_id, str(address), source_kind="deployment")
             contract_count += 1
 
         if contract_count == 0:
@@ -159,7 +159,7 @@ class AnalyzerPipelineSetupMixin:
             # Store selector sources for efficient Diamond proxy source extraction
             self.selector_sources = selector_sources
             if selector_sources:
-                logger.info(f"Stored {len(selector_sources)} selector→facet mappings for source extraction")
+                logger.info(f"Stored {len(selector_sources)} selector provenance entries for source extraction")
 
         if not abi:
             logger.error("Could not obtain contract ABI from any source (ERC-7730, file, or API)")
@@ -177,7 +177,7 @@ class AnalyzerPipelineSetupMixin:
             if isinstance(selector_sources, dict) and selector_sources:
                 self.selector_sources = selector_sources
                 logger.info(
-                    f"Loaded {len(self.selector_sources)} selector→facet mappings from prepared benchmark inputs"
+                    f"Loaded {len(self.selector_sources)} selector provenance entries from prepared benchmark inputs"
                 )
 
         # If selector_sources is empty but we have selectors, try Diamond detection on ALL deployments
@@ -225,7 +225,7 @@ class AnalyzerPipelineSetupMixin:
                             if data.get("status") == "1":
                                 facet_abi = json.loads(data["result"])
                                 func_count = len([item for item in facet_abi if item.get("type") == "function"])
-                                merger.add_abi(facet_abi, dep_chain_id, facet_addr)
+                                merger.add_abi(facet_abi, dep_chain_id, facet_addr, source_kind="facet")
                                 success_count += 1
                                 total_functions += func_count
                                 logger.info(f"    ✓ {facet_addr[:10]}...: {func_count} functions")
@@ -279,6 +279,7 @@ class AnalyzerPipelineSetupMixin:
                                     {
                                         "facet_address": facet_addr,
                                         "chain_id": dep_chain_id,
+                                        "source_kind": "facet",
                                         "from_facetAddress": True,  # Mark that this came from facetAddress() call
                                     }
                                 ]
@@ -292,6 +293,31 @@ class AnalyzerPipelineSetupMixin:
 
                 if missing_selectors:
                     logger.warning(f"Still missing mappings for {len(missing_selectors)} selectors after fallback")
+
+        selector_abi_resolution = {}
+        selector_function_data = {}
+        abi_backed_selectors = []
+        descriptor_fallback_selectors = []
+        for selector in selectors:
+            function_data, abi_resolution = self._resolve_function_data_with_abi_status(selector)
+            selector_abi_resolution[selector.lower()] = abi_resolution
+            if function_data:
+                selector_function_data[selector.lower()] = function_data
+            if abi_resolution.get("status") == "merged_abi":
+                abi_backed_selectors.append(selector)
+            else:
+                descriptor_fallback_selectors.append(selector)
+
+        logger.info(
+            "Selector ABI coverage: %s/%s selector(s) found in merged ABI",
+            len(abi_backed_selectors),
+            len(selectors),
+        )
+        if descriptor_fallback_selectors:
+            logger.error(
+                "Selectors not found in merged ABI (descriptor fallback only): %s",
+                descriptor_fallback_selectors,
+            )
 
         # Analyze each selector
         results = {
@@ -308,6 +334,9 @@ class AnalyzerPipelineSetupMixin:
             "deployments": deployments,
             "abi": abi,
             "selectors": selectors,
+            "abi_backed_selectors": abi_backed_selectors,
+            "selector_abi_resolution": selector_abi_resolution,
+            "selector_function_data": selector_function_data,
             "results": results,
             "prepared_inputs_data": prepared_inputs_data,
         }

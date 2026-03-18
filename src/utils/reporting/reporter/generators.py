@@ -134,7 +134,7 @@ def generate_summary_file(results: dict, summary_file: Path):
         audit_report_detailed = selector_data.get("audit_report_detailed", "")
         if not audit_report_detailed:
             audit_report_detailed = selector_data.get("audit_report", "")
-
+        audit_report_json = selector_data.get("audit_report_json") or {}
         # Extract coverage and missing parameters info
         transactions = selector_data.get("transactions", [])
 
@@ -155,7 +155,26 @@ def generate_summary_file(results: dict, summary_file: Path):
             missing_params = [p for p in decoded_input.keys() if p not in shown_fields and p not in hidden_fields]
 
             # Extract key information from AI audit report (using detailed report)
-            if audit_report_detailed:
+            if audit_report_json:
+                overall_assessment = audit_report_json.get("overall_assessment") or {}
+                security_risk = overall_assessment.get("security_risk") or {}
+                coverage_info = overall_assessment.get("coverage_score") or {}
+                risk_level = security_risk.get("level") or "Unknown"
+                coverage_score = coverage_info.get("score", "N/A")
+                critical_issues_from_ai = [
+                    c.get("issue", c) if isinstance(c, dict) else str(c)
+                    for c in audit_report_json.get("critical_issues", [])
+                ]
+                ai_missing_params = [
+                    m.get("parameter", m) if isinstance(m, dict) else str(m)
+                    for m in audit_report_json.get("missing_parameters", [])
+                ]
+                display_issues_from_ai = [
+                    d.get("issue", d) if isinstance(d, dict) else str(d)
+                    for d in audit_report_json.get("display_issues", [])
+                ]
+                recommendations = audit_report_json.get("recommendations", {})
+            elif audit_report_detailed:
                 risk_level = extract_risk_level(audit_report_detailed)
                 coverage_score = extract_coverage_score(audit_report_detailed)
                 critical_issues_from_ai = extract_critical_issues(audit_report_detailed)
@@ -203,7 +222,26 @@ def generate_summary_file(results: dict, summary_file: Path):
         else:
             # Selector without transactions - still include in report
             # Extract information from AI audit report only
-            if audit_report_detailed:
+            if audit_report_json:
+                overall_assessment = audit_report_json.get("overall_assessment") or {}
+                security_risk = overall_assessment.get("security_risk") or {}
+                coverage_info = overall_assessment.get("coverage_score") or {}
+                risk_level = security_risk.get("level") or "Unknown"
+                coverage_score = coverage_info.get("score", "N/A")
+                critical_issues_from_ai = [
+                    c.get("issue", c) if isinstance(c, dict) else str(c)
+                    for c in audit_report_json.get("critical_issues", [])
+                ]
+                ai_missing_params = [
+                    m.get("parameter", m) if isinstance(m, dict) else str(m)
+                    for m in audit_report_json.get("missing_parameters", [])
+                ]
+                display_issues_from_ai = [
+                    d.get("issue", d) if isinstance(d, dict) else str(d)
+                    for d in audit_report_json.get("display_issues", [])
+                ]
+                recommendations = audit_report_json.get("recommendations", {})
+            elif audit_report_detailed:
                 risk_level = extract_risk_level(audit_report_detailed)
                 coverage_score = extract_coverage_score(audit_report_detailed)
                 critical_issues_from_ai = extract_critical_issues(audit_report_detailed)

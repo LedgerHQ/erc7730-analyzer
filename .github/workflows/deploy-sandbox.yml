@@ -18,6 +18,7 @@
 name: Deploy to Sandbox
 
 on:
+  workflow_dispatch:
   workflow_run:
     workflows: ["CI"]
     branches: [main]
@@ -30,7 +31,7 @@ permissions:
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
     environment: sandbox
 
     steps:
@@ -75,7 +76,8 @@ jobs:
             fi
           }
 
-          sync_secret "OPENAI_API_KEY"    "erc7730-analyzer/$ENV/openai-api-key"
+          sync_secret "OPENAI_API_KEY"    "erc7730-analyzer/$ENV/openai-api-key"Removed "Get AWS Account ID" step -- no longer needed
+
           sync_secret "ETHERSCAN_API_KEY" "erc7730-analyzer/$ENV/etherscan-api-key"
           sync_secret "COREDAO_API_KEY"   "erc7730-analyzer/$ENV/coredao-api-key"
           sync_secret "INFURA_RPC_KEY"    "erc7730-analyzer/$ENV/infura-rpc-key"

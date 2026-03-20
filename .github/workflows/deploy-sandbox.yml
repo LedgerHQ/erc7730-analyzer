@@ -1,0 +1,269 @@
+# Deploys erc7730-analyzer to AWS App Runner (sandbox) after a successful CI run.
+#
+# Required GitHub secrets (sandbox environment):
+#   AWS_ROLE_ARN           - IAM role ARN (Terraform output: deploy_role_arn)
+#   APPRUNNER_SERVICE_ARN  - App Runner service ARN (Terraform output: service_arn)
+#   OPENAI_API_KEY         - OpenAI API key
+#   ETHERSCAN_API_KEY      - Etherscan API key
+#   COREDAO_API_KEY        - (optional) CoreDAO API key
+#   INFURA_RPC_KEY         - (optional) Infura RPC key
+#
+# Required GitHub variables (sandbox environment):
+#   AWS_REGION             - e.g. eu-west-3
+#   ENVIRONMENT            - e.g. sandbox
+#
+# Infrastructure is managed by Terraform in donjon-infra:
+#   environments/sandbox/projects/erc7730-analyzer/
+
+name: Deploy to Sandbox
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    branches: [main]
+    types: [completed]
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    environment: sandbox
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Sync secrets to AWS Secrets Manager
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          ETHERSCAN_API_KEY: ${{ secrets.ETHERSCAN_API_KEY }}
+          COREDAO_API_KEY: ${{ secrets.COREDAO_API_KEY }}
+          INFURA_RPC_KEY: ${{ secrets.INFURA_RPC_KEY }}
+        run: |
+          echo "Syncing secrets from GitHub to AWS Secrets Manager..."
+
+          ENV="${{ vars.ENVIRONMENT || 'sandbox' }}"
+
+          sync_secret() {
+            local gh_var="$1"
+            local aws_id="$2"
+            local value="${!gh_var}"
+
+            if [ -n "$value" ] && [ "$value" != "PLACEHOLDER" ]; then
+              echo "Updating secret: $aws_id"
+              if ! aws secretsmanager put-secret-value --secret-id "$aws_id" --secret-string "$value" 2>/dev/null; then
+                echo "Secret doesn't exist, creating: $aws_id"
+                aws secretsmanager create-secret --name "$aws_id" --secret-string "$value" \
+                  || echo "::warning::Failed to create $aws_id"
+              fi
+            else
+              echo "::notice::Skipping $gh_var - not set or placeholder"
+            fi
+          }
+
+          sync_secret "OPENAI_API_KEY"    "erc7730-analyzer/$ENV/openai-api-key"
+          sync_secret "ETHERSCAN_API_KEY" "erc7730-analyzer/$ENV/etherscan-api-key"
+          sync_secret "COREDAO_API_KEY"   "erc7730-analyzer/$ENV/coredao-api-key"
+          sync_secret "INFURA_RPC_KEY"    "erc7730-analyzer/$ENV/infura-rpc-key"
+
+          echo "Secrets sync complete"
+
+      - name: Build, tag, and push image to Amazon ECR
+        id: build-image
+        env:
+          REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          docker build \
+            -t $REGISTRY/erc7730-analyzer:$IMAGE_TAG \
+            -t $REGISTRY/erc7730-analyzer:latest .
+          docker push $REGISTRY/erc7730-analyzer:$IMAGE_TAG
+          docker push $REGISTRY/erc7730-analyzer:latest
+          IMAGE_DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' $REGISTRY/erc7730-analyzer:$IMAGE_TAG | cut -d@ -f2)
+          echo "digest=$IMAGE_DIGEST" >> $GITHUB_OUTPUT
+
+      - name: Update App Runner service
+        env:
+          REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_DIGEST: ${{ steps.build-image.outputs.digest }}
+          SERVICE_ARN: ${{ secrets.APPRUNNER_SERVICE_ARN }}
+          AWS_REGION: ${{ vars.AWS_REGION }}
+          ENV: ${{ vars.ENVIRONMENT || 'sandbox' }}
+          DEPLOY_SHA: ${{ github.sha }}
+        run: |
+          if [ -z "$SERVICE_ARN" ]; then
+            echo "::notice::APPRUNNER_SERVICE_ARN not set - skipping App Runner update (bootstrap mode)"
+            exit 0
+          fi
+
+          resolve_secret() {
+            local name="$1"
+            local arn
+            arn=$(aws secretsmanager describe-secret --secret-id "$name" --query "ARN" --output text)
+            echo "${arn}"
+          }
+
+          SECRET_NS="erc7730-analyzer/${ENV}"
+          OPENAI_SECRET=$(resolve_secret "${SECRET_NS}/openai-api-key")
+          ETHERSCAN_SECRET=$(resolve_secret "${SECRET_NS}/etherscan-api-key")
+
+          # Optional secrets — only include if they exist in Secrets Manager
+          COREDAO_SECRET=$(resolve_secret "${SECRET_NS}/coredao-api-key" 2>/dev/null || true)
+          INFURA_SECRET=$(resolve_secret "${SECRET_NS}/infura-rpc-key" 2>/dev/null || true)
+
+          # Build the secrets map, adding optional entries only if present
+          SECRETS_JSON=$(jq -n \
+            --arg openai "$OPENAI_SECRET" \
+            --arg etherscan "$ETHERSCAN_SECRET" \
+            '{
+              OPENAI_API_KEY: $openai,
+              ETHERSCAN_API_KEY: $etherscan
+            }')
+
+          if [ -n "$COREDAO_SECRET" ] && [ "$COREDAO_SECRET" != "None" ]; then
+            SECRETS_JSON=$(echo "$SECRETS_JSON" | jq --arg v "$COREDAO_SECRET" '. + {COREDAO_API_KEY: $v}')
+          fi
+          if [ -n "$INFURA_SECRET" ] && [ "$INFURA_SECRET" != "None" ]; then
+            SECRETS_JSON=$(echo "$SECRETS_JSON" | jq --arg v "$INFURA_SECRET" '. + {INFURA_RPC_KEY: $v}')
+          fi
+
+          SOURCE_CONFIG=$(jq -n \
+            --arg image "$REGISTRY/erc7730-analyzer@$IMAGE_DIGEST" \
+            --arg deploy_sha "$DEPLOY_SHA" \
+            --argjson secrets "$SECRETS_JSON" \
+            '{
+              ImageRepository: {
+                ImageIdentifier: $image,
+                ImageRepositoryType: "ECR",
+                ImageConfiguration: {
+                  Port: "8080",
+                  StartCommand: "uv run analyze_7730_service",
+                  RuntimeEnvironmentVariables: {
+                    SERVICE_PORT: "8080",
+                    ALLOWED_REPOS: "LedgerHQ/clear-signing-erc7730-registry",
+                    DEPLOY_SHA: $deploy_sha
+                  },
+                  RuntimeEnvironmentSecrets: $secrets
+                }
+              },
+              AutoDeploymentsEnabled: false
+            }')
+
+          aws apprunner update-service \
+            --service-arn "$SERVICE_ARN" \
+            --source-configuration "$SOURCE_CONFIG"
+
+      - name: Wait for deployment
+        env:
+          SERVICE_ARN: ${{ secrets.APPRUNNER_SERVICE_ARN }}
+        run: |
+          if [ -z "$SERVICE_ARN" ]; then exit 0; fi
+          echo "Waiting for App Runner deployment to complete..."
+          for i in {1..60}; do
+            STATUS=$(aws apprunner describe-service --service-arn "$SERVICE_ARN" \
+              --query 'Service.Status' --output text)
+            echo "Service status: $STATUS (attempt $i/60)"
+            if [ "$STATUS" = "RUNNING" ]; then
+              echo "Deployment complete"
+              exit 0
+            elif [ "$STATUS" = "CREATE_FAILED" ] || [ "$STATUS" = "DELETE_FAILED" ] || [ "$STATUS" = "DELETED" ]; then
+              echo "::error::Deployment failed with status: $STATUS"
+              exit 1
+            fi
+            sleep 10
+          done
+          echo "::warning::Deployment timed out (status: $STATUS)"
+
+      - name: Verify deployment
+        if: always()
+        env:
+          SERVICE_ARN: ${{ secrets.APPRUNNER_SERVICE_ARN }}
+        run: |
+          if [ -z "$SERVICE_ARN" ]; then
+            echo "::notice::Images pushed to ECR. Run Terraform to create App Runner service, then add APPRUNNER_SERVICE_ARN secret."
+            exit 0
+          fi
+
+          echo "=== Service Status ==="
+          aws apprunner describe-service --service-arn "$SERVICE_ARN" \
+            --query 'Service.{Status:Status,URL:ServiceUrl,UpdatedAt:UpdatedAt}' --output table
+
+          echo ""
+          echo "=== Recent Operations ==="
+          aws apprunner list-operations --service-arn "$SERVICE_ARN" \
+            --query 'OperationSummaryList[0:5].{Id:Id,Type:Type,Status:Status,StartedAt:StartedAt,EndedAt:EndedAt}' \
+            --output table
+
+          LATEST_OP_STATUS=$(aws apprunner list-operations --service-arn "$SERVICE_ARN" \
+            --query 'OperationSummaryList[0].Status' --output text)
+          LATEST_OP_TYPE=$(aws apprunner list-operations --service-arn "$SERVICE_ARN" \
+            --query 'OperationSummaryList[0].Type' --output text)
+
+          DEPLOY_FAILED=false
+          if [ "$LATEST_OP_STATUS" = "FAILED" ] || [ "$LATEST_OP_STATUS" = "ROLLBACK_SUCCEEDED" ] || [ "$LATEST_OP_STATUS" = "ROLLBACK_FAILED" ]; then
+            DEPLOY_FAILED=true
+          fi
+          if [ "$LATEST_OP_TYPE" = "ROLLBACK_COMPLETED" ]; then
+            DEPLOY_FAILED=true
+          fi
+
+          if [ "$DEPLOY_FAILED" = "true" ]; then
+            echo ""
+            echo "::error::Deployment failed — latest operation: type=$LATEST_OP_TYPE status=$LATEST_OP_STATUS"
+
+            # ARN format: arn:aws:apprunner:{region}:{account}:service/{name}/{id}
+            SVC_PATH=$(echo "$SERVICE_ARN" | sed 's|.*:service/||')
+            SVC_NAME=$(echo "$SVC_PATH" | cut -d/ -f1)
+            SVC_ID=$(echo "$SVC_PATH" | cut -d/ -f2)
+            LOG_GROUP="/aws/apprunner/${SVC_NAME}/${SVC_ID}/service"
+
+            echo ""
+            echo "=== Last 20 App Runner Service Events ==="
+            aws logs get-log-events \
+              --log-group-name "$LOG_GROUP" \
+              --log-stream-name "events" \
+              --limit 20 \
+              --query 'events[].message' \
+              --output text 2>&1 || echo "::warning::Could not fetch service logs"
+
+            echo ""
+            echo "=== Last 20 Application Logs ==="
+            APP_LOG_GROUP="/aws/apprunner/${SVC_NAME}/${SVC_ID}/application"
+            LATEST_STREAM=$(aws logs describe-log-streams \
+              --log-group-name "$APP_LOG_GROUP" \
+              --order-by LastEventTime --descending --limit 1 \
+              --query 'logStreams[0].logStreamName' --output text 2>/dev/null)
+            if [ -n "$LATEST_STREAM" ] && [ "$LATEST_STREAM" != "None" ]; then
+              aws logs get-log-events \
+                --log-group-name "$APP_LOG_GROUP" \
+                --log-stream-name "$LATEST_STREAM" \
+                --limit 20 \
+                --query 'events[].message' \
+                --output text 2>&1 || echo "::warning::Could not fetch application logs"
+            else
+              echo "No application log streams found"
+            fi
+
+            exit 1
+          fi
+
+          echo ""
+          echo "=== Testing Health Endpoint ==="
+          SERVICE_URL=$(aws apprunner describe-service --service-arn "$SERVICE_ARN" \
+            --query 'Service.ServiceUrl' --output text)
+          echo "URL: https://$SERVICE_URL/health"
+          curl -sf "https://$SERVICE_URL/health" || echo "::warning::Failed to reach health endpoint"

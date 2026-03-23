@@ -1,4 +1,10 @@
 ---
+# Deploy workflow for the GitHub **sandbox** environment only.
+#
+# Configure secrets and variables under: Settings → Environments → sandbox.
+# For jobs that reference `environment: sandbox`, GitHub resolves `secrets.*` and
+# `vars.*` with **environment** values overriding repository/org values for the
+# same name—avoid relying on repo-level copies for sandbox-specific config.
 name: Deploy to Sandbox
 
 on:
@@ -9,7 +15,7 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: deploy-${{ vars.ENVIRONMENT || 'sandbox' }}
+  group: deploy-sandbox
   cancel-in-progress: false
 
 permissions:
@@ -23,8 +29,10 @@ jobs:
     if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
     env:
       DEPLOY_REF_SHA: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
+      # AWS Secrets Manager name prefix (must match Terraform); fixed for this workflow.
+      AWS_SM_NAMESPACE: erc7730-analyzer/sandbox
     environment:
-      name: ${{ vars.ENVIRONMENT || 'sandbox' }}
+      name: sandbox
 
     steps:
       - name: Checkout
@@ -53,16 +61,15 @@ jobs:
           COREDAO_API_KEY: ${{ secrets.COREDAO_API_KEY }}
           INFURA_RPC_KEY: ${{ secrets.INFURA_RPC_KEY }}
           GATING_TOKEN: ${{ secrets.GATING_TOKEN }}
-          GITHUB_TOKEN_ELF: ${{ secrets.GITHUB_TOKEN_ELF }}
+          GH_TOKEN_ELF: ${{ secrets.GH_TOKEN_ELF }}
           ALLOWED_REPOS: ${{ secrets.ALLOWED_REPOS }}
           SNOWFLAKE_USER: ${{ secrets.SNOWFLAKE_USER }}
           SNOWFLAKE_INSTANCE: ${{ secrets.SNOWFLAKE_INSTANCE }}
           SNOWFLAKE_WAREHOUSE: ${{ secrets.SNOWFLAKE_WAREHOUSE }}
           SNOWFLAKE_ROLE: ${{ secrets.SNOWFLAKE_ROLE }}
           SNOWFLAKE_PRIVATE_KEY: ${{ secrets.SNOWFLAKE_PRIVATE_KEY }}
-          ENVIRONMENT_NAME: ${{ vars.ENVIRONMENT || 'sandbox' }}
         run: |
-          NS="erc7730-analyzer/${ENVIRONMENT_NAME}"
+          NS="${AWS_SM_NAMESPACE}"
 
           sync_secret() {
             local value="$1"
@@ -86,7 +93,7 @@ jobs:
           sync_secret "$COREDAO_API_KEY"    "${NS}/coredao-api-key"
           sync_secret "$INFURA_RPC_KEY"     "${NS}/infura-rpc-key"
           sync_secret "$GATING_TOKEN"       "${NS}/gating-token"
-          sync_secret "$GITHUB_TOKEN_ELF"   "${NS}/github-token"
+          sync_secret "$GH_TOKEN_ELF"   "${NS}/github-token"
           sync_secret "$ALLOWED_REPOS"      "${NS}/allowed-repos"
 
           # Snowflake credentials are packed into a single JSON blob
@@ -132,7 +139,6 @@ jobs:
           IMAGE_DIGEST: ${{ steps.build-image.outputs.digest }}
           SERVICE_ARN: ${{ secrets.APPRUNNER_SERVICE_ARN }}
           AWS_REGION: ${{ vars.AWS_REGION }}
-          ENV: ${{ vars.ENVIRONMENT || 'sandbox' }}
           DEPLOY_SHA: ${{ env.DEPLOY_REF_SHA }}
           LLM_MODEL: ${{ vars.LLM_MODEL || 'gpt-5.4' }}
           ANALYSIS_MODE: ${{ vars.ANALYSIS_MODE || 'multi' }}
@@ -149,7 +155,7 @@ jobs:
               --secret-id "$1" --query "ARN" --output text
           }
 
-          NS="erc7730-analyzer/${ENV}"
+          NS="${AWS_SM_NAMESPACE}"
 
           SOURCE_CONFIG=$(jq -n \
             --arg image               "$REGISTRY/erc7730-analyzer@$IMAGE_DIGEST" \

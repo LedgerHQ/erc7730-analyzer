@@ -8,6 +8,10 @@ on:
     types: [completed]
   workflow_dispatch:
 
+concurrency:
+  group: deploy-${{ vars.ENVIRONMENT || 'sandbox' }}
+  cancel-in-progress: false
+
 permissions:
   id-token: write
   contents: read
@@ -15,23 +19,28 @@ permissions:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    env:
+      DEPLOY_REF_SHA: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
     environment:
       name: ${{ vars.ENVIRONMENT || 'sandbox' }}
 
     steps:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ env.DEPLOY_REF_SHA }}
 
       - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@e3dd6a429d7300a6fae335093e30e7c6015b9be5 # v4.3.1
+        uses: aws-actions/configure-aws-credentials@8df5847569e6427dd6c4fb1cf565c83acfa8afa7 # v6.0.0
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ vars.AWS_REGION }}
 
       - name: Login to Amazon ECR
         id: login-ecr
-        uses: aws-actions/amazon-ecr-login@062b18b96a7aff071d4dc91bc00c4c1a7945b076 # v2.0.1
+        uses: aws-actions/amazon-ecr-login@c962da2960ed15f492addc26fffa274485265950 # v2.0.2
 
       # ---------------------------------------------------------------
       # Sync secrets from GitHub Secrets → AWS Secrets Manager
@@ -51,9 +60,9 @@ jobs:
           SNOWFLAKE_WAREHOUSE: ${{ secrets.SNOWFLAKE_WAREHOUSE }}
           SNOWFLAKE_ROLE: ${{ secrets.SNOWFLAKE_ROLE }}
           SNOWFLAKE_PRIVATE_KEY: ${{ secrets.SNOWFLAKE_PRIVATE_KEY }}
+          ENVIRONMENT_NAME: ${{ vars.ENVIRONMENT || 'sandbox' }}
         run: |
-          ENV="${{ vars.ENVIRONMENT || 'sandbox' }}"
-          NS="erc7730-analyzer/${ENV}"
+          NS="erc7730-analyzer/${ENVIRONMENT_NAME}"
 
           sync_secret() {
             local value="$1"
@@ -103,15 +112,15 @@ jobs:
         id: build-image
         env:
           REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-          IMAGE_TAG: ${{ github.sha }}
+          IMAGE_TAG: ${{ env.DEPLOY_REF_SHA }}
         run: |
           docker build \
-            -t $REGISTRY/erc7730-analyzer:$IMAGE_TAG \
-            -t $REGISTRY/erc7730-analyzer:latest .
-          docker push $REGISTRY/erc7730-analyzer:$IMAGE_TAG
-          docker push $REGISTRY/erc7730-analyzer:latest
+            -t "${REGISTRY}/erc7730-analyzer:${IMAGE_TAG}" \
+            -t "${REGISTRY}/erc7730-analyzer:latest" .
+          docker push "${REGISTRY}/erc7730-analyzer:${IMAGE_TAG}"
+          docker push "${REGISTRY}/erc7730-analyzer:latest"
           IMAGE_DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' \
-            $REGISTRY/erc7730-analyzer:$IMAGE_TAG | cut -d@ -f2)
+            "${REGISTRY}/erc7730-analyzer:${IMAGE_TAG}" | cut -d@ -f2)
           echo "digest=$IMAGE_DIGEST" >> $GITHUB_OUTPUT
 
       # ---------------------------------------------------------------
@@ -124,7 +133,7 @@ jobs:
           SERVICE_ARN: ${{ secrets.APPRUNNER_SERVICE_ARN }}
           AWS_REGION: ${{ vars.AWS_REGION }}
           ENV: ${{ vars.ENVIRONMENT || 'sandbox' }}
-          DEPLOY_SHA: ${{ github.sha }}
+          DEPLOY_SHA: ${{ env.DEPLOY_REF_SHA }}
           LLM_MODEL: ${{ vars.LLM_MODEL || 'gpt-5.4' }}
           ANALYSIS_MODE: ${{ vars.ANALYSIS_MODE || 'multi' }}
           LLM_REASONING_EFFORT: ${{ vars.LLM_REASONING_EFFORT || 'high' }}
@@ -213,16 +222,17 @@ jobs:
             if [ "$STATUS" = "RUNNING" ]; then
               echo "Deployment complete"
               exit 0
-            elif [[ "$STATUS" =~ ^(CREATE_FAILED|DELETE_FAILED|DELETED)$ ]]; then
+            elif [[ "$STATUS" =~ ^(CREATE_FAILED|UPDATE_FAILED|DELETE_FAILED|DELETED)$ ]]; then
               echo "::error::Deployment failed: $STATUS"
               exit 1
             fi
             sleep 10
           done
-          echo "::warning::Deployment timed out (status: $STATUS)"
+          echo "::error::Deployment timed out (status: $STATUS)"
+          exit 1
 
       - name: Verify deployment
-        if: always()
+        if: ${{ !cancelled() }}
         env:
           SERVICE_ARN: ${{ secrets.APPRUNNER_SERVICE_ARN }}
         run: |

@@ -76,13 +76,6 @@ COPY pyproject.toml uv.lock README.md ./
 COPY src/ ./src/
 RUN uv sync --frozen --no-dev
 
-# ---------- Node deps (migration script) ----------
-COPY package.json package-lock.json ./
-RUN npm ci --omit=dev 2>/dev/null || true
-
-# ---------- Scripts ----------
-COPY scripts/ ./scripts/
-
 # ---------- Pre-built device-sdk-ts ----------
 COPY --from=dmk-builder  /build  /data/screenshots/device-sdk-ts
 

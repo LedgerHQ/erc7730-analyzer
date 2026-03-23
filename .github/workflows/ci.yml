@@ -45,6 +45,9 @@ jobs:
           fetch-depth: 0
 
       - name: Validate commit messages
+        env:
+          BASE_REF: ${{ github.base_ref }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           echo "Checking commit messages for semantic format..."
           echo ""
@@ -60,7 +63,7 @@ jobs:
             else
               echo "✅ Valid:   $msg"
             fi
-          done < <(git log --format='%s' origin/${{ github.base_ref }}..${{ github.event.pull_request.head.sha }})
+          done < <(git log --format='%s' "origin/${BASE_REF}..${HEAD_SHA}")
 
           echo ""
           if [ "$FAILED" -eq 1 ]; then

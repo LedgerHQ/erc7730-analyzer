@@ -32,14 +32,14 @@ FROM node:20-bookworm-slim AS dmk-builder
 ARG DMK_REPO
 ARG DMK_REF
 
-RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates \
+RUN apt-get update -qq && apt-get install -qq -y --no-install-recommends git ca-certificates \
     && rm -rf /var/lib/apt/lists/* \
-    && npm install -g pnpm@9
+    && npm install -g --progress=false --loglevel=warn pnpm@9
 
 WORKDIR /build
-RUN git clone --depth 1 --branch ${DMK_REF} \
+RUN git clone --quiet --depth 1 --branch ${DMK_REF} \
         https://github.com/${DMK_REPO}.git . \
-    && pnpm install --frozen-lockfile \
+    && pnpm install --reporter=silent --no-color --frozen-lockfile \
     && pnpm build:libs
 
 RUN printf '{\n  "repo": "%s",\n  "ref": "%s"\n}\n' \
@@ -65,7 +65,7 @@ COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 
 WORKDIR /app
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get update -qq && apt-get install -qq -y --no-install-recommends \
         ca-certificates \
         curl \
         git \
@@ -74,7 +74,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # ---------- Python deps ----------
 COPY pyproject.toml uv.lock README.md ./
 COPY src/ ./src/
-RUN uv sync --frozen --no-dev
+RUN uv sync --frozen --no-dev --no-progress --quiet
 
 # ---------- Pre-built device-sdk-ts ----------
 COPY --from=dmk-builder  /build  /data/screenshots/device-sdk-ts

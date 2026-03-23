@@ -24,16 +24,17 @@ class TransactionFetcherCoreAggregationMixin:
         window_size: int = 10000,
         page_size: int = 1000,
         max_retries: int = 3,
-        payable_selectors: set = None,
+        payable_selectors: set | None = None,
+        skip_snowflake: bool = False,
     ) -> dict[str, list[dict[str, Any]]]:
         """
         Efficiently fetch transactions for MULTIPLE selectors at once.
         Fetches each Etherscan page ONCE and distributes matches to all selectors.
 
-        For payable functions, tries to fetch diverse transaction samples:
-        - At least 1 transaction with msg.value > 0 (native ETH transfer)
-        - At least 1 transaction with msg.value = 0 (ERC20 transfer)
-        If both types aren't available, uses whatever transactions are found.
+        Tries to fetch diverse transaction samples:
+        - Prefer distinct top-level senders first
+        - For payable functions, also try to keep both msg.value > 0 and msg.value = 0
+        If those ideals are unavailable, uses whatever transactions are found.
 
         Args:
             contract_address: Contract address
@@ -44,6 +45,7 @@ class TransactionFetcherCoreAggregationMixin:
             page_size: Number of transactions per page
             max_retries: Maximum retry attempts per request
             payable_selectors: Set of selectors that are payable functions
+            skip_snowflake: Skip Snowflake and use explorer fallbacks only
 
         Returns:
             Dictionary mapping selector -> list of transaction dictionaries
@@ -53,11 +55,59 @@ class TransactionFetcherCoreAggregationMixin:
 
         # Ensure chain_id is an int for dictionary lookups
         chain_id = int(chain_id)
+        normalized_selectors = [s.lower() for s in selectors]
         has_blockscout = chain_id in BLOCKSCOUT_URLS
+
+        def merge_results(
+            base: dict[str, list[dict[str, Any]]],
+            extra: dict[str, list[dict[str, Any]]],
+        ) -> dict[str, list[dict[str, Any]]]:
+            merged: dict[str, list[dict[str, Any]]] = {selector: list(base.get(selector, [])) for selector in normalized_selectors}
+            for selector in normalized_selectors:
+                seen: set[str] = set()
+                combined: list[dict[str, Any]] = []
+                for tx in [*merged.get(selector, []), *extra.get(selector, [])]:
+                    tx_hash = str(tx.get("hash") or "").lower()
+                    dedupe_key = tx_hash or (
+                        f"{tx.get('input', '')}|{tx.get('value', '')}|{tx.get('blockNumber', '')}|{tx.get('timeStamp', '')}"
+                    )
+                    if dedupe_key in seen:
+                        continue
+                    seen.add(dedupe_key)
+                    combined.append(tx)
+                    if len(combined) >= per_selector:
+                        break
+                merged[selector] = combined
+            return merged
+
+        combined_result = {selector: [] for selector in normalized_selectors}
+        selectors_to_fetch = list(normalized_selectors)
+        if not skip_snowflake:
+            snowflake_result = self._fetch_transactions_from_snowflake(
+                contract_address=contract_address,
+                selectors=selectors,
+                chain_id=chain_id,
+                per_selector=per_selector,
+                payable_selectors=payable_selectors,
+            )
+            if snowflake_result is not None:
+                combined_result = merge_results(combined_result, snowflake_result)
+                if any(len(txs) > 0 for txs in combined_result.values()):
+                    self.api_type_per_chain[chain_id] = "Snowflake"
+                    logger.info(
+                        "Snowflake query succeeded for chain %s; using Snowflake results without explorer fallback",
+                        chain_id,
+                    )
+                else:
+                    logger.info(
+                        "Snowflake query succeeded for chain %s but returned no matching transactions; skipping explorer fallback",
+                        chain_id,
+                    )
+                return combined_result
 
         if not self.etherscan_api_key and not has_blockscout:
             logger.warning("No block explorer API key provided, cannot fetch transactions")
-            return {s: [] for s in selectors}
+            return combined_result if any(len(txs) > 0 for txs in combined_result.values()) else {s: [] for s in selectors}
         if not self.etherscan_api_key and has_blockscout:
             logger.info("No explorer API key provided; using Blockscout-only transaction fallback for chain %s", chain_id)
 
@@ -75,7 +125,7 @@ class TransactionFetcherCoreAggregationMixin:
 
         if not api_sequence:
             logger.warning("No supported transaction-history fallback is available for chain %s", chain_id)
-            return {s.lower(): [] for s in selectors}
+            return combined_result if any(len(txs) > 0 for txs in combined_result.values()) else {s.lower(): [] for s in selectors}
 
         # Try the preferred API first, then fallback as needed.
         for api_attempt, use_blockscout in enumerate(api_sequence):
@@ -87,13 +137,13 @@ class TransactionFetcherCoreAggregationMixin:
             if api_attempt > 0:
                 logger.info(f"Switching to {api_name} API for chain {chain_id}")
 
-            logger.info(f"Fetching transactions for {len(selectors)} selectors on chain {chain_id} using {api_name}")
+            logger.info(f"Fetching transactions for {len(selectors_to_fetch)} selectors on chain {chain_id} using {api_name}")
             if payable_selectors:
                 logger.info(f"  - {len(payable_selectors)} payable function(s) - will fetch diverse samples")
 
             result = self._fetch_transactions_with_api(
                 contract_address,
-                selectors,
+                selectors_to_fetch,
                 chain_id,
                 per_selector,
                 window_size,
@@ -105,9 +155,20 @@ class TransactionFetcherCoreAggregationMixin:
 
             # Check if we got any transactions
             if any(len(txs) > 0 for txs in result.values()):
+                combined_result = merge_results(combined_result, result)
+                selectors_to_fetch = [
+                    selector for selector in normalized_selectors if len(combined_result.get(selector, [])) < per_selector
+                ]
                 logger.info(f"✓ Successfully found transactions using {api_name}")
                 self.api_type_per_chain[chain_id] = api_name
-                return result
+                if not selectors_to_fetch:
+                    return combined_result
+                logger.info(
+                    "%s selector(s) still underfilled after %s; trying next fallback if available",
+                    len(selectors_to_fetch),
+                    api_name,
+                )
+                continue
 
             # No transactions found with this API
             logger.warning(f"No transactions found using {api_name} for chain {chain_id}")
@@ -124,6 +185,14 @@ class TransactionFetcherCoreAggregationMixin:
                 # This was Blockscout and it also failed
                 logger.info(f"Both Etherscan and Blockscout failed for chain {chain_id}")
                 break
+
+        if any(len(txs) > 0 for txs in combined_result.values()):
+            logger.warning(
+                "Returning partial transaction coverage for chain %s; %s selector(s) remain underfilled",
+                chain_id,
+                len([selector for selector in normalized_selectors if len(combined_result.get(selector, [])) < per_selector]),
+            )
+            return combined_result
 
         logger.warning(f"No transactions found for any selector on chain {chain_id}")
         return {s.lower(): [] for s in selectors}

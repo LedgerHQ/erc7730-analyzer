@@ -9,7 +9,7 @@ Usage from CI::
 Local dev (against --dev server)::
 
     python -m service.client \
-        --service-url http://localhost:8730 \
+        --service-url http://localhost:8080 \
         --descriptor tests/curve.json \
         --analysis-mode multi \
         --enable-screenshots \
@@ -178,7 +178,7 @@ Examples:
 
   # Local dev (against a --dev server):
   python -m service.client \\
-      --service-url http://localhost:8730 \\
+      --service-url http://localhost:8080 \\
       --descriptor tests/curve.json \\
       --analysis-mode multi \\
       --enable-screenshots \\
@@ -259,8 +259,9 @@ Examples:
         auth_token=token,
     )
 
-    # Write reports to output/
-    output_dir = Path("output")
+    # Write reports to output/ relative to the project root (not CWD)
+    project_root = Path(__file__).resolve().parent.parent.parent
+    output_dir = project_root / "output"
     output_dir.mkdir(exist_ok=True)
 
     protocol = report.get("protocol", "unknown")

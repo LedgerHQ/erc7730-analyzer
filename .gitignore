@@ -11,9 +11,12 @@ wheels/
 .idea/
 .env
 .env.local
-output/
+**/output/
 test/
-tests/*
+tests/
+testing/
+benchmark/
+scripts/
 !tests/benchmark/
 tests/benchmark/*
 !tests/benchmark/raw
@@ -28,4 +31,9 @@ old/
 registry/
 Analysis/
 docs/
+node_modules/
 *.egg-info
+.pytest_cache/
+.ruff_cache/
+.cursor/
+.claude/

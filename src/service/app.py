@@ -140,6 +140,14 @@ async def _run_analysis(
         os.environ["COREDAO_API_KEY"] = cfg.coredao_api_key
     if cfg.infura_rpc_key:
         os.environ["INFURA_RPC_KEY"] = cfg.infura_rpc_key
+    if cfg.gating_token:
+        os.environ["GATING_TOKEN"] = cfg.gating_token
+    if cfg.github_token:
+        os.environ["GITHUB_TOKEN"] = cfg.github_token
+    if cfg.cal_service_url:
+        os.environ["CAL_SERVICE_URL"] = cfg.cal_service_url
+    if cfg.cal_service_staging:
+        os.environ["CAL_SERVICE_STAGING"] = cfg.cal_service_staging
 
     from utils.core import ERC7730Analyzer
 
@@ -294,10 +302,10 @@ async def analyze(
             ts = datetime.now().strftime("%Y%m%d_%H%M%S")
 
             summary_file = report_dir / f"FULL_REPORT_{context_id}_{ts}.md"
-            generate_summary_file(results, summary_file)
+            generate_summary_file(results, summary_file, inline_base64=True)
 
             criticals_file = report_dir / f"CRITICALS_{context_id}_{ts}.md"
-            generate_criticals_report(results, criticals_file)
+            generate_criticals_report(results, criticals_file, inline_base64=True)
 
             has_criticals = False
             if criticals_file.exists():

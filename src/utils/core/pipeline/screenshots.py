@@ -53,9 +53,7 @@ class AnalyzerPipelineScreenshotsMixin:
                 "chainId": int(contract_entry.get("chainId") or default_deployment.get("chainId", 1)),
             }
 
-            selector_keys = {str(key).lower() for key in selector_meta.keys()} | {
-                str(key).lower() for key in tx_by_selector.keys()
-            }
+            selector_keys = {str(key).lower() for key in selector_meta} | {str(key).lower() for key in tx_by_selector}
 
             for selector in selector_keys:
                 meta = selector_meta.get(selector) or selector_meta.get(selector.lower()) or {}
@@ -84,9 +82,10 @@ class AnalyzerPipelineScreenshotsMixin:
         )
 
         if not runner.is_available():
+            diagnostic = runner.availability_diagnostic()
             logger.warning(
-                "[SCREENSHOTS] Prerequisites not met (cs-tester, coin-apps, pnpm, or Docker missing). "
-                "Skipping screenshot capture."
+                "[SCREENSHOTS] Screenshot capture unavailable: %s. Skipping screenshot capture.",
+                diagnostic,
             )
             context["screenshot_data"] = {}
             return

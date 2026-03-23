@@ -5,7 +5,9 @@ from web3 import Web3
 
 from ....rpc_helpers import (
     etherscan_response_indicates_chain_unsupported,
+    is_etherscan_contract_endpoint_unsupported,
     is_etherscan_proxy_eth_call_unsupported,
+    mark_etherscan_contract_endpoint_unsupported,
     mark_etherscan_proxy_eth_call_unsupported,
 )
 from ..shared import BLOCKSCOUT_URLS, logger, resolve_rpc_url, rpc_eth_call
@@ -137,23 +139,26 @@ class SourceCodeFetchingProxyMixin:
 
             # Try Etherscan's built-in proxy detection
             try:
-                base_url_etherscan = f"https://api.etherscan.io/v2/api?chainid={chain_id}"
-                params = {
-                    "module": "contract",
-                    "action": "getsourcecode",
-                    "address": contract_address,
-                    "apikey": self.etherscan_api_key,
-                }
+                if not is_etherscan_contract_endpoint_unsupported(chain_id):
+                    base_url_etherscan = f"https://api.etherscan.io/v2/api?chainid={chain_id}"
+                    params = {
+                        "module": "contract",
+                        "action": "getsourcecode",
+                        "address": contract_address,
+                        "apikey": self.etherscan_api_key,
+                    }
 
-                response = requests.get(base_url_etherscan, params=params, timeout=10)
-                data = response.json()
+                    response = requests.get(base_url_etherscan, params=params, timeout=10)
+                    data = response.json()
 
-                if data.get("result") and len(data["result"]) > 0:
-                    result = data["result"][0]
-                    impl = result.get("Implementation")
-                    if impl:
-                        logger.info(f"Detected proxy via Etherscan, implementation: {impl}")
-                        return impl
+                    if etherscan_response_indicates_chain_unsupported(data):
+                        mark_etherscan_contract_endpoint_unsupported(chain_id)
+                    elif data.get("result") and len(data["result"]) > 0:
+                        result = data["result"][0]
+                        impl = result.get("Implementation")
+                        if impl:
+                            logger.info(f"Detected proxy via Etherscan, implementation: {impl}")
+                            return impl
             except Exception as e:
                 logger.debug(f"Etherscan proxy detection failed: {e}")
 
@@ -173,7 +178,7 @@ class SourceCodeFetchingProxyMixin:
                         implementations = data.get("implementations") or []
                         logger.info(f"  Blockscout returned {len(implementations)} implementation(s)")
                         if implementations and len(implementations) > 0:
-                            impl = implementations[0].get("address")
+                            impl = implementations[0].get("address") or implementations[0].get("address_hash")
                             if impl:
                                 logger.info(
                                     f"Detected proxy via Blockscout smart-contracts API, implementation: {impl}"
@@ -196,6 +201,13 @@ class SourceCodeFetchingProxyMixin:
         This is a heuristic approach when eth_call to facetAddress fails.
         """
         try:
+            if is_etherscan_contract_endpoint_unsupported(chain_id):
+                contract_name = self.get_contract_name_from_blockscout(contract_address, chain_id) or ""
+                if "diamond" in contract_name.lower():
+                    logger.info("Contract name from Blockscout suggests Diamond proxy pattern")
+                    return {"_is_diamond_but_unmapped": True}
+                return {}
+
             params = {
                 "module": "contract",
                 "action": "getsourcecode",
@@ -206,6 +218,14 @@ class SourceCodeFetchingProxyMixin:
             base_url = f"https://api.etherscan.io/v2/api?chainid={chain_id}"
             response = requests.get(base_url, params=params)
             data = response.json()
+
+            if etherscan_response_indicates_chain_unsupported(data):
+                mark_etherscan_contract_endpoint_unsupported(chain_id)
+                contract_name = self.get_contract_name_from_blockscout(contract_address, chain_id) or ""
+                if "diamond" in contract_name.lower():
+                    logger.info("Contract name from Blockscout suggests Diamond proxy pattern")
+                    return {"_is_diamond_but_unmapped": True}
+                return {}
 
             if data.get("result") and len(data["result"]) > 0:
                 result = data["result"][0]

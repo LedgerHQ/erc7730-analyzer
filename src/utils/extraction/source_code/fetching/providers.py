@@ -4,10 +4,34 @@ import json
 
 import requests
 
+from ....rpc_helpers import (
+    etherscan_response_indicates_chain_unsupported,
+    is_etherscan_contract_endpoint_unsupported,
+    mark_etherscan_contract_endpoint_unsupported,
+)
 from ..shared import BLOCKSCOUT_URLS, logger
 
 
 class SourceCodeFetchingProviderMixin:
+    def get_contract_name_from_blockscout(self, contract_address: str, chain_id: int) -> str | None:
+        """Get the deployed contract name from Blockscout when available."""
+        if chain_id not in BLOCKSCOUT_URLS or chain_id == 1116:
+            return None
+
+        try:
+            url = f"{BLOCKSCOUT_URLS[chain_id]}/api/v2/smart-contracts/{contract_address}"
+            response = requests.get(url, timeout=10)
+            response.raise_for_status()
+            data = response.json()
+            name = data.get("name")
+            if isinstance(name, str) and name.strip():
+                logger.debug("Contract name from Blockscout: %s", name)
+                return name.strip()
+        except Exception as e:
+            logger.debug(f"Failed to get contract name from Blockscout: {e}")
+
+        return None
+
     def fetch_source_from_sourcify(self, contract_address: str, chain_id: int) -> str | None:
         """
         Fetch source code from Sourcify.
@@ -58,6 +82,9 @@ class SourceCodeFetchingProviderMixin:
         Returns:
             Contract name or None
         """
+        if is_etherscan_contract_endpoint_unsupported(chain_id):
+            return self.get_contract_name_from_blockscout(contract_address, chain_id)
+
         try:
             base_url = f"https://api.etherscan.io/v2/api?chainid={chain_id}"
             params = {
@@ -70,6 +97,14 @@ class SourceCodeFetchingProviderMixin:
             response = requests.get(base_url, params=params, timeout=10)
             response.raise_for_status()
             data = response.json()
+
+            if etherscan_response_indicates_chain_unsupported(data):
+                mark_etherscan_contract_endpoint_unsupported(chain_id)
+                logger.info(
+                    "Etherscan contract metadata unsupported on chain %s; using Blockscout contract-name fallback",
+                    chain_id,
+                )
+                return self.get_contract_name_from_blockscout(contract_address, chain_id)
 
             if data["status"] == "1" and data.get("result"):
                 contract_name = data["result"][0].get("ContractName", "")
@@ -93,6 +128,9 @@ class SourceCodeFetchingProviderMixin:
         Returns:
             Combined source code or None
         """
+        if is_etherscan_contract_endpoint_unsupported(chain_id):
+            return self.fetch_source_from_blockscout(contract_address, chain_id)
+
         try:
             base_url = f"https://api.etherscan.io/v2/api?chainid={chain_id}"
             params = {
@@ -105,6 +143,14 @@ class SourceCodeFetchingProviderMixin:
             response = requests.get(base_url, params=params)
             response.raise_for_status()
             data = response.json()
+
+            if etherscan_response_indicates_chain_unsupported(data):
+                mark_etherscan_contract_endpoint_unsupported(chain_id)
+                logger.info(
+                    "Etherscan contract metadata unsupported on chain %s; using Blockscout source fallback",
+                    chain_id,
+                )
+                return self.fetch_source_from_blockscout(contract_address, chain_id)
 
             if data["status"] != "1" or not data.get("result"):
                 logger.debug("No source code found on Etherscan")

@@ -7,7 +7,7 @@ from typing import Any
 
 import requests
 
-from ...abi import ABI, fetch_contract_abi
+from ...abi import ABI, fetch_contract_abi, fetch_single_contract_abi
 from ...abi.merger import ABIMerger, merge_abis_from_deployments
 
 logger = logging.getLogger(__name__)
@@ -153,7 +153,7 @@ class AnalyzerPipelineSetupMixin:
         if not abi or not isinstance(abi, list) or len(abi) == 0:
             logger.info("No ABI from ERC-7730 file or ABI file, fetching from API...")
             # Fetch and merge ABIs from all deployments
-            abi, fetch_results, selector_sources = merge_abis_from_deployments(
+            abi, _fetch_results, selector_sources = merge_abis_from_deployments(
                 deployments, fetch_contract_abi, self.etherscan_api_key
             )
             # Store selector sources for efficient Diamond proxy source extraction
@@ -211,19 +211,8 @@ class AnalyzerPipelineSetupMixin:
                     total_functions = 0
                     for facet_addr in facet_addresses:
                         try:
-                            # Fetch ABI for this facet
-                            params = {
-                                "module": "contract",
-                                "action": "getabi",
-                                "address": facet_addr,
-                                "apikey": self.etherscan_api_key,
-                            }
-                            base_url = f"https://api.etherscan.io/v2/api?chainid={dep_chain_id}"
-                            response = requests.get(base_url, params=params, timeout=15)
-                            data = response.json()
-
-                            if data.get("status") == "1":
-                                facet_abi = json.loads(data["result"])
+                            facet_abi = fetch_single_contract_abi(facet_addr, dep_chain_id, self.etherscan_api_key)
+                            if facet_abi:
                                 func_count = len([item for item in facet_abi if item.get("type") == "function"])
                                 merger.add_abi(facet_abi, dep_chain_id, facet_addr, source_kind="facet")
                                 success_count += 1
@@ -231,8 +220,7 @@ class AnalyzerPipelineSetupMixin:
                                 logger.info(f"    ✓ {facet_addr[:10]}...: {func_count} functions")
                             else:
                                 fail_count += 1
-                                error_msg = data.get("message", data.get("result", "unknown error"))
-                                logger.warning(f"    ✗ {facet_addr[:10]}...: {error_msg}")
+                                logger.warning(f"    ✗ {facet_addr[:10]}...: ABI unavailable")
                         except Exception as e:
                             fail_count += 1
                             logger.warning(f"    ✗ {facet_addr[:10]}...: {e}")

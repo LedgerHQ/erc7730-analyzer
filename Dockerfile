@@ -1,32 +1,105 @@
 # syntax=docker/dockerfile:1
+# ===========================================================================
+# ERC-7730 Analyzer — production image
+#
+# Bakes the full analyzer + screenshot pipeline into a single image:
+#   - Python 3.12 + all analyzer deps
+#   - Node 20 + pnpm + device-sdk-ts (pre-built)
+#   - Runtime cache for Ethereum .elf app files fetched from app-ethereum CI
+#   - Docker CLI (for launching Speculos sibling containers)
+#
+# Build:
+#   docker build -t erc7730-analyzer .
+#
+# Run (service mode — default):
+#   docker run --rm -p 8080:8080 \
+#     -v /var/run/docker.sock:/var/run/docker.sock \
+#     --env-file .env  erc7730-analyzer
+#
+# Run (CLI mode):
+#   docker run --rm --env-file .env \
+#     erc7730-analyzer cli --erc7730_file /data/descriptor.json
+# ===========================================================================
+
+# ======================== build args ========================
+ARG DMK_REPO=LedgerHQ/device-sdk-ts
+ARG DMK_REF=develop
+ARG CS_DEVICE=stax
+
+# ---------- stage 1: build device-sdk-ts (public) ----------
+FROM node:20-bookworm-slim AS dmk-builder
+
+ARG DMK_REPO
+ARG DMK_REF
+
+RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates \
+    && rm -rf /var/lib/apt/lists/* \
+    && npm install -g pnpm@9
+
+WORKDIR /build
+RUN git clone --depth 1 --branch ${DMK_REF} \
+        https://github.com/${DMK_REPO}.git . \
+    && pnpm install --frozen-lockfile \
+    && pnpm build:libs
+
+RUN printf '{\n  "repo": "%s",\n  "ref": "%s"\n}\n' \
+        "${DMK_REPO}" "${DMK_REF}" \
+    > .erc7730_analyzer_dmk_ready.json
+
+# ---------- stage 2: grab docker CLI ----------
+FROM docker:cli AS docker_cli
+
+# ---------- final image ----------
 FROM python:3.12-slim
 
-# Install uv
+ARG CS_DEVICE
+
+# Docker CLI (Speculos sibling containers)
+COPY --from=docker_cli /usr/local/bin/docker /usr/local/bin/docker
+
+# Node.js 20 runtime + pnpm (cs-tester execution)
+COPY --from=dmk-builder /usr/local/ /usr/local/
+
+# uv
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 
-# Set working directory
 WORKDIR /app
 
-# Copy project metadata + lock files
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates \
+        curl \
+        git \
+    && rm -rf /var/lib/apt/lists/*
+
+# ---------- Python deps ----------
 COPY pyproject.toml uv.lock README.md ./
-COPY package.json package-lock.json ./
-
-# Copy source (includes service/ and utils/)
 COPY src/ ./src/
-
-# Copy helper scripts (mock OIDC, test harness)
-COPY scripts/ ./scripts/
-
-# Install Python dependencies (no dev deps in production image)
 RUN uv sync --frozen --no-dev
 
-# Set environment variables
+# ---------- Node deps (migration script) ----------
+COPY package.json package-lock.json ./
+RUN npm ci --omit=dev 2>/dev/null || true
+
+# ---------- Scripts ----------
+COPY scripts/ ./scripts/
+
+# ---------- Pre-built device-sdk-ts ----------
+COPY --from=dmk-builder  /build  /data/screenshots/device-sdk-ts
+
+# ---------- Runtime directories ----------
+RUN mkdir -p /data/screenshots/ethereum-app-elfs
+
+# ---------- Runtime config ----------
 ENV PYTHONUNBUFFERED=1
+ENV CS_TESTER_RUNTIME_ROOT=/data/screenshots
+ENV CS_TESTER_ROOT=/data/screenshots/device-sdk-ts
+ENV ETH_APP_ELF_ROOT=/data/screenshots/ethereum-app-elfs
+ENV CS_TESTER_DEVICE=${CS_DEVICE}
 
-# Expose the service port
-EXPOSE 8730
+EXPOSE 8080
 
-# Default: run the analyzer CLI
-# Override with: docker run <image> python -m service.app  (for service mode)
-ENTRYPOINT ["uv", "run"]
-CMD ["analyze_7730", "--help"]
+COPY docker-entrypoint.sh /docker-entrypoint.sh
+RUN chmod +x /docker-entrypoint.sh
+
+ENTRYPOINT ["/docker-entrypoint.sh"]
+CMD ["service"]

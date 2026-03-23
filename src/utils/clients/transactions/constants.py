@@ -15,3 +15,15 @@ BLOCKSCOUT_URLS = {
     137: "https://polygon.blockscout.com",  # Polygon PoS
     1116: "https://openapi.coredao.org/api",  # Core DAO Mainnet
 }
+
+# Default Allium Snowflake datashare databases visible in the Ledger Snowflake workspace.
+# These can be overridden at runtime with SNOWFLAKE_DATABASE or SNOWFLAKE_DATABASE_MAP.
+SNOWFLAKE_ALLIUM_DATABASES = {
+    1: "PROVIDER_SHARED_ALLIUM__ETHEREUM",
+    10: "PROVIDER_SHARED_ALLIUM__OPTIMISM",
+    56: "PROVIDER_SHARED_ALLIUM__BSC",
+    137: "PROVIDER_SHARED_ALLIUM__POLYGON",
+    42161: "PROVIDER_SHARED_ALLIUM__ARBITRUM",
+    43114: "PROVIDER_SHARED_ALLIUM__AVALANCHE",
+    8453: "PROVIDER_SHARED_ALLIUM__BASE",
+}

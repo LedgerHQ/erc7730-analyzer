@@ -1,5 +1,6 @@
 """Markdown rendering helpers for report generator output."""
 
+import base64
 import json as json_lib
 import os
 import shutil
@@ -325,6 +326,7 @@ def render_screenshots_section(
     screenshot_data: list[dict[str, Any]],
     report_dir: Path,
     decoded_transactions: list[dict[str, Any]] | None = None,
+    inline_base64: bool = False,
 ) -> str:
     """
     Build a collapsible markdown section with Ledger device screenshots grouped by tx.
@@ -337,6 +339,9 @@ def render_screenshots_section(
         screenshot_data: List of {"tx_hash": str, "screenshots": [path, ...]}.
         report_dir: Directory where the report file lives.
         decoded_transactions: Optional list of decoded tx dicts to show params.
+        inline_base64: If True, embed PNGs as base64 data URIs instead of file refs.
+            Useful when the report will be transmitted (e.g. via the API service)
+            and the PNG files won't be accessible on the receiving end.
 
     Returns:
         Markdown string (empty if no screenshots).
@@ -351,8 +356,9 @@ def render_screenshots_section(
         if h:
             tx_params[h.lower()] = tx
 
-    screenshots_dir = report_dir / "screenshots"
-    screenshots_dir.mkdir(parents=True, exist_ok=True)
+    if not inline_base64:
+        screenshots_dir = report_dir / "screenshots"
+        screenshots_dir.mkdir(parents=True, exist_ok=True)
 
     tx_sections: list[str] = []
     for idx, entry in enumerate(screenshot_data, 1):
@@ -366,12 +372,19 @@ def render_screenshots_section(
             src = Path(src_path_str)
             if not src.exists() or src.suffix.lower() != ".png":
                 continue
-            dst_name = f"{tx_hash[2:10]}_{src.name}"
-            dst = screenshots_dir / dst_name
-            if not dst.exists():
-                shutil.copy2(src, dst)
-            rel = os.path.relpath(dst, report_dir)
-            images_md.append(f"![{src.stem}]({rel})")
+
+            if inline_base64:
+                b64 = base64.b64encode(src.read_bytes()).decode()
+                images_md.append(
+                    f"![{src.stem}](data:image/png;base64,{b64})"
+                )
+            else:
+                dst_name = f"{tx_hash[2:10]}_{src.name}"
+                dst = screenshots_dir / dst_name
+                if not dst.exists():
+                    shutil.copy2(src, dst)
+                rel = os.path.relpath(dst, report_dir)
+                images_md.append(f"![{src.stem}]({rel})")
 
         if not images_md:
             continue

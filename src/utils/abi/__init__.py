@@ -14,9 +14,12 @@ from eth_utils.abi import (
     function_signature_to_4byte_selector,
 )
 
+from ..extraction.source_code.shared import BLOCKSCOUT_URLS
 from ..rpc_helpers import (
     etherscan_response_indicates_chain_unsupported,
+    is_etherscan_contract_endpoint_unsupported,
     is_etherscan_proxy_eth_call_unsupported,
+    mark_etherscan_contract_endpoint_unsupported,
     mark_etherscan_proxy_eth_call_unsupported,
     rpc_eth_call,
 )
@@ -389,61 +392,160 @@ def detect_proxy_implementation(contract_address: str, chain_id: int, etherscan_
         # keccak256("eip1967.proxy.implementation") - 1
         impl_slot = "0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc"
 
-        params = {
-            "module": "proxy",
-            "action": "eth_getStorageAt",
-            "address": contract_address,
-            "position": impl_slot,
-            "tag": "latest",
-            "apikey": etherscan_api_key,
-        }
-
         base_url = f"https://api.etherscan.io/v2/api?chainid={chain_id}"
-        response = requests.get(base_url, params=params, timeout=10)
-        response.raise_for_status()
-        data = response.json()
+        if not is_etherscan_proxy_eth_call_unsupported(chain_id):
+            params = {
+                "module": "proxy",
+                "action": "eth_getStorageAt",
+                "address": contract_address,
+                "position": impl_slot,
+                "tag": "latest",
+                "apikey": etherscan_api_key,
+            }
 
-        # Check for API errors first
-        if "error" in data or data.get("status") == "0" or data.get("message") == "NOTOK":
-            logger.debug("API error when checking EIP-1967 implementation slot")
-            # Continue to next detection method
-        elif data.get("result") and data["result"] != "0x" + "0" * 64:
-            # Ensure result is valid hex before extracting address
-            result = data["result"]
-            if result.startswith("0x") and len(result) == 66:  # 0x + 64 hex chars
-                # Extract address from storage slot (last 20 bytes)
-                impl_address = "0x" + result[-40:]
-                if impl_address != "0x" + "0" * 40:
-                    logger.info(f"Detected EIP-1967 proxy, implementation: {impl_address}")
-                    return impl_address
+            response = requests.get(base_url, params=params, timeout=10)
+            response.raise_for_status()
+            data = response.json()
+
+            # Check for API errors first
+            if "error" in data or data.get("status") == "0" or data.get("message") == "NOTOK":
+                logger.debug("API error when checking EIP-1967 implementation slot")
+                # Continue to next detection method
+            elif data.get("result") and data["result"] != "0x" + "0" * 64:
+                # Ensure result is valid hex before extracting address
+                result = data["result"]
+                if result.startswith("0x") and len(result) == 66:  # 0x + 64 hex chars
+                    # Extract address from storage slot (last 20 bytes)
+                    impl_address = "0x" + result[-40:]
+                    if impl_address != "0x" + "0" * 40:
+                        logger.info(f"Detected EIP-1967 proxy, implementation: {impl_address}")
+                        return impl_address
 
         # Try Etherscan's built-in proxy detection
-        params = {
-            "module": "contract",
-            "action": "getsourcecode",
-            "address": contract_address,
-            "apikey": etherscan_api_key,
-        }
+        if not is_etherscan_contract_endpoint_unsupported(chain_id):
+            params = {
+                "module": "contract",
+                "action": "getsourcecode",
+                "address": contract_address,
+                "apikey": etherscan_api_key,
+            }
 
-        response = requests.get(base_url, params=params, timeout=10)
-        data = response.json()
+            response = requests.get(base_url, params=params, timeout=10)
+            data = response.json()
 
-        if data.get("result") and len(data["result"]) > 0:
-            result = data["result"][0]
-            impl = result.get("Implementation")
-            # Validate it's actually an address (0x followed by 40 hex chars)
-            if impl and isinstance(impl, str) and impl.startswith("0x") and len(impl) == 42:
-                try:
-                    # Verify it's valid hex
-                    int(impl, 16)
-                    logger.info(f"Detected simple proxy via Etherscan API, implementation: {impl}")
-                    return impl
-                except ValueError:
-                    logger.debug(f"Invalid implementation address format: {impl}")
+            if etherscan_response_indicates_chain_unsupported(data):
+                mark_etherscan_contract_endpoint_unsupported(chain_id)
+            elif data.get("result") and len(data["result"]) > 0:
+                result = data["result"][0]
+                impl = result.get("Implementation")
+                # Validate it's actually an address (0x followed by 40 hex chars)
+                if impl and isinstance(impl, str) and impl.startswith("0x") and len(impl) == 42:
+                    try:
+                        # Verify it's valid hex
+                        int(impl, 16)
+                        logger.info(f"Detected simple proxy via Etherscan API, implementation: {impl}")
+                        return impl
+                    except ValueError:
+                        logger.debug(f"Invalid implementation address format: {impl}")
+
+        if chain_id in BLOCKSCOUT_URLS and chain_id != 1116:
+            try:
+                url = f"{BLOCKSCOUT_URLS[chain_id]}/api/v2/smart-contracts/{contract_address}"
+                response = requests.get(url, timeout=10)
+                response.raise_for_status()
+                data = response.json()
+                implementations = data.get("implementations") or []
+                if implementations:
+                    impl = implementations[0].get("address") or implementations[0].get("address_hash")
+                    if impl and isinstance(impl, str) and impl.startswith("0x") and len(impl) == 42:
+                        try:
+                            int(impl, 16)
+                            logger.info(f"Detected proxy via Blockscout smart-contracts API, implementation: {impl}")
+                            return impl
+                        except ValueError:
+                            logger.debug(f"Invalid Blockscout implementation address format: {impl}")
+            except Exception as exc:
+                logger.debug(f"Blockscout proxy detection failed: {exc}")
 
     except Exception as e:
         logger.debug(f"Simple proxy detection failed: {e}")
 
+    return None
+
+
+def fetch_single_contract_abi(
+    contract_address: str,
+    chain_id: int,
+    etherscan_api_key: str,
+) -> list[dict[str, Any]] | None:
+    """Fetch one address ABI via Etherscan, with Blockscout fallback on unsupported chains."""
+    import logging
+
+    logger = logging.getLogger(__name__)
+
+    if is_etherscan_contract_endpoint_unsupported(chain_id):
+        return fetch_contract_abi_from_blockscout(contract_address, chain_id)
+
+    params = {"module": "contract", "action": "getabi", "address": contract_address, "apikey": etherscan_api_key}
+    base_url = f"https://api.etherscan.io/v2/api?chainid={chain_id}"
+    try:
+        response = requests.get(base_url, params=params, timeout=10)
+        response.raise_for_status()
+        data = response.json()
+    except Exception as exc:
+        logger.error(f"Exception fetching ABI: {exc}")
+        return None
+
+    if etherscan_response_indicates_chain_unsupported(data):
+        mark_etherscan_contract_endpoint_unsupported(chain_id)
+        return fetch_contract_abi_from_blockscout(contract_address, chain_id)
+
+    if data.get("status") == "1":
+        try:
+            abi = json.loads(data["result"])
+        except Exception as exc:
+            logger.warning("Failed to parse ABI JSON for %s on chain %s: %s", contract_address, chain_id, exc)
+            return None
+        logger.info(f"Fetched ABI with {len(abi)} entries from {contract_address}")
+        return abi
+
+    logger.warning(f"Failed to fetch ABI: {data.get('message', 'Unknown error')}")
+    return None
+
+
+def fetch_contract_abi_from_blockscout(contract_address: str, chain_id: int) -> list[dict[str, Any]] | None:
+    """Fetch one address ABI from Blockscout's smart-contracts API when available."""
+    import logging
+
+    logger = logging.getLogger(__name__)
+
+    if chain_id not in BLOCKSCOUT_URLS or chain_id == 1116:
+        return None
+
+    url = f"{BLOCKSCOUT_URLS[chain_id]}/api/v2/smart-contracts/{contract_address}"
+    try:
+        response = requests.get(url, timeout=10)
+        response.raise_for_status()
+        data = response.json()
+    except Exception as exc:
+        logger.debug("Blockscout ABI fetch failed for %s on chain %s: %s", contract_address, chain_id, exc)
+        return None
+
+    abi = data.get("abi")
+    if isinstance(abi, list) and abi:
+        logger.info("Fetched ABI with %s entries from Blockscout for %s", len(abi), contract_address)
+        return abi
+    if isinstance(abi, str) and abi.strip():
+        try:
+            parsed = json.loads(abi)
+        except Exception as exc:
+            logger.warning("Failed to parse Blockscout ABI JSON for %s on chain %s: %s", contract_address, chain_id, exc)
+            return None
+        if isinstance(parsed, list) and parsed:
+            logger.info("Fetched ABI with %s entries from Blockscout for %s", len(parsed), contract_address)
+            return parsed
+
+    logger.debug("Blockscout ABI unavailable for %s on chain %s", contract_address, chain_id)
     return None
 
 
@@ -489,17 +591,9 @@ def fetch_contract_abi(
 
         for i, facet_address in enumerate(facet_addresses, 1):
             logger.info(f"  [{i}/{len(facet_addresses)}] Fetching ABI for facet {facet_address}...")
-
-            params = {"module": "contract", "action": "getabi", "address": facet_address, "apikey": etherscan_api_key}
-
             try:
-                base_url = f"https://api.etherscan.io/v2/api?chainid={chain_id}"
-                response = requests.get(base_url, params=params, timeout=10)
-                response.raise_for_status()
-                data = response.json()
-
-                if data["status"] == "1":
-                    facet_abi = json.loads(data["result"])
+                facet_abi = fetch_single_contract_abi(facet_address, chain_id, etherscan_api_key)
+                if facet_abi:
                     # Pass facet_address to track selector -> facet mapping
                     stats = merger.add_abi(facet_abi, chain_id, source_address=facet_address, source_kind="facet")
                     logger.info(
@@ -510,7 +604,6 @@ def fetch_contract_abi(
                 else:
                     logger.warning(f"    ✗ Failed to fetch ABI for facet {facet_address}")
                     failed_fetches += 1
-
             except Exception as e:
                 logger.warning(f"    ✗ Exception fetching facet ABI: {e}")
                 failed_fetches += 1
@@ -545,22 +638,11 @@ def fetch_contract_abi(
     else:
         address_to_fetch = contract_address
 
-    params = {"module": "contract", "action": "getabi", "address": address_to_fetch, "apikey": etherscan_api_key}
-
     try:
-        base_url = f"https://api.etherscan.io/v2/api?chainid={chain_id}"
-        response = requests.get(base_url, params=params, timeout=10)
-        response.raise_for_status()
-        data = response.json()
-
-        if data["status"] == "1":
-            abi = json.loads(data["result"])
-            logger.info(f"Fetched ABI with {len(abi)} entries from {address_to_fetch}")
+        abi = fetch_single_contract_abi(address_to_fetch, chain_id, etherscan_api_key)
+        if abi:
             # Return tuple: (abi, selector_sources, is_diamond)
             return abi, {}, False
-        else:
-            logger.warning(f"Failed to fetch ABI: {data.get('message', 'Unknown error')}")
-            return None, {}, False
     except Exception as e:
         logger.error(f"Exception fetching ABI: {e}")
-        return None, {}, False
+    return None, {}, False

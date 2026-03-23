@@ -22,6 +22,12 @@ class ServiceConfig:
     openai_api_key: str = ""
     coredao_api_key: str = ""
     infura_rpc_key: str = ""
+    gating_token: str = ""
+    github_token: str = ""
+
+    # --- CAL service ---
+    cal_service_url: str = "https://crypto-assets-service.api.ledger.com"
+    cal_service_staging: str = "https://crypto-assets-service.api.ledger-test.com"
 
     # --- OIDC verification ---
     allowed_repos: list[str] = field(default_factory=list)
@@ -46,7 +52,7 @@ class ServiceConfig:
     # --- dev mode ---
     dev_mode: bool = False
     host: str = "0.0.0.0"
-    port: int = 8730
+    port: int = 8080
 
 
 def load_config(env_file: str | Path | None = None) -> ServiceConfig:
@@ -64,6 +70,10 @@ def load_config(env_file: str | Path | None = None) -> ServiceConfig:
         openai_api_key=os.getenv("OPENAI_API_KEY", ""),
         coredao_api_key=os.getenv("COREDAO_API_KEY", ""),
         infura_rpc_key=os.getenv("INFURA_RPC_KEY", ""),
+        gating_token=os.getenv("GATING_TOKEN", ""),
+        github_token=os.getenv("GITHUB_TOKEN", ""),
+        cal_service_url=os.getenv("CAL_SERVICE_URL", "https://crypto-assets-service.api.ledger.com"),
+        cal_service_staging=os.getenv("CAL_SERVICE_STAGING", "https://crypto-assets-service.api.ledger-test.com"),
         allowed_repos=allowed,
         oidc_issuer=os.getenv("OIDC_ISSUER_URL", "https://token.actions.githubusercontent.com"),
         default_model=os.getenv("LLM_MODEL", "gpt-5.4"),
@@ -80,5 +90,5 @@ def load_config(env_file: str | Path | None = None) -> ServiceConfig:
         coin_apps_path=os.getenv("COIN_APPS_PATH"),
         dev_mode=os.getenv("SERVICE_DEV_MODE", "").lower() in ("1", "true", "yes"),
         host=os.getenv("SERVICE_HOST", "0.0.0.0"),
-        port=int(os.getenv("SERVICE_PORT", "8730")),
+        port=int(os.getenv("SERVICE_PORT", "8080")),
     )

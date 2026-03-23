@@ -1,0 +1,272 @@
+---
+name: Deploy to Sandbox
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    branches: [main]
+    types: [completed]
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    environment:
+      name: ${{ vars.ENVIRONMENT || 'sandbox' }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@e3dd6a429d7300a6fae335093e30e7c6015b9be5 # v4.3.1
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@062b18b96a7aff071d4dc91bc00c4c1a7945b076 # v2.0.1
+
+      # ---------------------------------------------------------------
+      # Sync secrets from GitHub Secrets → AWS Secrets Manager
+      # Terraform creates the SM entries; this step keeps values current.
+      # ---------------------------------------------------------------
+      - name: Sync secrets to AWS Secrets Manager
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          ETHERSCAN_API_KEY: ${{ secrets.ETHERSCAN_API_KEY }}
+          COREDAO_API_KEY: ${{ secrets.COREDAO_API_KEY }}
+          INFURA_RPC_KEY: ${{ secrets.INFURA_RPC_KEY }}
+          GATING_TOKEN: ${{ secrets.GATING_TOKEN }}
+          GITHUB_TOKEN_ELF: ${{ secrets.GITHUB_TOKEN_ELF }}
+          ALLOWED_REPOS: ${{ secrets.ALLOWED_REPOS }}
+          SNOWFLAKE_USER: ${{ secrets.SNOWFLAKE_USER }}
+          SNOWFLAKE_INSTANCE: ${{ secrets.SNOWFLAKE_INSTANCE }}
+          SNOWFLAKE_WAREHOUSE: ${{ secrets.SNOWFLAKE_WAREHOUSE }}
+          SNOWFLAKE_ROLE: ${{ secrets.SNOWFLAKE_ROLE }}
+          SNOWFLAKE_PRIVATE_KEY: ${{ secrets.SNOWFLAKE_PRIVATE_KEY }}
+        run: |
+          ENV="${{ vars.ENVIRONMENT || 'sandbox' }}"
+          NS="erc7730-analyzer/${ENV}"
+
+          sync_secret() {
+            local value="$1"
+            local aws_id="$2"
+            if [ -n "$value" ] && [ "$value" != "PLACEHOLDER" ]; then
+              echo "Updating: $aws_id"
+              aws secretsmanager put-secret-value \
+                --secret-id "$aws_id" \
+                --secret-string "$value" 2>/dev/null \
+              || aws secretsmanager create-secret \
+                --name "$aws_id" \
+                --secret-string "$value" \
+              || echo "::warning::Failed to sync $aws_id"
+            else
+              echo "::notice::Skipping $aws_id — not set"
+            fi
+          }
+
+          sync_secret "$OPENAI_API_KEY"    "${NS}/openai-api-key"
+          sync_secret "$ETHERSCAN_API_KEY"  "${NS}/etherscan-api-key"
+          sync_secret "$COREDAO_API_KEY"    "${NS}/coredao-api-key"
+          sync_secret "$INFURA_RPC_KEY"     "${NS}/infura-rpc-key"
+          sync_secret "$GATING_TOKEN"       "${NS}/gating-token"
+          sync_secret "$GITHUB_TOKEN_ELF"   "${NS}/github-token"
+          sync_secret "$ALLOWED_REPOS"      "${NS}/allowed-repos"
+
+          # Snowflake credentials are packed into a single JSON blob
+          if [ -n "$SNOWFLAKE_USER" ]; then
+            SF_JSON=$(jq -n \
+              --arg user      "$SNOWFLAKE_USER" \
+              --arg instance  "$SNOWFLAKE_INSTANCE" \
+              --arg warehouse "$SNOWFLAKE_WAREHOUSE" \
+              --arg role      "$SNOWFLAKE_ROLE" \
+              --arg pk        "$SNOWFLAKE_PRIVATE_KEY" \
+              '{user:$user, instance:$instance, warehouse:$warehouse, role:$role, private_key:$pk}')
+            sync_secret "$SF_JSON" "${NS}/snowflake-credentials"
+          else
+            echo "::notice::Skipping Snowflake credentials — SNOWFLAKE_USER not set"
+          fi
+
+          echo "Secrets sync complete"
+
+      # ---------------------------------------------------------------
+      # Build & push Docker image
+      # ---------------------------------------------------------------
+      - name: Build, tag, and push image to ECR
+        id: build-image
+        env:
+          REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          docker build \
+            -t $REGISTRY/erc7730-analyzer:$IMAGE_TAG \
+            -t $REGISTRY/erc7730-analyzer:latest .
+          docker push $REGISTRY/erc7730-analyzer:$IMAGE_TAG
+          docker push $REGISTRY/erc7730-analyzer:latest
+          IMAGE_DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' \
+            $REGISTRY/erc7730-analyzer:$IMAGE_TAG | cut -d@ -f2)
+          echo "digest=$IMAGE_DIGEST" >> $GITHUB_OUTPUT
+
+      # ---------------------------------------------------------------
+      # Update App Runner service
+      # ---------------------------------------------------------------
+      - name: Update App Runner service
+        env:
+          REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_DIGEST: ${{ steps.build-image.outputs.digest }}
+          SERVICE_ARN: ${{ secrets.APPRUNNER_SERVICE_ARN }}
+          AWS_REGION: ${{ vars.AWS_REGION }}
+          ENV: ${{ vars.ENVIRONMENT || 'sandbox' }}
+          DEPLOY_SHA: ${{ github.sha }}
+          LLM_MODEL: ${{ vars.LLM_MODEL || 'gpt-5.4' }}
+          ANALYSIS_MODE: ${{ vars.ANALYSIS_MODE || 'multi' }}
+          LLM_REASONING_EFFORT: ${{ vars.LLM_REASONING_EFFORT || 'high' }}
+          ENABLE_SCREENSHOTS: ${{ vars.ENABLE_SCREENSHOTS || 'true' }}
+        run: |
+          if [ -z "$SERVICE_ARN" ]; then
+            echo "::notice::APPRUNNER_SERVICE_ARN not set — run 'terraform apply' in infra/ first"
+            exit 0
+          fi
+
+          resolve_secret() {
+            aws secretsmanager describe-secret \
+              --secret-id "$1" --query "ARN" --output text
+          }
+
+          NS="erc7730-analyzer/${ENV}"
+
+          SOURCE_CONFIG=$(jq -n \
+            --arg image               "$REGISTRY/erc7730-analyzer@$IMAGE_DIGEST" \
+            --arg deploy_sha          "$DEPLOY_SHA" \
+            --arg llm_model           "$LLM_MODEL" \
+            --arg analysis_mode       "$ANALYSIS_MODE" \
+            --arg reasoning           "$LLM_REASONING_EFFORT" \
+            --arg screenshots         "$ENABLE_SCREENSHOTS" \
+            --arg cal_url             "https://crypto-assets-service.api.ledger.com" \
+            --arg cal_staging         "https://crypto-assets-service.api.ledger-test.com" \
+            --arg openai_secret       "$(resolve_secret "${NS}/openai-api-key")" \
+            --arg etherscan_secret    "$(resolve_secret "${NS}/etherscan-api-key")" \
+            --arg coredao_secret      "$(resolve_secret "${NS}/coredao-api-key")" \
+            --arg infura_secret       "$(resolve_secret "${NS}/infura-rpc-key")" \
+            --arg gating_secret       "$(resolve_secret "${NS}/gating-token")" \
+            --arg github_secret       "$(resolve_secret "${NS}/github-token")" \
+            --arg snowflake_secret    "$(resolve_secret "${NS}/snowflake-credentials")" \
+            --arg allowed_secret      "$(resolve_secret "${NS}/allowed-repos")" \
+            '{
+              ImageRepository: {
+                ImageIdentifier: $image,
+                ImageRepositoryType: "ECR",
+                ImageConfiguration: {
+                  Port: "8080",
+                  RuntimeEnvironmentVariables: {
+                    DEPLOY_SHA: $deploy_sha,
+                    LLM_MODEL: $llm_model,
+                    ANALYSIS_MODE: $analysis_mode,
+                    LLM_REASONING_EFFORT: $reasoning,
+                    ENABLE_SCREENSHOTS: $screenshots,
+                    SNOWFLAKE_ENABLED: "true",
+                    CAL_SERVICE_URL: $cal_url,
+                    CAL_SERVICE_STAGING: $cal_staging,
+                    CS_TESTER_RUNTIME_ROOT: "/data/screenshots",
+                    CS_TESTER_ROOT: "/data/screenshots/device-sdk-ts",
+                    ETH_APP_ELF_ROOT: "/data/screenshots/ethereum-app-elfs"
+                  },
+                  RuntimeEnvironmentSecrets: {
+                    OPENAI_API_KEY: $openai_secret,
+                    ETHERSCAN_API_KEY: $etherscan_secret,
+                    COREDAO_API_KEY: $coredao_secret,
+                    INFURA_RPC_KEY: $infura_secret,
+                    GATING_TOKEN: $gating_secret,
+                    GITHUB_TOKEN: $github_secret,
+                    SNOWFLAKE_CREDENTIALS_JSON: $snowflake_secret,
+                    ALLOWED_REPOS: $allowed_secret
+                  }
+                }
+              },
+              AutoDeploymentsEnabled: false
+            }')
+
+          aws apprunner update-service \
+            --service-arn "$SERVICE_ARN" \
+            --source-configuration "$SOURCE_CONFIG"
+
+      # ---------------------------------------------------------------
+      # Wait & verify
+      # ---------------------------------------------------------------
+      - name: Wait for deployment
+        env:
+          SERVICE_ARN: ${{ secrets.APPRUNNER_SERVICE_ARN }}
+        run: |
+          if [ -z "$SERVICE_ARN" ]; then exit 0; fi
+          echo "Waiting for App Runner deployment..."
+          for i in {1..60}; do
+            STATUS=$(aws apprunner describe-service --service-arn "$SERVICE_ARN" \
+              --query 'Service.Status' --output text)
+            echo "Status: $STATUS (attempt $i/60)"
+            if [ "$STATUS" = "RUNNING" ]; then
+              echo "Deployment complete"
+              exit 0
+            elif [[ "$STATUS" =~ ^(CREATE_FAILED|DELETE_FAILED|DELETED)$ ]]; then
+              echo "::error::Deployment failed: $STATUS"
+              exit 1
+            fi
+            sleep 10
+          done
+          echo "::warning::Deployment timed out (status: $STATUS)"
+
+      - name: Verify deployment
+        if: always()
+        env:
+          SERVICE_ARN: ${{ secrets.APPRUNNER_SERVICE_ARN }}
+        run: |
+          if [ -z "$SERVICE_ARN" ]; then
+            echo "::notice::Images pushed to ECR. Run 'terraform apply' in infra/ to create the App Runner service."
+            exit 0
+          fi
+
+          echo "=== Service Status ==="
+          aws apprunner describe-service --service-arn "$SERVICE_ARN" \
+            --query 'Service.{Status:Status,URL:ServiceUrl,UpdatedAt:UpdatedAt}' \
+            --output table
+
+          echo ""
+          echo "=== Recent Operations ==="
+          aws apprunner list-operations --service-arn "$SERVICE_ARN" \
+            --query 'OperationSummaryList[0:5].{Id:Id,Type:Type,Status:Status}' \
+            --output table
+
+          LATEST_STATUS=$(aws apprunner list-operations --service-arn "$SERVICE_ARN" \
+            --query 'OperationSummaryList[0].Status' --output text)
+
+          if [[ "$LATEST_STATUS" =~ ^(FAILED|ROLLBACK_SUCCEEDED|ROLLBACK_FAILED)$ ]]; then
+            echo "::error::Deployment failed — latest op status: $LATEST_STATUS"
+
+            SVC_PATH=$(echo "$SERVICE_ARN" | sed 's|.*:service/||')
+            SVC_NAME=$(echo "$SVC_PATH" | cut -d/ -f1)
+            SVC_ID=$(echo "$SVC_PATH" | cut -d/ -f2)
+
+            echo ""
+            echo "=== Last 20 Service Events ==="
+            aws logs get-log-events \
+              --log-group-name "/aws/apprunner/${SVC_NAME}/${SVC_ID}/service" \
+              --log-stream-name "events" \
+              --limit 20 --query 'events[].message' --output text 2>&1 \
+            || echo "::warning::Could not fetch service logs"
+
+            exit 1
+          fi
+
+          echo ""
+          echo "=== Health Check ==="
+          SERVICE_URL=$(aws apprunner describe-service --service-arn "$SERVICE_ARN" \
+            --query 'Service.ServiceUrl' --output text)
+          echo "URL: https://$SERVICE_URL/health"
+          curl -sf "https://$SERVICE_URL/health" \
+          || echo "::warning::Health endpoint unreachable"

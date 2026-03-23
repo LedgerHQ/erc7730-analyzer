@@ -49,4 +49,9 @@ class AnalyzerPipelineMixin(
             self._extract_source_and_context(context)
             self._prepare_selector_audit_tasks(context)
         self._run_batch_audits(context)
-        return self._finalize_results(context)
+        results = self._finalize_results(context)
+
+        if hasattr(self, "tx_fetcher") and hasattr(self.tx_fetcher, "close_snowflake_connections"):
+            self.tx_fetcher.close_snowflake_connections()
+
+        return results

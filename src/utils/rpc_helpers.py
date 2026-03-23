@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 from typing import Any
 
 import requests
@@ -20,8 +21,29 @@ DEFAULT_RPC_URLS = {
 }
 
 ETHERSCAN_CHAIN_COVERAGE_ERROR = "Free API access is not supported for this chain"
+_ETHERSCAN_CHAIN_COVERAGE_UNSUPPORTED_CHAINS: set[int] = set()
 _ETHERSCAN_PROXY_ETH_CALL_UNSUPPORTED_CHAINS: set[int] = set()
+_ETHERSCAN_CONTRACT_ENDPOINT_UNSUPPORTED_CHAINS: set[int] = set()
 _ETHERSCAN_TX_ENDPOINT_UNSUPPORTED_CHAINS: set[int] = set()
+
+
+def _resolve_infura_url(chain_id: int) -> str | None:
+    """Resolve an Infura URL when a key is configured for supported chains."""
+    infura_key = os.getenv(f"INFURA_RPC_KEY_{chain_id}") or os.getenv("INFURA_RPC_KEY") or os.getenv("INFURA_API_KEY")
+    if not infura_key:
+        return None
+
+    if chain_id == 1:
+        return f"https://mainnet.infura.io/v3/{infura_key}"
+
+    return None
+
+
+def _display_rpc_url(rpc_url: str | None) -> str | None:
+    """Return a log-safe RPC URL with embedded secrets redacted."""
+    if not rpc_url:
+        return rpc_url
+    return re.sub(r"(/v3/)[^/?#]+", r"\1<redacted>", rpc_url)
 
 
 def resolve_rpc_url(chain_id: int) -> str | None:
@@ -31,6 +53,7 @@ def resolve_rpc_url(chain_id: int) -> str | None:
         os.getenv(f"CHAIN_RPC_URL_{chain_id}"),
         os.getenv("RPC_URL") if chain_id == 1 else None,
         os.getenv("ETH_RPC_URL") if chain_id == 1 else None,
+        _resolve_infura_url(chain_id),
         DEFAULT_RPC_URLS.get(chain_id),
     ]
     for candidate in candidates:
@@ -60,22 +83,41 @@ def etherscan_response_indicates_chain_unsupported(payload: object) -> bool:
 
 def mark_etherscan_proxy_eth_call_unsupported(chain_id: int) -> None:
     """Remember that Etherscan proxy eth_call is not supported for this chain on this run."""
-    _ETHERSCAN_PROXY_ETH_CALL_UNSUPPORTED_CHAINS.add(int(chain_id))
+    chain_id = int(chain_id)
+    _ETHERSCAN_PROXY_ETH_CALL_UNSUPPORTED_CHAINS.add(chain_id)
+    _ETHERSCAN_CHAIN_COVERAGE_UNSUPPORTED_CHAINS.add(chain_id)
 
 
 def is_etherscan_proxy_eth_call_unsupported(chain_id: int) -> bool:
     """Check whether Etherscan proxy eth_call is known unsupported for this chain."""
-    return int(chain_id) in _ETHERSCAN_PROXY_ETH_CALL_UNSUPPORTED_CHAINS
+    chain_id = int(chain_id)
+    return chain_id in _ETHERSCAN_PROXY_ETH_CALL_UNSUPPORTED_CHAINS or chain_id in _ETHERSCAN_CHAIN_COVERAGE_UNSUPPORTED_CHAINS
+
+
+def mark_etherscan_contract_endpoint_unsupported(chain_id: int) -> None:
+    """Remember that Etherscan contract endpoints are unsupported for this chain."""
+    chain_id = int(chain_id)
+    _ETHERSCAN_CONTRACT_ENDPOINT_UNSUPPORTED_CHAINS.add(chain_id)
+    _ETHERSCAN_CHAIN_COVERAGE_UNSUPPORTED_CHAINS.add(chain_id)
+
+
+def is_etherscan_contract_endpoint_unsupported(chain_id: int) -> bool:
+    """Check whether Etherscan contract endpoints are known unsupported for this chain."""
+    chain_id = int(chain_id)
+    return chain_id in _ETHERSCAN_CONTRACT_ENDPOINT_UNSUPPORTED_CHAINS or chain_id in _ETHERSCAN_CHAIN_COVERAGE_UNSUPPORTED_CHAINS
 
 
 def mark_etherscan_tx_endpoint_unsupported(chain_id: int) -> None:
     """Remember that Etherscan transaction-history endpoints are unsupported for this chain."""
-    _ETHERSCAN_TX_ENDPOINT_UNSUPPORTED_CHAINS.add(int(chain_id))
+    chain_id = int(chain_id)
+    _ETHERSCAN_TX_ENDPOINT_UNSUPPORTED_CHAINS.add(chain_id)
+    _ETHERSCAN_CHAIN_COVERAGE_UNSUPPORTED_CHAINS.add(chain_id)
 
 
 def is_etherscan_tx_endpoint_unsupported(chain_id: int) -> bool:
     """Check whether Etherscan transaction-history endpoints are known unsupported for this chain."""
-    return int(chain_id) in _ETHERSCAN_TX_ENDPOINT_UNSUPPORTED_CHAINS
+    chain_id = int(chain_id)
+    return chain_id in _ETHERSCAN_TX_ENDPOINT_UNSUPPORTED_CHAINS or chain_id in _ETHERSCAN_CHAIN_COVERAGE_UNSUPPORTED_CHAINS
 
 
 def rpc_request(
@@ -94,6 +136,7 @@ def rpc_request(
     rpc_url = resolve_rpc_url(chain_id)
     if not rpc_url:
         return None, "No RPC URL configured", None
+    display_rpc_url = _display_rpc_url(rpc_url)
 
     payload = {
         "jsonrpc": "2.0",
@@ -107,18 +150,18 @@ def rpc_request(
         response.raise_for_status()
         rpc_data = response.json()
     except Exception as exc:  # pragma: no cover - network failures are environment-specific
-        return None, str(exc), rpc_url
+        return None, str(exc), display_rpc_url
 
     if "error" in rpc_data:
         error = rpc_data["error"]
         if isinstance(error, dict):
-            return None, error.get("message") or str(error), rpc_url
-        return None, str(error), rpc_url
+            return None, error.get("message") or str(error), display_rpc_url
+        return None, str(error), display_rpc_url
 
     if "result" not in rpc_data:
-        return None, "Missing result field", rpc_url
+        return None, "Missing result field", display_rpc_url
 
-    return rpc_data.get("result"), None, rpc_url
+    return rpc_data.get("result"), None, display_rpc_url
 
 
 def rpc_eth_call(
@@ -140,6 +183,28 @@ def rpc_eth_call(
         [{"to": to, "data": data}, "latest"],
         timeout=timeout,
     )
+
+
+def rpc_get_transaction_receipt(
+    chain_id: int,
+    tx_hash: str,
+    *,
+    timeout: int = 10,
+) -> tuple[dict[str, Any] | None, str | None, str | None]:
+    """
+    Fetch a transaction receipt via JSON-RPC eth_getTransactionReceipt.
+
+    Returns:
+        tuple(receipt_dict_or_none, error_message_or_none, rpc_url_or_none)
+    """
+    result, error, rpc_url = rpc_request(chain_id, "eth_getTransactionReceipt", [tx_hash], timeout=timeout)
+    if error:
+        return None, error, rpc_url
+    if result is None:
+        return None, None, rpc_url
+    if not isinstance(result, dict):
+        return None, f"Unexpected result type: {type(result).__name__}", rpc_url
+    return result, None, rpc_url
 
 
 def rpc_get_transaction_by_hash(

@@ -27,6 +27,16 @@ from .parsing import (
 logger = logging.getLogger(__name__)
 
 
+def _stringify_issue(item: Any) -> str:
+    """Coerce an AI-reported issue (dict or str) into a plain string."""
+    if isinstance(item, dict):
+        for key in ("issue", "description", "detail", "message"):
+            if key in item:
+                return str(item[key])
+        return str(item)
+    return str(item)
+
+
 def _normalize_accounted_root(path: Any) -> str | None:
     """Map an ERC-7730 path to the top-level decoded_input key it accounts for."""
     if not isinstance(path, str) or not path:
@@ -86,13 +96,16 @@ def _collect_accounted_parameter_roots(fields: Any) -> tuple[set[str], set[str]]
     return shown, hidden
 
 
-def generate_summary_file(results: dict, summary_file: Path):
+def generate_summary_file(
+    results: dict, summary_file: Path, *, inline_base64: bool = False
+):
     """
     Generate a single comprehensive report file with summary table and detailed sections.
 
     Args:
         results: Analysis results dictionary
         summary_file: Path to summary file
+        inline_base64: Embed screenshots as base64 data URIs (for API transport).
     """
     # Get contract info
     deployments = results.get("deployments", [])
@@ -162,15 +175,15 @@ def generate_summary_file(results: dict, summary_file: Path):
                 risk_level = security_risk.get("level") or "Unknown"
                 coverage_score = coverage_info.get("score", "N/A")
                 critical_issues_from_ai = [
-                    c.get("issue", c) if isinstance(c, dict) else str(c)
+                    _stringify_issue(c)
                     for c in audit_report_json.get("critical_issues", [])
                 ]
                 ai_missing_params = [
-                    m.get("parameter", m) if isinstance(m, dict) else str(m)
+                    _stringify_issue(m)
                     for m in audit_report_json.get("missing_parameters", [])
                 ]
                 display_issues_from_ai = [
-                    d.get("issue", d) if isinstance(d, dict) else str(d)
+                    _stringify_issue(d)
                     for d in audit_report_json.get("display_issues", [])
                 ]
                 recommendations = audit_report_json.get("recommendations", {})
@@ -229,15 +242,15 @@ def generate_summary_file(results: dict, summary_file: Path):
                 risk_level = security_risk.get("level") or "Unknown"
                 coverage_score = coverage_info.get("score", "N/A")
                 critical_issues_from_ai = [
-                    c.get("issue", c) if isinstance(c, dict) else str(c)
+                    _stringify_issue(c)
                     for c in audit_report_json.get("critical_issues", [])
                 ]
                 ai_missing_params = [
-                    m.get("parameter", m) if isinstance(m, dict) else str(m)
+                    _stringify_issue(m)
                     for m in audit_report_json.get("missing_parameters", [])
                 ]
                 display_issues_from_ai = [
-                    d.get("issue", d) if isinstance(d, dict) else str(d)
+                    _stringify_issue(d)
                     for d in audit_report_json.get("display_issues", [])
                 ]
                 recommendations = audit_report_json.get("recommendations", {})
@@ -307,28 +320,25 @@ def generate_summary_file(results: dict, summary_file: Path):
 
         if has_critical:
             severity = "🔴 Critical"
-            # Show first issue text instead of "Critical"
-            first_issue = issue["critical_issues"][0]
-            quick_desc = first_issue[:100] + "..." if len(first_issue) > 100 else first_issue
-            # Special handling for no historical transactions
-            if no_historical_txs and "No historical transactions" in first_issue:
-                quick_desc = "⚠️ No historical transactions - static analysis only"
+            n = len(issue["critical_issues"])
+            quick_desc = f"{n} critical issue{'s' if n > 1 else ''}"
+            if no_historical_txs:
+                quick_desc = "⚠️ No historical txs"
         elif has_missing:
             severity = "🟡 Major"
-            quick_desc = f"Missing: {', '.join(issue['ai_missing_params'][:2])}"
+            params = issue["ai_missing_params"][:2]
+            quick_desc = f"Missing: {', '.join(params)}"
             if len(issue["ai_missing_params"]) > 2:
-                quick_desc += f" (+{len(issue['ai_missing_params']) - 2} more)"
+                quick_desc += f" (+{len(issue['ai_missing_params']) - 2})"
         elif has_display:
             severity = "🟢 Minor"
-            quick_desc = (
-                issue["display_issues"][0][:80] + "..."
-                if len(issue["display_issues"][0]) > 80
-                else issue["display_issues"][0]
-            )
+            n = len(issue["display_issues"])
+            quick_desc = f"{n} display issue{'s' if n > 1 else ''}"
         else:
             severity = "✅ None"
-            quick_desc = "No critical issues found"
+            quick_desc = "No issues"
 
+        quick_desc = quick_desc.replace("|", "\\|")
         report += f"| `{issue['function_name']}` | `{issue['selector']}` | {severity} | {quick_desc} | [View](#{issue['selector']}) |\n"
 
     report += "\n---\n\n## 📈 Statistics\n\n"
@@ -402,6 +412,7 @@ def generate_summary_file(results: dict, summary_file: Path):
                 selector_screenshot_data,
                 summary_file.parent,
                 decoded_transactions=selector_data.get("transactions"),
+                inline_base64=inline_base64,
             )
 
         # Add decoded transaction parameters (collapsible sections per transaction)
@@ -449,13 +460,16 @@ def generate_summary_file(results: dict, summary_file: Path):
     logger.info(f"Comprehensive report saved to {summary_file}")
 
 
-def generate_criticals_report(results: dict, criticals_file: Path):
+def generate_criticals_report(
+    results: dict, criticals_file: Path, *, inline_base64: bool = False
+):
     """
     Generate a mini report containing ONLY critical issues and recommendations.
 
     Args:
         results: Analysis results dictionary
         criticals_file: Path to criticals report file
+        inline_base64: Embed screenshots as base64 data URIs (for API transport).
     """
     # Get contract info
     deployments = results.get("deployments", [])
@@ -636,6 +650,7 @@ def generate_criticals_report(results: dict, criticals_file: Path):
                 selector_screenshot_data,
                 criticals_file.parent,
                 decoded_transactions=selector_data.get("transactions"),
+                inline_base64=inline_base64,
             )
 
         if func.get("has_critical"):

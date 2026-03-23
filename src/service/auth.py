@@ -82,22 +82,17 @@ def verify_oidc_token(
     return claims
 
 
-async def verify_token_or_dev(
+async def verify_request_token(
     authorization: str | None,
     *,
     allowed_repos: list[str],
-    dev_mode: bool = False,
     issuer: str = GITHUB_OIDC_ISSUER,
-) -> dict[str, Any] | None:
-    """Convenience wrapper used by FastAPI endpoints.
+) -> dict[str, Any]:
+    """Verify the Bearer token from the Authorization header.
 
-    In dev mode, returns ``None`` (no claims) and skips verification.
-    Otherwise, extracts the Bearer token and verifies it.
+    Extracts the JWT and verifies it against the issuer's JWKS.
+    Only tokens from repositories in ``allowed_repos`` are accepted.
     """
-    if dev_mode:
-        logger.debug("[AUTH] dev mode — skipping token verification")
-        return None
-
     if not authorization or not authorization.startswith("Bearer "):
         raise jwt.InvalidTokenError("Missing or malformed Authorization header")
 

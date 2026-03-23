@@ -49,8 +49,7 @@ class ServiceConfig:
     cs_tester_root: str | None = None
     coin_apps_path: str | None = None
 
-    # --- dev mode ---
-    dev_mode: bool = False
+    # --- server ---
     host: str = "0.0.0.0"
     port: int = 8080
 
@@ -88,7 +87,6 @@ def load_config(env_file: str | Path | None = None) -> ServiceConfig:
         screenshot_device=os.getenv("CS_TESTER_DEVICE", "stax"),
         cs_tester_root=os.getenv("CS_TESTER_ROOT"),
         coin_apps_path=os.getenv("COIN_APPS_PATH"),
-        dev_mode=os.getenv("SERVICE_DEV_MODE", "").lower() in ("1", "true", "yes"),
         host=os.getenv("SERVICE_HOST", "0.0.0.0"),
         port=int(os.getenv("SERVICE_PORT", "8080")),
     )

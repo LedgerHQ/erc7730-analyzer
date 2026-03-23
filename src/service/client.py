@@ -5,15 +5,6 @@ Usage from CI::
     python -m service.client \
         --service-url https://analyzer.example.com \
         --descriptor registry/calldata-MyToken.json
-
-Local dev (against --dev server)::
-
-    python -m service.client \
-        --service-url http://localhost:8080 \
-        --descriptor tests/curve.json \
-        --analysis-mode multi \
-        --enable-screenshots \
-        --no-oidc
 """
 
 from __future__ import annotations
@@ -176,13 +167,6 @@ Examples:
       --descriptor calldata-MyToken.json \\
       --analysis-mode multi
 
-  # Local dev (against a --dev server):
-  python -m service.client \\
-      --service-url http://localhost:8080 \\
-      --descriptor tests/curve.json \\
-      --analysis-mode multi \\
-      --enable-screenshots \\
-      --no-oidc
         """,
     )
 
@@ -209,9 +193,6 @@ Examples:
     parser.add_argument("--enable-screenshots", action="store_true", default=None, help="Enable screenshot capture")
     parser.add_argument("--no-screenshots", action="store_true", default=False, help="Explicitly disable screenshots")
     parser.add_argument("--screenshot-device", choices=("stax", "flex"), default=None)
-
-    # Auth
-    parser.add_argument("--no-oidc", action="store_true", help="Skip OIDC token (for local dev)")
 
     args = parser.parse_args()
 
@@ -245,11 +226,9 @@ Examples:
     elif args.enable_screenshots:
         overrides["enable_screenshots"] = True
 
-    # OIDC token
-    token: str | None = None
-    if not args.no_oidc:
-        print("[CLIENT] Requesting GitHub OIDC token...", file=sys.stderr)
-        token = _get_oidc_token()
+    # OIDC token (always required — acquired from GitHub Actions runtime)
+    print("[CLIENT] Requesting GitHub OIDC token...", file=sys.stderr)
+    token = _get_oidc_token()
 
     report = stream_analysis(
         service_url=args.service_url,

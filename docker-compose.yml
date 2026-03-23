@@ -49,7 +49,6 @@ services:
     environment:
       SERVICE_HOST: "0.0.0.0"
       SERVICE_PORT: "8080"
-      SERVICE_DEV_MODE: "true"
       ENABLE_SCREENSHOTS: "true"
       # Use /tmp paths that match between host and container
       CS_TESTER_RUNTIME_ROOT: "/tmp/erc7730-screenshots"

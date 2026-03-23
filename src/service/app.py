@@ -2,10 +2,6 @@
 
 Usage
 -----
-    # Dev mode (no OIDC, loads .env secrets):
-    SERVICE_DEV_MODE=true python -m service.app
-
-    # Production (requires GitHub OIDC bearer token):
     python -m service.app
 """
 
@@ -28,7 +24,7 @@ from fastapi import FastAPI, Header, HTTPException
 from pydantic import BaseModel, Field
 from sse_starlette.sse import EventSourceResponse
 
-from .auth import verify_token_or_dev
+from .auth import verify_request_token
 from .config import ServiceConfig, load_config
 
 logger = logging.getLogger(__name__)
@@ -52,10 +48,8 @@ async def lifespan(app: FastAPI):
     global _config  # noqa: PLW0603
     _config = load_config()
 
-    mode = "DEV" if _config.dev_mode else "PRODUCTION"
     logger.info(
-        "[SERVICE] Starting in %s mode — host=%s port=%s allowed_repos=%s",
-        mode,
+        "[SERVICE] Starting — host=%s port=%s allowed_repos=%s",
         _config.host,
         _config.port,
         _config.allowed_repos,
@@ -109,7 +103,6 @@ class AnalyzeRequest(BaseModel):
 
 class HealthResponse(BaseModel):
     status: str = "ok"
-    dev_mode: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -214,8 +207,7 @@ class _QueueLogHandler(logging.Handler):
 # ---------------------------------------------------------------------------
 @app.get("/health", response_model=HealthResponse)
 async def health():
-    cfg = get_config()
-    return HealthResponse(dev_mode=cfg.dev_mode)
+    return HealthResponse()
 
 
 @app.post("/analyze")
@@ -235,10 +227,9 @@ async def analyze(
 
     # --- auth ---
     try:
-        await verify_token_or_dev(
+        await verify_request_token(
             authorization,
             allowed_repos=cfg.allowed_repos,
-            dev_mode=cfg.dev_mode,
             issuer=cfg.oidc_issuer,
         )
     except jwt.exceptions.PyJWTError as exc:
@@ -337,13 +328,7 @@ def main():
     parser = argparse.ArgumentParser(description="ERC-7730 Analyzer Service")
     parser.add_argument("--host", default=None, help="Bind host (env: SERVICE_HOST)")
     parser.add_argument("--port", type=int, default=None, help="Bind port (env: SERVICE_PORT)")
-    parser.add_argument(
-        "--dev", action="store_true", help="Enable dev mode (no auth, env: SERVICE_DEV_MODE)"
-    )
     args = parser.parse_args()
-
-    if args.dev:
-        os.environ["SERVICE_DEV_MODE"] = "true"
 
     cfg = load_config()
     host = args.host or cfg.host
@@ -359,7 +344,6 @@ def main():
         host=host,
         port=port,
         log_level="info",
-        reload=cfg.dev_mode,
     )
 
 

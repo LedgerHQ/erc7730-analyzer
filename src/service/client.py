@@ -167,6 +167,9 @@ Examples:
       --descriptor calldata-MyToken.json \\
       --analysis-mode multi
 
+  # Local service with DISABLE_OIDC_AUTH=1:
+  python -m service.client --no-auth --service-url http://127.0.0.1:8080 --descriptor ...
+
         """,
     )
 
@@ -174,6 +177,11 @@ Examples:
     parser.add_argument("--service-url", required=True, help="Base URL of the analyzer service")
     parser.add_argument("--descriptor", type=Path, required=True, help="Path to ERC-7730 JSON descriptor")
     parser.add_argument("--abi", type=Path, default=None, help="Optional ABI file")
+    parser.add_argument(
+        "--no-auth",
+        action="store_true",
+        help="Omit bearer token (use when the service runs with DISABLE_OIDC_AUTH)",
+    )
 
     # LLM overrides
     parser.add_argument("--analysis-mode", choices=("single", "multi"), default=None, help="Audit strategy")
@@ -226,9 +234,13 @@ Examples:
     elif args.enable_screenshots:
         overrides["enable_screenshots"] = True
 
-    # OIDC token (always required — acquired from GitHub Actions runtime)
-    print("[CLIENT] Requesting GitHub OIDC token...", file=sys.stderr)
-    token = _get_oidc_token()
+    skip_auth = args.no_auth or os.getenv("DISABLE_OIDC_AUTH", "").lower() in ("1", "true", "yes")
+    if skip_auth:
+        print("[CLIENT] Skipping OIDC token (DISABLE_OIDC_AUTH or --no-auth)", file=sys.stderr)
+        token = None
+    else:
+        print("[CLIENT] Requesting GitHub OIDC token...", file=sys.stderr)
+        token = _get_oidc_token()
 
     report = stream_analysis(
         service_url=args.service_url,

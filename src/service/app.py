@@ -53,19 +53,26 @@ async def lifespan(app: FastAPI):
     global _config  # noqa: PLW0603
     _config = load_config()
 
-    # Guard against misconfigured OIDC issuer in production
-    if _config.oidc_issuer != GITHUB_OIDC_ISSUER:
-        if not os.getenv("ALLOW_CUSTOM_OIDC"):
-            raise RuntimeError(
-                f"Non-standard OIDC issuer '{_config.oidc_issuer}' requires "
-                "ALLOW_CUSTOM_OIDC=true to be set explicitly"
-            )
-        logger.warning("[SERVICE] Using custom OIDC issuer: %s", _config.oidc_issuer)
+    if _config.disable_oidc_auth:
+        logger.warning(
+            "[SERVICE] DISABLE_OIDC_AUTH is set — JWT verification is disabled; "
+            "do not expose this instance to untrusted networks"
+        )
+    else:
+        # Guard against misconfigured OIDC issuer in production
+        if _config.oidc_issuer != GITHUB_OIDC_ISSUER:
+            if not os.getenv("ALLOW_CUSTOM_OIDC"):
+                raise RuntimeError(
+                    f"Non-standard OIDC issuer '{_config.oidc_issuer}' requires "
+                    "ALLOW_CUSTOM_OIDC=true to be set explicitly"
+                )
+            logger.warning("[SERVICE] Using custom OIDC issuer: %s", _config.oidc_issuer)
 
     logger.info(
-        "[SERVICE] Starting — host=%s port=%s allowed_repos=%s",
+        "[SERVICE] Starting — host=%s port=%s oidc_auth=%s allowed_repos=%s",
         _config.host,
         _config.port,
+        "off" if _config.disable_oidc_auth else "on",
         _config.allowed_repos,
     )
     yield
@@ -287,14 +294,15 @@ async def analyze(
     cfg = get_config()
 
     # --- auth ---
-    try:
-        await verify_request_token(
-            authorization,
-            allowed_repos=cfg.allowed_repos,
-            issuer=cfg.oidc_issuer,
-        )
-    except jwt.exceptions.PyJWTError:
-        raise HTTPException(status_code=401, detail="Authentication failed") from None
+    if not cfg.disable_oidc_auth:
+        try:
+            await verify_request_token(
+                authorization,
+                allowed_repos=cfg.allowed_repos,
+                issuer=cfg.oidc_issuer,
+            )
+        except jwt.exceptions.PyJWTError:
+            raise HTTPException(status_code=401, detail="Authentication failed") from None
 
     # Reject if at capacity
     if _analysis_semaphore.locked():

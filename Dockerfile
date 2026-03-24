@@ -24,6 +24,7 @@
 ARG DMK_REPO=Maroutis/device-sdk-ts
 ARG DMK_REF=feat/external-speculos
 ARG CS_DEVICE=stax
+ARG UV_VERSION=0.11.0
 
 # ---------- stage 1: build device-sdk-ts (public) ----------
 FROM node:20-bookworm-slim AS dmk-builder
@@ -45,13 +46,14 @@ RUN printf '{\n  "repo": "%s",\n  "ref": "%s"\n}\n' \
         "${DMK_REPO}" "${DMK_REF}" \
     > .erc7730_analyzer_dmk_ready.json
 
+# ---------- uv binary provider (enables ARG expansion for the image tag) ----------
+ARG UV_VERSION
+FROM ghcr.io/astral-sh/uv:${UV_VERSION} AS uv-bin
+
 # ---------- final image (single bookworm rootfs; tools from apt/repos) ----------
 FROM debian:bookworm-slim
 
 ARG CS_DEVICE=stax
-# uv in Docker: https://docs.astral.sh/uv/guides/integration/docker/
-# Pin the release (default bumped to current latest); override with --build-arg UV_VERSION=x.y.z
-ARG UV_VERSION=0.11.0
 
 WORKDIR /app
 
@@ -74,7 +76,7 @@ RUN apt-get update -qq \
     && rm -rf /var/lib/apt/lists/*
 
 # Install uv by copying binaries from the official distroless image (documented at the URL above).
-COPY --from=ghcr.io/astral-sh/uv:${UV_VERSION} /uv /uvx /bin/
+COPY --from=uv-bin /uv /uvx /bin/
 
 ENV UV_PYTHON_PREFERENCE=only-managed
 RUN uv python install 3.12

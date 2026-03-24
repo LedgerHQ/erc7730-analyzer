@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import shutil
+import socket
 import subprocess
 import tempfile
 import threading
@@ -39,6 +40,12 @@ CS_TESTER_MAX_RETRIES = 3
 CS_TESTER_RETRY_DELAY = 3
 TRIM_HEAD = 3
 TRIM_TAIL = 3
+
+PERSISTENT_SPECULOS_PORT = 5555
+PERSISTENT_SPECULOS_API_PORT = 5000
+SPECULOS_STARTUP_TIMEOUT = 30
+_PERSISTENT_CONTAINER_NAME = "erc7730-persistent-speculos"
+SPECULOS_DEV_TOOLS_IMAGE = "ghcr.io/ledgerhq/ledger-app-builder/ledger-app-dev-tools:latest"
 
 _BOOT_LOCK = threading.Lock()
 _DMK_STAMP_FILENAME = ".erc7730_analyzer_dmk_ready.json"
@@ -91,6 +98,9 @@ class ScreenshotRunner:
         self._speculos_sem: asyncio.Semaphore | None = None
         self.app_eth_artifact_name = os.getenv("APP_ETHEREUM_ARTIFACT_NAME", DEFAULT_ARTIFACT_NAME)
         self.last_unavailability_reasons: list[str] = []
+        self._persistent_speculos_proc: subprocess.Popen | None = None
+        self._persistent_speculos_port: int | None = None
+        self._persistent_speculos_container: str | None = None
 
     # ------------------------------------------------------------------
     # Availability checks
@@ -117,8 +127,8 @@ class ScreenshotRunner:
         if not shutil.which("pnpm") and not shutil.which("corepack"):
             self._add_unavailability_reason("pnpm/corepack not found on PATH")
             return False
-        if not shutil.which("docker"):
-            self._add_unavailability_reason("docker CLI not found on PATH")
+        if not shutil.which("docker") and not shutil.which("speculos"):
+            self._add_unavailability_reason("neither docker CLI nor native speculos found on PATH")
             return False
         return True
 
@@ -303,6 +313,8 @@ class ScreenshotRunner:
 
     def _ensure_speculos_image(self) -> None:
         """Pull the Speculos Docker image if not already present."""
+        if not shutil.which("docker"):
+            return
         try:
             inspect = subprocess.run(
                 ["docker", "image", "inspect", self.speculos_image],
@@ -317,6 +329,137 @@ class ScreenshotRunner:
             )
         except Exception as exc:
             logger.warning("[SCREENSHOTS][SETUP] Speculos image pull failed: %s", exc)
+
+    # ------------------------------------------------------------------
+    # Persistent Speculos lifecycle
+    # ------------------------------------------------------------------
+
+    async def _start_persistent_speculos(self) -> int:
+        """Start a single Speculos instance that persists across all cs-tester runs.
+
+        Native ``speculos`` binary is preferred (App Runner / CI).  Falls back
+        to a long-lived Docker container for local dev.  Returns the API port.
+        """
+        elf_path = self._artifact_elf_path()
+        if not elf_path.is_file():
+            raise RuntimeError(f"No Ethereum app ELF at {elf_path}")
+
+        port = PERSISTENT_SPECULOS_PORT
+
+        if shutil.which("speculos"):
+            logger.info("[SCREENSHOTS] Starting native persistent Speculos (port=%d, elf=%s)", port, elf_path)
+            self._persistent_speculos_proc = subprocess.Popen(
+                ["speculos", str(elf_path), "--display", "headless", "--api-port", str(port)],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+            )
+        elif shutil.which("docker"):
+            logger.info("[SCREENSHOTS] Starting Docker persistent Speculos (port=%d, elf=%s)", port, elf_path)
+            subprocess.run(["docker", "rm", "-f", _PERSISTENT_CONTAINER_NAME], capture_output=True)
+            uid, gid = os.getuid(), os.getgid()
+            result = subprocess.run(
+                [
+                    "docker", "run", "--rm", "-d",
+                    "--name", _PERSISTENT_CONTAINER_NAME,
+                    "-p", f"{port}:{PERSISTENT_SPECULOS_API_PORT}",
+                    "-v", f"{elf_path}:/custom-app/app.elf:ro",
+                    SPECULOS_DEV_TOOLS_IMAGE,
+                    "speculos", "/custom-app/app.elf",
+                    "--display", "headless",
+                    "--api-port", str(PERSISTENT_SPECULOS_API_PORT),
+                    "--vnc-port", str(PERSISTENT_SPECULOS_API_PORT + 900),
+                    "--user", f"{uid}:{gid}",
+                ],
+                capture_output=True, text=True, timeout=120,
+            )
+            if result.returncode != 0:
+                raise RuntimeError(f"Docker Speculos start failed: {result.stderr[-500:]}")
+            self._persistent_speculos_container = _PERSISTENT_CONTAINER_NAME
+        else:
+            raise RuntimeError("No speculos or docker available")
+
+        await self._wait_for_speculos_api(port)
+        self._persistent_speculos_port = port
+        self._speculos_sem = asyncio.Semaphore(1)
+        logger.info("[SCREENSHOTS] Persistent Speculos ready on port %d", port)
+        return port
+
+    async def _wait_for_speculos_api(self, port: int, timeout: int = SPECULOS_STARTUP_TIMEOUT) -> None:
+        """Block until the Speculos HTTP API is fully responsive."""
+        import urllib.request
+        import urllib.error
+
+        url = f"http://localhost:{port}/"
+        for attempt in range(timeout * 2):
+            try:
+                resp = urllib.request.urlopen(url, timeout=2)
+                resp.close()
+                return
+            except (urllib.error.URLError, OSError, ConnectionRefusedError):
+                await asyncio.sleep(0.5)
+        raise TimeoutError(f"Speculos API not ready on port {port} after {timeout}s")
+
+    def _restart_persistent_speculos_sync(self) -> None:
+        """Restart Speculos to get a clean app state between cs-tester runs.
+
+        Docker: ``docker restart --timeout 1`` (~1.2s) then wait for API.
+        Native: kill + respawn the process.
+        """
+        import time
+        import urllib.error
+        import urllib.request
+
+        port = self._persistent_speculos_port or PERSISTENT_SPECULOS_PORT
+
+        if self._persistent_speculos_container:
+            subprocess.run(
+                ["docker", "restart", "--timeout", "1", self._persistent_speculos_container],
+                capture_output=True, timeout=30,
+            )
+        elif self._persistent_speculos_proc:
+            elf_path = self._artifact_elf_path()
+            self._persistent_speculos_proc.terminate()
+            try:
+                self._persistent_speculos_proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                self._persistent_speculos_proc.kill()
+            self._persistent_speculos_proc = subprocess.Popen(
+                ["speculos", str(elf_path), "--display", "headless", "--api-port", str(port)],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+            )
+        else:
+            return
+
+        url = f"http://localhost:{port}/"
+        for _ in range(SPECULOS_STARTUP_TIMEOUT * 2):
+            try:
+                resp = urllib.request.urlopen(url, timeout=2)
+                resp.close()
+                logger.debug("[SCREENSHOTS] Speculos restarted and ready on port %d", port)
+                return
+            except (urllib.error.URLError, OSError, ConnectionRefusedError):
+                time.sleep(0.5)
+        logger.warning("[SCREENSHOTS] Speculos API not ready after restart — continuing anyway")
+
+    def _stop_persistent_speculos(self) -> None:
+        """Tear down the persistent Speculos instance."""
+        if self._persistent_speculos_proc:
+            logger.info("[SCREENSHOTS] Stopping native persistent Speculos (pid=%d)", self._persistent_speculos_proc.pid)
+            self._persistent_speculos_proc.terminate()
+            try:
+                self._persistent_speculos_proc.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                self._persistent_speculos_proc.kill()
+            self._persistent_speculos_proc = None
+
+        if self._persistent_speculos_container:
+            logger.info("[SCREENSHOTS] Stopping Docker persistent Speculos container")
+            subprocess.run(["docker", "rm", "-f", self._persistent_speculos_container], capture_output=True)
+            self._persistent_speculos_container = None
+
+        self._persistent_speculos_port = None
+        self._speculos_sem = None
 
     # ------------------------------------------------------------------
     # Helpers
@@ -358,6 +501,7 @@ class ScreenshotRunner:
             return ["pnpm", *args]
         return ["corepack", "pnpm", *args]
 
+
     # ------------------------------------------------------------------
     # Async entry point
     # ------------------------------------------------------------------
@@ -371,12 +515,20 @@ class ScreenshotRunner:
     async def _run_cs_tester_throttled(
         self, selector: str, tx_hash: str, raw_tx: str, erc7730_file: Path, attempt: int,
     ) -> TxScreenshots:
-        """Run a single cs-tester invocation, throttled by the Speculos semaphore."""
+        """Run a single cs-tester invocation, throttled by the Speculos semaphore.
+
+        After each run, Speculos is restarted to guarantee a clean app state
+        for the next invocation (the emulated Ethereum app does not reset
+        cleanly between signings).
+        """
         sem = self._get_speculos_semaphore()
         async with sem:
-            return await asyncio.to_thread(
+            result = await asyncio.to_thread(
                 self._run_cs_tester_once, selector, tx_hash, raw_tx, erc7730_file, attempt,
             )
+            if self._persistent_speculos_port is not None:
+                await asyncio.to_thread(self._restart_persistent_speculos_sync)
+            return result
 
     async def capture_for_selector_async(
         self,
@@ -479,8 +631,33 @@ class ScreenshotRunner:
         selectors_info: list[dict[str, Any]],
         erc7730_file: Path,
     ) -> dict[str, list[TxScreenshots]]:
-        """Run screenshot capture for all selectors concurrently."""
+        """Run screenshot capture for all selectors.
 
+        A persistent Speculos instance is started once before processing and
+        torn down afterwards.  cs-tester is invoked with ``--external-speculos``
+        so it connects to the pre-existing instance instead of spawning its own
+        Docker container, cutting per-transaction overhead from ~30s to ~4s.
+        """
+        try:
+            await self._start_persistent_speculos()
+        except Exception as exc:
+            logger.warning("[SCREENSHOTS] Failed to start persistent Speculos: %s", exc)
+            return {}
+
+        try:
+            return await self._capture_all_selectors_inner(
+                selectors_info=selectors_info,
+                erc7730_file=erc7730_file,
+            )
+        finally:
+            self._stop_persistent_speculos()
+
+    async def _capture_all_selectors_inner(
+        self,
+        *,
+        selectors_info: list[dict[str, Any]],
+        erc7730_file: Path,
+    ) -> dict[str, list[TxScreenshots]]:
         async def _one(info: dict[str, Any]) -> tuple[str, list[TxScreenshots]]:
             sel = info["selector"]
             tx_screenshots = await self.capture_for_selector_async(
@@ -511,6 +688,63 @@ class ScreenshotRunner:
     # Single-tx cs-tester execution (one attempt) + trimming
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _wait_for_screenshots_or_exit(
+        proc: subprocess.Popen,
+        screenshots_dir: Path,
+        selector: str,
+        tx_hash: str,
+        *,
+        max_wait: int = 120,
+        stable_after: float = 3.0,
+    ) -> bool:
+        """Poll until cs-tester exits or screenshot files stop appearing.
+
+        Returns ``True`` only when cs-tester succeeded: either a clean exit
+        (code 0) or screenshots stabilised while the process is still alive
+        (the common ``--external-speculos`` hang-after-success case).
+
+        Returns ``False`` on non-zero exit, timeout with no screenshots, or
+        any other failure.
+        """
+        import time
+
+        deadline = time.monotonic() + max_wait
+        last_count = 0
+        last_change = time.monotonic()
+
+        while time.monotonic() < deadline:
+            ret = proc.poll()
+            if ret is not None:
+                if ret == 0:
+                    logger.info("[SCREENSHOTS][%s] cs-tester completed for tx %s", selector, tx_hash[:10])
+                    return True
+                stderr = ""
+                if proc.stderr:
+                    stderr = proc.stderr.read().decode(errors="replace")[-500:]
+                logger.warning(
+                    "[SCREENSHOTS][%s] cs-tester exited with code %d for tx %s: %s",
+                    selector, ret, tx_hash[:10], stderr,
+                )
+                return False
+
+            current_count = len(list(screenshots_dir.glob("screenshot_*.png")))
+            if current_count != last_count:
+                last_count = current_count
+                last_change = time.monotonic()
+
+            if last_count > 0 and (time.monotonic() - last_change) >= stable_after:
+                logger.info(
+                    "[SCREENSHOTS][%s] %d screenshot(s) stable for %.0fs — terminating cs-tester for tx %s",
+                    selector, last_count, stable_after, tx_hash[:10],
+                )
+                return True
+
+            time.sleep(0.5)
+
+        logger.warning("[SCREENSHOTS][%s] cs-tester timed out after %ds for tx %s", selector, max_wait, tx_hash[:10])
+        return False
+
     def _run_cs_tester_once(
         self,
         selector: str,
@@ -540,22 +774,20 @@ class ScreenshotRunner:
         )
 
         custom_app_path = self._artifact_elf_path()
-        cmd = [
-            *self._pnpm_cmd(
-                "cs-tester",
-                "cli",
-                "--device",
-                self.device,
-                "--screenshot-folder-path",
-                str(screenshots_dir),
-                "--erc7730-files",
-                str(erc7730_file.resolve()),
-                "--log-level",
-                "warn",
-                "raw-file",
-                str(input_file),
-            ),
+        cs_global_opts = [
+            "cs-tester", "cli",
+            "--device", self.device,
+            "--screenshot-folder-path", str(screenshots_dir),
+            "--erc7730-files", str(erc7730_file.resolve()),
+            "--log-level", "warn",
         ]
+        if self._persistent_speculos_port is not None:
+            cs_global_opts.extend([
+                "--speculos-port", str(self._persistent_speculos_port),
+                "--external-speculos",
+            ])
+        cs_global_opts.extend(["raw-file", str(input_file)])
+        cmd = [*self._pnpm_cmd(*cs_global_opts)]
 
         env = dict(os.environ)
         if not custom_app_path.is_file():
@@ -574,12 +806,10 @@ class ScreenshotRunner:
 
         if attempt == 0:
             logger.info(
-                "[SCREENSHOTS][%s] Running cs-tester for tx %s device=%s%s",
-                selector,
-                tx_hash[:10],
-                self.device,
-                f" custom_app={custom_app_path}",
+                "[SCREENSHOTS][%s] Running cs-tester for tx %s device=%s custom_app=%s",
+                selector, tx_hash[:10], self.device, custom_app_path,
             )
+            logger.debug("[SCREENSHOTS][%s] cmd: %s", selector, " ".join(cmd))
         else:
             logger.info(
                 "[SCREENSHOTS][%s] Retry %d/%d for tx %s",
@@ -590,34 +820,32 @@ class ScreenshotRunner:
             )
 
         try:
-            result = subprocess.run(
+            proc = subprocess.Popen(
                 cmd,
                 cwd=str(self.cs_tester_root),
                 env=env,
-                capture_output=True,
-                text=True,
-                timeout=180,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
             )
-
-            if result.returncode != 0:
-                logger.warning(
-                    "[SCREENSHOTS][%s] cs-tester exited with code %d for tx %s: %s",
-                    selector,
-                    result.returncode,
-                    tx_hash[:10],
-                    result.stderr[-500:] if result.stderr else "(no stderr)",
-                )
-                return {"tx_hash": tx_hash, "screenshots": []}
-
-            logger.info("[SCREENSHOTS][%s] cs-tester completed for tx %s", selector, tx_hash[:10])
-        except subprocess.TimeoutExpired:
-            logger.warning("[SCREENSHOTS][%s] cs-tester timed out for tx %s", selector, tx_hash[:10])
-            return {"tx_hash": tx_hash, "screenshots": []}
         except FileNotFoundError:
             logger.warning("[SCREENSHOTS][%s] pnpm not found", selector)
             return {"tx_hash": tx_hash, "screenshots": []}
         except Exception as exc:
-            logger.warning("[SCREENSHOTS][%s] cs-tester failed for tx %s: %s", selector, tx_hash[:10], exc)
+            logger.warning("[SCREENSHOTS][%s] cs-tester failed to start for tx %s: %s", selector, tx_hash[:10], exc)
+            return {"tx_hash": tx_hash, "screenshots": []}
+
+        try:
+            success = self._wait_for_screenshots_or_exit(proc, screenshots_dir, selector, tx_hash)
+        finally:
+            if proc.poll() is None:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    proc.wait(timeout=3)
+
+        if not success:
             return {"tx_hash": tx_hash, "screenshots": []}
 
         all_pngs = sorted(screenshots_dir.glob("screenshot_*.png"), key=_sort_key)

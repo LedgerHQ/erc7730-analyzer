@@ -15,7 +15,7 @@ set -euo pipefail
 
 # --- Unpack Snowflake credentials JSON blob (set by App Runner from SM) ---
 if [ -n "${SNOWFLAKE_CREDENTIALS_JSON:-}" ]; then
-  _sf_val() { echo "$SNOWFLAKE_CREDENTIALS_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin).get('$1',''))" 2>/dev/null; }
+  _sf_val() { jq -r --arg k "$1" '.[$k] // empty' <<< "${SNOWFLAKE_CREDENTIALS_JSON}" 2>/dev/null; }
   export SNOWFLAKE_USER="${SNOWFLAKE_USER:-$(_sf_val user)}"
   export SNOWFLAKE_INSTANCE="${SNOWFLAKE_INSTANCE:-$(_sf_val instance)}"
   export SNOWFLAKE_WAREHOUSE="${SNOWFLAKE_WAREHOUSE:-$(_sf_val warehouse)}"

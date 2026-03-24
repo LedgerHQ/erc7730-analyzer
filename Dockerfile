@@ -5,16 +5,14 @@
 # Bakes the full analyzer + screenshot pipeline into a single image:
 #   - Python 3.12 + all analyzer deps
 #   - Node 20 + pnpm + device-sdk-ts (pre-built)
+#   - Native Speculos + qemu-user-static (ARM emulation for Ledger apps)
 #   - Runtime cache for Ethereum .elf app files fetched from app-ethereum CI
-#   - Docker CLI (for launching Speculos sibling containers)
 #
 # Build:
 #   docker build -t erc7730-analyzer .
 #
 # Run (service mode — default):
-#   docker run --rm -p 8080:8080 \
-#     -v /var/run/docker.sock:/var/run/docker.sock \
-#     --env-file .env  erc7730-analyzer
+#   docker run --rm -p 8080:8080 --env-file .env erc7730-analyzer
 #
 # Run (CLI mode):
 #   docker run --rm --env-file .env \
@@ -23,7 +21,7 @@
 
 # ======================== build args ========================
 ARG DMK_REPO=LedgerHQ/device-sdk-ts
-ARG DMK_REF=develop
+ARG DMK_REF=feat/no-issue-external-speculos
 ARG CS_DEVICE=stax
 
 # ---------- stage 1: build device-sdk-ts (public) ----------
@@ -46,16 +44,10 @@ RUN printf '{\n  "repo": "%s",\n  "ref": "%s"\n}\n' \
         "${DMK_REPO}" "${DMK_REF}" \
     > .erc7730_analyzer_dmk_ready.json
 
-# ---------- stage 2: grab docker CLI ----------
-FROM docker:cli AS docker_cli
-
 # ---------- final image ----------
 FROM python:3.12-slim
 
 ARG CS_DEVICE
-
-# Docker CLI (Speculos sibling containers)
-COPY --from=docker_cli /usr/local/bin/docker /usr/local/bin/docker
 
 # Node.js 20 runtime + pnpm (cs-tester execution)
 COPY --from=dmk-builder /usr/local/ /usr/local/
@@ -69,6 +61,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates \
         curl \
         git \
+        qemu-user-static \
     && rm -rf /var/lib/apt/lists/*
 
 # ---------- Python deps ----------
@@ -76,12 +69,8 @@ COPY pyproject.toml uv.lock README.md ./
 COPY src/ ./src/
 RUN uv sync --frozen --no-dev
 
-# ---------- Node deps (migration script) ----------
-COPY package.json package-lock.json ./
-RUN npm ci --omit=dev 2>/dev/null || true
-
-# ---------- Scripts ----------
-COPY scripts/ ./scripts/
+# ---------- Native Speculos (no Docker-in-Docker needed) ----------
+RUN pip install --no-cache-dir speculos
 
 # ---------- Pre-built device-sdk-ts ----------
 COPY --from=dmk-builder  /build  /data/screenshots/device-sdk-ts

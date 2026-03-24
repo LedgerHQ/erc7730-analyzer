@@ -32,6 +32,7 @@ class ServiceConfig:
     # --- OIDC verification ---
     allowed_repos: list[str] = field(default_factory=list)
     oidc_issuer: str = "https://token.actions.githubusercontent.com"
+    disable_oidc_auth: bool = False
 
     # --- analyzer defaults (overridable per request) ---
     default_model: str = "gpt-5.4"
@@ -75,6 +76,7 @@ def load_config(env_file: str | Path | None = None) -> ServiceConfig:
         cal_service_staging=os.getenv("CAL_SERVICE_STAGING", "https://crypto-assets-service.api.ledger-test.com"),
         allowed_repos=allowed,
         oidc_issuer=os.getenv("OIDC_ISSUER_URL", "https://token.actions.githubusercontent.com"),
+        disable_oidc_auth=os.getenv("DISABLE_OIDC_AUTH", "").lower() in ("1", "true", "yes"),
         default_model=os.getenv("LLM_MODEL", "gpt-5.4"),
         default_reasoning_effort=os.getenv("LLM_REASONING_EFFORT", "high"),
         default_analysis_mode=os.getenv("ANALYSIS_MODE", "single"),

@@ -21,7 +21,7 @@
 
 # ======================== build args ========================
 ARG DMK_REPO=LedgerHQ/device-sdk-ts
-ARG DMK_REF=feat/no-issue-external-speculos
+ARG DMK_REF=develop
 ARG CS_DEVICE=stax
 
 # ---------- stage 1: build device-sdk-ts (public) ----------

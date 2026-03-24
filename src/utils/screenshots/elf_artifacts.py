@@ -277,9 +277,7 @@ def _get_artifact_for_run(
         if artifact.get("name") == artifact_name and not artifact.get("expired", False):
             return artifact
 
-    raise RuntimeError(
-        f"Artifact {artifact_name!r} not found (or expired) in run {run_id} for {owner}/{repo}"
-    )
+    raise RuntimeError(f"Artifact {artifact_name!r} not found (or expired) in run {run_id} for {owner}/{repo}")
 
 
 def _download_artifact_zip(

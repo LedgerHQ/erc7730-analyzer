@@ -3,18 +3,17 @@
 # ERC-7730 Analyzer — production image
 #
 # Bakes the full analyzer + screenshot pipeline into a single image:
-#   - Python 3.12 + all analyzer deps
+#   - Python 3.12 via uv (managed install; no Debian python3 package)
 #   - Node 20 + pnpm + device-sdk-ts (pre-built)
 #   - Runtime cache for Ethereum .elf app files fetched from app-ethereum CI
-#   - Docker CLI (for launching Speculos sibling containers)
+#   - Native Speculos via the ``speculos`` PyPI package + qemu-user-static
+#     (cs-tester uses --external-speculos; no Docker-in-Docker)
 #
 # Build:
 #   docker build -t erc7730-analyzer .
 #
 # Run (service mode — default):
-#   docker run --rm -p 8080:8080 \
-#     -v /var/run/docker.sock:/var/run/docker.sock \
-#     --env-file .env  erc7730-analyzer
+#   docker run --rm -p 8080:8080 --env-file .env erc7730-analyzer
 #
 # Run (CLI mode):
 #   docker run --rm --env-file .env \
@@ -22,8 +21,8 @@
 # ===========================================================================
 
 # ======================== build args ========================
-ARG DMK_REPO=LedgerHQ/device-sdk-ts
-ARG DMK_REF=develop
+ARG DMK_REPO=Maroutis/device-sdk-ts
+ARG DMK_REF=feat/external-speculos
 ARG CS_DEVICE=stax
 
 # ---------- stage 1: build device-sdk-ts (public) ----------
@@ -46,38 +45,47 @@ RUN printf '{\n  "repo": "%s",\n  "ref": "%s"\n}\n' \
         "${DMK_REPO}" "${DMK_REF}" \
     > .erc7730_analyzer_dmk_ready.json
 
-# ---------- stage 2: grab docker CLI ----------
-FROM docker:cli AS docker_cli
+# ---------- final image (single bookworm rootfs; tools from apt/repos) ----------
+FROM debian:bookworm-slim
 
-# ---------- final image ----------
-FROM python:3.12-slim
-
-ARG CS_DEVICE
-
-# Docker CLI (Speculos sibling containers)
-COPY --from=docker_cli /usr/local/bin/docker /usr/local/bin/docker
-
-# Node.js 20 runtime + pnpm (cs-tester execution)
-COPY --from=dmk-builder /usr/local/ /usr/local/
-
-# uv
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
+ARG CS_DEVICE=stax
+# uv in Docker: https://docs.astral.sh/uv/guides/integration/docker/
+# Pin the release (default bumped to current latest); override with --build-arg UV_VERSION=x.y.z
+ARG UV_VERSION=0.11.0
 
 WORKDIR /app
 
-RUN apt-get update -qq && apt-get install -qq -y --no-install-recommends \
+RUN apt-get update -qq \
+    && apt-get install -qq -y --no-install-recommends \
         ca-certificates \
         curl \
         git \
+        gnupg \
+        jq \
+        qemu-user-static \
+    && install -d -m 0755 /etc/apt/keyrings \
+    && curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
+        | gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg \
+    && echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_20.x nodistro main" \
+        > /etc/apt/sources.list.d/nodesource.list \
+    && apt-get update -qq \
+    && apt-get install -qq -y --no-install-recommends nodejs \
+    && npm install -g --progress=false --loglevel=warn pnpm@9 \
     && rm -rf /var/lib/apt/lists/*
+
+# Install uv by copying binaries from the official distroless image (documented at the URL above).
+COPY --from=ghcr.io/astral-sh/uv:${UV_VERSION} /uv /uvx /bin/
+
+ENV UV_PYTHON_PREFERENCE=only-managed
+RUN uv python install 3.12
 
 # ---------- Python deps ----------
 COPY pyproject.toml uv.lock README.md ./
 COPY src/ ./src/
 RUN uv sync --frozen --no-dev --no-progress --quiet
 
-# ---------- Pre-built device-sdk-ts ----------
-COPY --from=dmk-builder  /build  /data/screenshots/device-sdk-ts
+# ---------- Pre-built device-sdk-ts (artifact copy only) ----------
+COPY --from=dmk-builder /build /data/screenshots/device-sdk-ts
 
 # ---------- Runtime directories ----------
 RUN mkdir -p /data/screenshots/ethereum-app-elfs

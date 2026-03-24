@@ -1,15 +1,21 @@
 """Run cs-tester CLI to capture Ledger device screenshots for transactions."""
 
 import asyncio
+import importlib.util
 import json
 import logging
 import os
 import shutil
+import socket
 import subprocess
+import sys
 import tempfile
 import threading
+import time
 from pathlib import Path
 from typing import Any, TypedDict
+
+import requests
 
 from .elf_artifacts import (
     DEFAULT_ARTIFACT_NAME,
@@ -27,12 +33,18 @@ logger = logging.getLogger(__name__)
 DEFAULT_RUNTIME_ROOT = Path(os.getenv("CS_TESTER_RUNTIME_ROOT", "/tmp/erc7730-screenshots"))
 _LEGACY_CS_TESTER_ROOT = Path(os.path.expanduser("~/Desktop/clear_sign/device-sdk-ts"))
 _LEGACY_COIN_APPS_PATH = Path(os.path.expanduser("~/Desktop/clear_sign/coin-apps"))
-DEFAULT_CS_TESTER_ROOT = str(_LEGACY_CS_TESTER_ROOT if _LEGACY_CS_TESTER_ROOT.exists() else DEFAULT_RUNTIME_ROOT / "device-sdk-ts")
-DEFAULT_COIN_APPS_PATH = str(_LEGACY_COIN_APPS_PATH if _LEGACY_COIN_APPS_PATH.exists() else DEFAULT_RUNTIME_ROOT / "coin-apps")
+DEFAULT_CS_TESTER_ROOT = str(
+    _LEGACY_CS_TESTER_ROOT if _LEGACY_CS_TESTER_ROOT.exists() else DEFAULT_RUNTIME_ROOT / "device-sdk-ts"
+)
+DEFAULT_COIN_APPS_PATH = str(
+    _LEGACY_COIN_APPS_PATH if _LEGACY_COIN_APPS_PATH.exists() else DEFAULT_RUNTIME_ROOT / "coin-apps"
+)
 DEFAULT_ETH_APP_ELF_ROOT = str(DEFAULT_RUNTIME_ROOT / "ethereum-app-elfs")
 DEFAULT_DMK_REPO = "LedgerHQ/device-sdk-ts"
 DEFAULT_DMK_REF = "develop"
-DEFAULT_SPECULOS_IMAGE = "ghcr.io/ledgerhq/speculos"
+SPECULOS_BASE_API_PORT = int(os.getenv("SPECULOS_BASE_API_PORT", "5000"))
+SPECULOS_STARTUP_TIMEOUT = float(os.getenv("SPECULOS_STARTUP_TIMEOUT", "20"))
+SPECULOS_SHUTDOWN_GRACE_SEC = float(os.getenv("SPECULOS_SHUTDOWN_GRACE_SEC", "5"))
 MAX_TXS_PER_SELECTOR = 2
 MAX_CONCURRENT_SPECULOS = min(max(os.cpu_count() or 4, 3), 8)
 CS_TESTER_MAX_RETRIES = 3
@@ -41,6 +53,7 @@ TRIM_HEAD = 3
 TRIM_TAIL = 3
 
 _BOOT_LOCK = threading.Lock()
+_SPECULOS_PORT_LOCK = threading.Lock()
 _DMK_STAMP_FILENAME = ".erc7730_analyzer_dmk_ready.json"
 
 
@@ -49,16 +62,34 @@ class TxScreenshots(TypedDict):
     screenshots: list[str]
 
 
+def _tcp_port_in_use(port: int) -> bool:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.settimeout(0.2)
+        return s.connect_ex(("127.0.0.1", port)) == 0
+
+
+def _allocate_speculos_api_apdu_ports() -> tuple[int, int]:
+    """Return a pair (api_port, apdu_port) with consecutive free ports."""
+    with _SPECULOS_PORT_LOCK:
+        candidate = SPECULOS_BASE_API_PORT
+        while candidate < 65534:
+            if not _tcp_port_in_use(candidate) and not _tcp_port_in_use(candidate + 1):
+                return candidate, candidate + 1
+            candidate += 2
+        raise RuntimeError("Could not allocate free TCP ports for Speculos (api + apdu)")
+
+
 class ScreenshotRunner:
-    """Generate Ledger device screenshots using cs-tester + Speculos.
+    """Generate Ledger device screenshots using cs-tester + native Speculos.
 
     In the Docker/API deployment model, device-sdk-ts is pre-built in the
     image. At runtime the runner:
 
-    - Pulls latest device-sdk-ts changes (public, no auth)
+    - Pulls latest device-sdk-ts changes (public, no auth) when applicable
     - Checks the latest successful app-ethereum CI artifact and refreshes the
       device-specific Ethereum app ELF if it changed
-    - Ensures the Speculos Docker image is present
+    - Starts Speculos via the Python ``speculos`` package (no Docker); cs-tester
+      uses ``--external-speculos`` to attach to that instance.
 
     Legacy COIN_APPS_PATH support is retained as a fallback, but the primary
     path is the CI artifact-backed custom app ELF.
@@ -79,7 +110,6 @@ class ScreenshotRunner:
         self.device = os.getenv("CS_TESTER_DEVICE", device)
         self.dmk_repo = os.getenv("DMK_REPO", DEFAULT_DMK_REPO)
         self.dmk_ref = os.getenv("DMK_REF", DEFAULT_DMK_REF)
-        self.speculos_image = os.getenv("SPECULOS_IMAGE", DEFAULT_SPECULOS_IMAGE)
         self.gating_token = os.getenv("GATING_TOKEN", "").strip()
         self.github_token = (
             os.getenv("APP_ETHEREUM_ARTIFACT_TOKEN", "").strip() or os.getenv("GITHUB_TOKEN", "").strip()
@@ -117,8 +147,8 @@ class ScreenshotRunner:
         if not shutil.which("pnpm") and not shutil.which("corepack"):
             self._add_unavailability_reason("pnpm/corepack not found on PATH")
             return False
-        if not shutil.which("docker"):
-            self._add_unavailability_reason("docker CLI not found on PATH")
+        if importlib.util.find_spec("speculos") is None:
+            self._add_unavailability_reason("speculos Python package not installed")
             return False
         return True
 
@@ -145,6 +175,17 @@ class ScreenshotRunner:
     def _has_any_ethereum_app(self) -> bool:
         return self._has_artifact_elf()
 
+    def _speculos_model(self) -> str:
+        """Map analyzer/device aliases to ``speculos -m`` model names."""
+        normalized = normalize_device_name(self.device)
+        if normalized == "nanos2":
+            return "nanosp"
+        allowed = {"nanox", "nanosp", "stax", "flex", "apex_p"}
+        if normalized in allowed:
+            return normalized
+        d = (self.device or "").strip().lower()
+        return d if d in allowed else "stax"
+
     # ------------------------------------------------------------------
     # Runtime readiness
     # ------------------------------------------------------------------
@@ -153,8 +194,7 @@ class ScreenshotRunner:
         """Verify pre-built assets exist and refresh mutable runtime assets."""
         if not (self.cs_tester_root / "apps" / "clear-signing-tester").is_dir():
             self._add_unavailability_reason(
-                f"device-sdk-ts not found at {self.cs_tester_root} — "
-                "build the Docker image or clone manually"
+                f"device-sdk-ts not found at {self.cs_tester_root} — build the Docker image or clone manually"
             )
             return False
 
@@ -165,7 +205,6 @@ class ScreenshotRunner:
             if not os.getenv("CS_TESTER_RUNTIME_ROOT"):
                 self._maybe_update_dmk()
             self._maybe_update_elfs()
-            self._ensure_speculos_image()
 
         if self._has_any_ethereum_app():
             return True
@@ -198,10 +237,9 @@ class ScreenshotRunner:
             logger.info("[SCREENSHOTS][SETUP] device-sdk-ts already at %s — skipping pull", self.dmk_ref)
             return
 
-        build_functional = (
-            (self.cs_tester_root / "node_modules").is_dir()
-            and (self.cs_tester_root / "apps" / "clear-signing-tester").is_dir()
-        )
+        build_functional = (self.cs_tester_root / "node_modules").is_dir() and (
+            self.cs_tester_root / "apps" / "clear-signing-tester"
+        ).is_dir()
 
         if not stamp and build_functional:
             logger.info("[SCREENSHOTS][SETUP] device-sdk-ts build already present — writing stamp, skipping update")
@@ -212,14 +250,16 @@ class ScreenshotRunner:
         prev_head = subprocess.run(
             ["git", "rev-parse", "HEAD"],
             cwd=str(self.cs_tester_root),
-            capture_output=True, text=True,
+            capture_output=True,
+            text=True,
         ).stdout.strip()
 
         try:
             logger.info("[SCREENSHOTS][SETUP] Pulling device-sdk-ts %s@%s", self.dmk_repo, self.dmk_ref)
             self._run_command(
                 ["git", "fetch", "--depth", "1", "origin", self.dmk_ref],
-                cwd=self.cs_tester_root, timeout=300,
+                cwd=self.cs_tester_root,
+                timeout=300,
                 description=f"Fetching {self.dmk_repo}@{self.dmk_ref}",
             )
 
@@ -227,7 +267,8 @@ class ScreenshotRunner:
             fetch_head = subprocess.run(
                 ["git", "rev-parse", "FETCH_HEAD"],
                 cwd=str(self.cs_tester_root),
-                capture_output=True, text=True,
+                capture_output=True,
+                text=True,
             ).stdout.strip()
             if fetch_head == prev_head:
                 logger.info("[SCREENSHOTS][SETUP] device-sdk-ts already up to date")
@@ -236,17 +277,20 @@ class ScreenshotRunner:
 
             self._run_command(
                 ["git", "checkout", "--detach", "FETCH_HEAD"],
-                cwd=self.cs_tester_root, timeout=120,
+                cwd=self.cs_tester_root,
+                timeout=120,
                 description=f"Checking out {self.dmk_repo}@{self.dmk_ref}",
             )
             self._run_command(
                 self._pnpm_cmd("install", "--frozen-lockfile"),
-                cwd=self.cs_tester_root, timeout=600,
+                cwd=self.cs_tester_root,
+                timeout=600,
                 description="Installing device-sdk-ts dependencies",
             )
             self._run_command(
                 self._pnpm_cmd("build:libs"),
-                cwd=self.cs_tester_root, timeout=600,
+                cwd=self.cs_tester_root,
+                timeout=600,
                 description="Building device-sdk-ts libraries",
             )
             stamp_path.write_text(json.dumps({"repo": self.dmk_repo, "ref": self.dmk_ref}, indent=2))
@@ -256,7 +300,8 @@ class ScreenshotRunner:
                 subprocess.run(
                     ["git", "checkout", "--detach", prev_head],
                     cwd=str(self.cs_tester_root),
-                    capture_output=True, timeout=60,
+                    capture_output=True,
+                    timeout=60,
                 )
 
     # ------------------------------------------------------------------
@@ -298,25 +343,68 @@ class ScreenshotRunner:
             )
 
     # ------------------------------------------------------------------
-    # Speculos image
+    # Native Speculos (Python package)
     # ------------------------------------------------------------------
 
-    def _ensure_speculos_image(self) -> None:
-        """Pull the Speculos Docker image if not already present."""
+    def _wait_for_speculos_ready(self, api_port: int, timeout: float) -> None:
+        """Poll Speculos HTTP API until it responds or ``timeout`` seconds elapse."""
+        url = f"http://127.0.0.1:{api_port}/"
+        deadline = time.monotonic() + timeout
+        last_err: str | None = None
+        while time.monotonic() < deadline:
+            try:
+                resp = requests.get(url, timeout=1.0)
+                if resp.status_code < 500:
+                    return
+                last_err = f"HTTP {resp.status_code}"
+            except requests.RequestException as exc:
+                last_err = str(exc)
+            time.sleep(0.15)
+        raise TimeoutError(f"Speculos did not become ready on port {api_port}: {last_err or 'unknown'}")
+
+    def _start_speculos_process(self, elf_path: Path, api_port: int, apdu_port: int) -> subprocess.Popen:
+        """Launch Speculos as a subprocess (headless)."""
+        cmd = [
+            sys.executable,
+            "-m",
+            "speculos",
+            "--model",
+            self._speculos_model(),
+            "--api-port",
+            str(api_port),
+            "--apdu-port",
+            str(apdu_port),
+            "--display",
+            "headless",
+            str(elf_path.resolve()),
+        ]
+        logger.info(
+            "[SCREENSHOTS][SETUP] Starting native Speculos api=%s apdu=%s model=%s elf=%s",
+            api_port,
+            apdu_port,
+            self._speculos_model(),
+            elf_path,
+        )
+        return subprocess.Popen(
+            cmd,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            env=dict(os.environ),
+        )
+
+    @staticmethod
+    def _stop_speculos_process(proc: subprocess.Popen | None) -> None:
+        if proc is None or proc.poll() is not None:
+            return
         try:
-            inspect = subprocess.run(
-                ["docker", "image", "inspect", self.speculos_image],
-                capture_output=True, text=True,
-            )
-            if inspect.returncode == 0:
-                return
-            self._run_command(
-                ["docker", "pull", self.speculos_image],
-                timeout=600,
-                description=f"Pulling {self.speculos_image}",
-            )
+            proc.terminate()
+            try:
+                proc.wait(timeout=SPECULOS_SHUTDOWN_GRACE_SEC)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait(timeout=5)
         except Exception as exc:
-            logger.warning("[SCREENSHOTS][SETUP] Speculos image pull failed: %s", exc)
+            logger.warning("[SCREENSHOTS][SETUP] Error stopping Speculos process: %s", exc)
 
     # ------------------------------------------------------------------
     # Helpers
@@ -363,19 +451,29 @@ class ScreenshotRunner:
     # ------------------------------------------------------------------
 
     def _get_speculos_semaphore(self) -> asyncio.Semaphore:
-        """Lazily create a per-event-loop semaphore to cap concurrent Speculos containers."""
+        """Lazily create a per-event-loop semaphore to cap concurrent Speculos instances."""
         if self._speculos_sem is None:
             self._speculos_sem = asyncio.Semaphore(MAX_CONCURRENT_SPECULOS)
         return self._speculos_sem
 
     async def _run_cs_tester_throttled(
-        self, selector: str, tx_hash: str, raw_tx: str, erc7730_file: Path, attempt: int,
+        self,
+        selector: str,
+        tx_hash: str,
+        raw_tx: str,
+        erc7730_file: Path,
+        attempt: int,
     ) -> TxScreenshots:
         """Run a single cs-tester invocation, throttled by the Speculos semaphore."""
         sem = self._get_speculos_semaphore()
         async with sem:
             return await asyncio.to_thread(
-                self._run_cs_tester_once, selector, tx_hash, raw_tx, erc7730_file, attempt,
+                self._run_cs_tester_once,
+                selector,
+                tx_hash,
+                raw_tx,
+                erc7730_file,
+                attempt,
             )
 
     async def capture_for_selector_async(
@@ -392,8 +490,7 @@ class ScreenshotRunner:
         can be cleanly associated with their tx hash, and trims the
         non-meaningful boot/confirm frames (first TRIM_HEAD, last TRIM_TAIL).
 
-        Concurrent Speculos containers are capped at MAX_CONCURRENT_SPECULOS
-        to avoid overwhelming Docker.
+        Concurrent Speculos instances are capped at MAX_CONCURRENT_SPECULOS.
         """
         txs_to_process = transactions[:MAX_TXS_PER_SELECTOR]
         if not txs_to_process:
@@ -540,45 +637,27 @@ class ScreenshotRunner:
         )
 
         custom_app_path = self._artifact_elf_path()
-        cmd = [
-            *self._pnpm_cmd(
-                "cs-tester",
-                "cli",
-                "--device",
-                self.device,
-                "--screenshot-folder-path",
-                str(screenshots_dir),
-                "--erc7730-files",
-                str(erc7730_file.resolve()),
-                "--log-level",
-                "warn",
-                "raw-file",
-                str(input_file),
-            ),
-        ]
-
-        env = dict(os.environ)
         if not custom_app_path.is_file():
             logger.warning(
                 "[SCREENSHOTS][%s] No Ethereum app ELF at %s for device %s",
-                selector, custom_app_path, self.device,
+                selector,
+                custom_app_path,
+                self.device,
             )
             return {"tx_hash": tx_hash, "screenshots": []}
 
-        cmd.extend(["--custom-app", str(custom_app_path)])
-        # cs-tester always mounts COIN_APPS_PATH as a Docker volume
-        # (-v $COIN_APPS_PATH:/apps) even with --custom-app.  Set it to
-        # a valid directory to prevent "docker: invalid spec: :/apps".
-        if not env.get("COIN_APPS_PATH"):
-            env["COIN_APPS_PATH"] = str(custom_app_path.parent)
+        api_port, apdu_port = _allocate_speculos_api_apdu_ports()
+        speculos_proc: subprocess.Popen | None = None
+        env = dict(os.environ)
 
         if attempt == 0:
             logger.info(
-                "[SCREENSHOTS][%s] Running cs-tester for tx %s device=%s%s",
+                "[SCREENSHOTS][%s] Running cs-tester for tx %s device=%s custom_app=%s external_speculos api_port=%s",
                 selector,
                 tx_hash[:10],
                 self.device,
-                f" custom_app={custom_app_path}",
+                custom_app_path,
+                api_port,
             )
         else:
             logger.info(
@@ -590,6 +669,39 @@ class ScreenshotRunner:
             )
 
         try:
+            speculos_proc = self._start_speculos_process(custom_app_path, api_port, apdu_port)
+            time.sleep(0.1)
+            if speculos_proc.poll() is not None:
+                logger.warning(
+                    "[SCREENSHOTS][%s] Speculos exited immediately (code=%s) for tx %s",
+                    selector,
+                    speculos_proc.returncode,
+                    tx_hash[:10],
+                )
+                return {"tx_hash": tx_hash, "screenshots": []}
+            self._wait_for_speculos_ready(api_port, SPECULOS_STARTUP_TIMEOUT)
+
+            cmd = [
+                *self._pnpm_cmd(
+                    "cs-tester",
+                    "cli",
+                    "--device",
+                    self.device,
+                    "--external-speculos",
+                    "--speculos-port",
+                    str(api_port),
+                    "--screenshot-folder-path",
+                    str(screenshots_dir),
+                    "--erc7730-files",
+                    str(erc7730_file.resolve()),
+                    "--log-level",
+                    "warn",
+                    "raw-file",
+                    str(input_file),
+                ),
+            ]
+            cmd.extend(["--custom-app", str(custom_app_path)])
+
             result = subprocess.run(
                 cmd,
                 cwd=str(self.cs_tester_root),
@@ -616,9 +728,14 @@ class ScreenshotRunner:
         except FileNotFoundError:
             logger.warning("[SCREENSHOTS][%s] pnpm not found", selector)
             return {"tx_hash": tx_hash, "screenshots": []}
+        except TimeoutError as exc:
+            logger.warning("[SCREENSHOTS][%s] Speculos did not become ready for tx %s: %s", selector, tx_hash[:10], exc)
+            return {"tx_hash": tx_hash, "screenshots": []}
         except Exception as exc:
             logger.warning("[SCREENSHOTS][%s] cs-tester failed for tx %s: %s", selector, tx_hash[:10], exc)
             return {"tx_hash": tx_hash, "screenshots": []}
+        finally:
+            self._stop_speculos_process(speculos_proc)
 
         all_pngs = sorted(screenshots_dir.glob("screenshot_*.png"), key=_sort_key)
 

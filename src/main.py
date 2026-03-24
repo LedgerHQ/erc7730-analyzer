@@ -65,7 +65,8 @@ Environment Variables (can also be set in .env file):
   APP_ETHEREUM_ARTIFACT_NAME app-ethereum artifact name containing ELF files (default: ragger_elfs)
   APP_ETHEREUM_ARTIFACT_TOKEN Optional alias for GITHUB_TOKEN
   GITHUB_TOKEN             GitHub PAT used to download latest app-ethereum ELF artifact
-  SPECULOS_IMAGE           Speculos Docker image (default: ghcr.io/ledgerhq/speculos)
+  SPECULOS_BASE_API_PORT   First port to try for native Speculos HTTP API (default: 5000)
+  SPECULOS_STARTUP_TIMEOUT Seconds to wait for Speculos HTTP API (default: 20)
   GATING_TOKEN             Token passed through to cs-tester
 
 Priority: Command-line arguments > Environment variables > Defaults

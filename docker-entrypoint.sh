@@ -5,7 +5,7 @@
 # Modes:
 #   service  — Start the FastAPI service (default)
 #   cli      — Run the analyzer CLI directly
-#   *        — Pass-through to any command
+#   *        — Rejected with error
 #
 # Secrets are expected via environment variables.  In production (AWS),
 # they come from Secrets Manager injected into the App Runner env.
@@ -43,7 +43,7 @@ case "$MODE" in
     ;;
 
   *)
-    echo "[entrypoint] Running: $MODE $*"
-    exec "$MODE" "$@"
+    echo "[entrypoint] Unknown mode: $MODE — expected 'service' or 'cli'" >&2
+    exit 1
     ;;
 esac

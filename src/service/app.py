@@ -12,19 +12,24 @@ import asyncio
 import json
 import logging
 import os
+import re
+import shutil
 import tempfile
+import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import jwt
 import uvicorn
-from fastapi import FastAPI, Header, HTTPException
+from fastapi import FastAPI, Header, HTTPException, Request, Response
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from sse_starlette.sse import EventSourceResponse
 
-from .auth import verify_request_token
+from .auth import GITHUB_OIDC_ISSUER, verify_request_token
 from .config import ServiceConfig, load_config
 
 logger = logging.getLogger(__name__)
@@ -48,6 +53,15 @@ async def lifespan(app: FastAPI):
     global _config  # noqa: PLW0603
     _config = load_config()
 
+    # Guard against misconfigured OIDC issuer in production
+    if _config.oidc_issuer != GITHUB_OIDC_ISSUER:
+        if not os.getenv("ALLOW_CUSTOM_OIDC"):
+            raise RuntimeError(
+                f"Non-standard OIDC issuer '{_config.oidc_issuer}' requires "
+                "ALLOW_CUSTOM_OIDC=true to be set explicitly"
+            )
+        logger.warning("[SERVICE] Using custom OIDC issuer: %s", _config.oidc_issuer)
+
     logger.info(
         "[SERVICE] Starting — host=%s port=%s allowed_repos=%s",
         _config.host,
@@ -65,7 +79,51 @@ app = FastAPI(
     title="ERC-7730 Analyzer Service",
     version="0.1.0",
     lifespan=lifespan,
+    docs_url=None,
+    redoc_url=None,
+    openapi_url=None,
 )
+
+# ---------------------------------------------------------------------------
+# Middleware
+# ---------------------------------------------------------------------------
+
+# Restrictive CORS — no browser origins allowed
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[],
+    allow_methods=["GET", "POST"],
+    allow_headers=["Authorization", "Content-Type"],
+)
+
+_MAX_BODY_BYTES = 5 * 1024 * 1024  # 5 MB
+
+
+@app.middleware("http")
+async def _security_middleware(request: Request, call_next):
+    # Attach a unique request ID for log correlation
+    request_id = str(uuid.uuid4())
+    request.state.request_id = request_id
+
+    # Reject oversized payloads early
+    content_length = request.headers.get("content-length")
+    if content_length and int(content_length) > _MAX_BODY_BYTES:
+        return JSONResponse(status_code=413, content={"detail": "Payload too large"})
+
+    response: Response = await call_next(request)
+
+    # Security response headers
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Content-Security-Policy"] = "default-src 'none'"
+    response.headers["X-Request-ID"] = request_id
+    return response
+
+
+# Cap in-flight analyses
+_MAX_CONCURRENT_ANALYSES = 3
+_analysis_semaphore = asyncio.Semaphore(_MAX_CONCURRENT_ANALYSES)
 
 
 # ---------------------------------------------------------------------------
@@ -79,26 +137,26 @@ class AnalyzeRequest(BaseModel):
     """
 
     descriptor: dict[str, Any] = Field(..., description="Full ERC-7730 JSON descriptor")
-    descriptor_filename: str = Field("calldata-unknown.json", description="Original filename")
+    descriptor_filename: str = Field("calldata-unknown.json", description="Original filename", max_length=255)
     abi: dict[str, Any] | list[Any] | None = Field(None, description="Optional ABI override")
 
     # LLM
-    analysis_mode: str | None = Field(None, description="single / multi")
-    model: str | None = Field(None)
-    reasoning_effort: str | None = Field(None)
+    analysis_mode: Literal["single", "multi"] | None = Field(None, description="single / multi")
+    model: str | None = Field(None, max_length=64)
+    reasoning_effort: Literal["low", "medium", "high"] | None = Field(None)
 
     # Data collection
-    lookback_days: int | None = Field(None)
-    max_concurrent_api_calls: int | None = Field(None)
-    max_api_retries: int | None = Field(None)
+    lookback_days: int | None = Field(None, ge=1, le=90)
+    max_concurrent_api_calls: int | None = Field(None, ge=1, le=50)
+    max_api_retries: int | None = Field(None, ge=1, le=10)
 
     # Agentic
-    max_selector_tool_rounds: int | None = Field(None)
-    max_tool_requests_per_round: int | None = Field(None)
+    max_selector_tool_rounds: int | None = Field(None, ge=1, le=10)
+    max_tool_requests_per_round: int | None = Field(None, ge=1, le=10)
 
     # Screenshots (enable_screenshots can override server default per-request)
     enable_screenshots: bool | None = Field(None)
-    screenshot_device: str | None = Field(None)
+    screenshot_device: Literal["stax", "flex"] | None = Field(None)
 
 
 class HealthResponse(BaseModel):
@@ -210,6 +268,9 @@ async def health():
     return HealthResponse()
 
 
+_ANALYSIS_TIMEOUT_SECONDS = 60*45  # 45 minutes
+
+
 @app.post("/analyze")
 async def analyze(
     body: AnalyzeRequest,
@@ -232,12 +293,21 @@ async def analyze(
             allowed_repos=cfg.allowed_repos,
             issuer=cfg.oidc_issuer,
         )
-    except jwt.exceptions.PyJWTError as exc:
-        raise HTTPException(status_code=401, detail=str(exc)) from exc
+    except jwt.exceptions.PyJWTError:
+        raise HTTPException(status_code=401, detail="Authentication failed") from None
+
+    # Reject if at capacity
+    if _analysis_semaphore.locked():
+        raise HTTPException(status_code=503, detail="Service at capacity, try again later")
+
+    # Sanitize descriptor_filename to prevent path traversal
+    safe_filename = Path(body.descriptor_filename).name
+    if not safe_filename or safe_filename.startswith("."):
+        safe_filename = "descriptor.json"
 
     # --- write descriptor (and optional ABI) to temp files ---
     tmp_dir = Path(tempfile.mkdtemp(prefix="erc7730_svc_"))
-    descriptor_path = tmp_dir / body.descriptor_filename
+    descriptor_path = tmp_dir / safe_filename
     descriptor_path.write_text(json.dumps(body.descriptor, indent=2))
 
     abi_path: Path | None = None
@@ -249,74 +319,90 @@ async def analyze(
     progress = _SSEProgress(queue)
 
     async def _event_generator():
-        analysis_task = asyncio.create_task(
-            _run_analysis(descriptor_path, abi_path, cfg, body, progress)
-        )
-
-        try:
-            while not analysis_task.done():
-                try:
-                    event = await asyncio.wait_for(queue.get(), timeout=1.0)
-                    yield event
-                except asyncio.TimeoutError:
-                    yield {"event": "ping", "data": ""}
-
-            # Drain remaining events
-            while not queue.empty():
-                yield queue.get_nowait()
-
-            results = analysis_task.result()
-
-            if not results or not isinstance(results, dict):
-                yield {"event": "error", "data": "Analysis returned no results"}
-                return
-
-            # Generate reports in-memory
-            from utils.reporting.reporter import (
-                generate_criticals_report,
-                generate_summary_file,
+        # Acquire semaphore for the duration of the analysis
+        async with _analysis_semaphore:
+            # Hard deadline for the entire analysis
+            deadline = asyncio.get_event_loop().time() + _ANALYSIS_TIMEOUT_SECONDS
+            analysis_task = asyncio.create_task(
+                _run_analysis(descriptor_path, abi_path, cfg, body, progress)
             )
 
-            report_dir = tmp_dir / "output"
-            report_dir.mkdir(exist_ok=True)
+            try:
+                # Stream SSE events in real-time while analysis runs
+                while not analysis_task.done():
+                    remaining = deadline - asyncio.get_event_loop().time()
+                    if remaining <= 0:
+                        analysis_task.cancel()
+                        yield {"event": "error", "data": "Analysis timed out"}
+                        return
+                    try:
+                        event = await asyncio.wait_for(queue.get(), timeout=min(1.0, remaining))
+                        yield event
+                    except asyncio.TimeoutError:
+                        yield {"event": "ping", "data": ""}
 
-            context = results.get("context", {})
-            metadata = results.get("metadata", {})
-            protocol_name = (
-                context.get("$id")
-                or metadata.get("contractName")
-                or metadata.get("owner")
-                or metadata.get("info", {}).get("legalName")
-                or body.descriptor_filename.replace("calldata-", "").replace(".json", "")
-            )
-            context_id = protocol_name.replace(" ", "_")
-            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+                # Drain remaining queued events
+                while not queue.empty():
+                    yield queue.get_nowait()
 
-            summary_file = report_dir / f"FULL_REPORT_{context_id}_{ts}.md"
-            generate_summary_file(results, summary_file, inline_base64=True)
+                results = analysis_task.result()
 
-            criticals_file = report_dir / f"CRITICALS_{context_id}_{ts}.md"
-            generate_criticals_report(results, criticals_file, inline_base64=True)
+                if not results or not isinstance(results, dict):
+                    yield {"event": "error", "data": "Analysis returned no results"}
+                    return
 
-            has_criticals = False
-            if criticals_file.exists():
-                content = criticals_file.read_text()
-                has_criticals = "| 🔴" in content
+                # Generate reports in-memory
+                from utils.reporting.reporter import (
+                    generate_criticals_report,
+                    generate_summary_file,
+                )
 
-            payload = {
-                "protocol": context_id,
-                "has_criticals": has_criticals,
-                "summary_report": summary_file.read_text() if summary_file.exists() else "",
-                "criticals_report": criticals_file.read_text() if criticals_file.exists() else "",
-                "results_json": results,
-            }
+                report_dir = tmp_dir / "output"
+                report_dir.mkdir(exist_ok=True)
 
-            yield {"event": "report", "data": json.dumps(payload, default=str)}
-            yield {"event": "status", "data": "done"}
+                context = results.get("context", {})
+                metadata = results.get("metadata", {})
+                protocol_name = (
+                    context.get("$id")
+                    or metadata.get("contractName")
+                    or metadata.get("owner")
+                    or metadata.get("info", {}).get("legalName")
+                    or safe_filename.replace("calldata-", "").replace(".json", "")
+                )
+                # Sanitize to safe filesystem characters
+                context_id = re.sub(r"[^a-zA-Z0-9_-]", "_", protocol_name)[:64]
+                ts = datetime.now().strftime("%Y%m%d_%H%M%S")
 
-        except Exception as exc:
-            logger.exception("[SERVICE] Analysis failed")
-            yield {"event": "error", "data": str(exc)}
+                summary_file = report_dir / f"FULL_REPORT_{context_id}_{ts}.md"
+                generate_summary_file(results, summary_file, inline_base64=True)
+
+                criticals_file = report_dir / f"CRITICALS_{context_id}_{ts}.md"
+                generate_criticals_report(results, criticals_file, inline_base64=True)
+
+                has_criticals = False
+                if criticals_file.exists():
+                    content = criticals_file.read_text()
+                    has_criticals = "| 🔴" in content
+
+                payload = {
+                    "protocol": context_id,
+                    "has_criticals": has_criticals,
+                    "summary_report": summary_file.read_text() if summary_file.exists() else "",
+                    "criticals_report": criticals_file.read_text() if criticals_file.exists() else "",
+                    "results_json": results,
+                }
+
+                yield {"event": "report", "data": json.dumps(payload, default=str)}
+                yield {"event": "status", "data": "done"}
+
+            except Exception:
+                # Never leak internal exception details to clients
+                logger.exception("[SERVICE] Analysis failed")
+                yield {"event": "error", "data": "Internal analysis error"}
+
+            finally:
+                # Always clean up the temp directory
+                shutil.rmtree(tmp_dir, ignore_errors=True)
 
     return EventSourceResponse(_event_generator())
 
@@ -343,6 +429,8 @@ def main():
         "service.app:app",
         host=host,
         port=port,
+        workers=2,
+        limit_concurrency=10,
         log_level="info",
     )
 

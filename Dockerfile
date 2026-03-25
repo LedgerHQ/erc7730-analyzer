@@ -26,8 +26,8 @@
 # ===========================================================================
 
 # ======================== build args ========================
-ARG DMK_REPO=Maroutis/device-sdk-ts
-ARG DMK_REF=feat/external-speculos
+ARG DMK_REPO=LedgerHQ/device-sdk-ts
+ARG DMK_REF=develop
 ARG CS_DEVICE=stax
 ARG UV_VERSION=0.11.0
 ARG APP_ETH_ARTIFACT_ID=
@@ -36,8 +36,8 @@ ARG CS_ELF_DEVICES=stax,flex
 # ---------- stage 1: build device-sdk-ts (public) ----------
 FROM node:20-bookworm-slim AS dmk-builder
 
-ARG DMK_REPO
-ARG DMK_REF
+ARG DMK_REPO=LedgerHQ/device-sdk-ts
+ARG DMK_REF=develop
 
 RUN apt-get update -qq && apt-get install -qq -y --no-install-recommends git ca-certificates \
     && rm -rf /var/lib/apt/lists/* \

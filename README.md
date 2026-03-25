@@ -153,6 +153,59 @@ Set in `.env` or pass directly:
 
 All environment variables can be overridden via CLI flags. Run `uv run analyze_7730 --help` for the full list.
 
+## Service API
+
+The analyzer runs as a FastAPI service behind AWS App Runner. It exposes an
+async polling API so analyses can run far longer than App Runner's 120-second
+request timeout.
+
+### `POST /analyze`
+
+Start (or resume) an analysis. Returns immediately with a job handle.
+
+- **Auth**: Bearer token (GitHub OIDC JWT). Skipped when `DISABLE_OIDC_AUTH=true`.
+- **Body**: JSON matching `AnalyzeRequest` (required field: `descriptor`).
+- **Idempotency**: when OIDC is enabled the job is keyed by
+  `(repository, run_id, run_attempt)` from the JWT. Repeating the same POST
+  returns the existing job instead of starting a duplicate.
+- **Responses**:
+  - `202 Accepted` — job created or still running.
+  - `200 OK` — job already completed (result included).
+  - `503 Service Unavailable` — another analysis is in progress.
+
+### `GET /analyze`
+
+Poll the status of a running analysis or retrieve the final result.
+
+- **Auth**: same Bearer token. When OIDC is disabled, pass `?run_key=<key>`
+  (the key returned by POST).
+- **Responses**:
+  - `202 Accepted` — job queued or running (includes `poll_after_seconds` hint
+    and `recent_logs` tail).
+  - `200 OK` — job succeeded (includes `protocol`, `has_criticals`,
+    `summary_report`, `criticals_report`, `results_json`).
+  - `404 Not Found` — no job for this run.
+
+### Operational notes
+
+| Aspect | Detail |
+|--------|--------|
+| **Job storage** | In-memory (transitional). Jobs are lost on restart, deploy, or crash. |
+| **Concurrency** | One analysis at a time (`asyncio.Semaphore(1)`). |
+| **Scaling** | App Runner pinned to `max_instances=1` while storage is in-memory. |
+| **TTL** | Completed jobs are evicted after `JOB_RETENTION_TTL` seconds (default 3600). |
+| **Timeout** | Background analysis times out after 45 minutes. |
+
+### Service environment variables
+
+In addition to the standard config variables listed above, the service accepts:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `JOB_RETENTION_TTL` | `3600` | Seconds to retain completed jobs before eviction |
+| `MAX_RETAINED_LOG_LINES` | `500` | Max log lines kept per job for progress polling |
+| `POLL_INTERVAL_HINT` | `5` | Suggested poll interval returned to clients (seconds) |
+
 ## Project Structure
 
 ```
@@ -160,10 +213,11 @@ erc7730-analyzer/
 ├── src/
 │   ├── main.py                    # CLI entry point
 │   ├── service/                   # FastAPI service (API mode)
-│   │   ├── app.py                 # /analyze endpoint (SSE)
-│   │   ├── auth.py                # GitHub OIDC authentication
-│   │   ├── client.py              # Python client for the API
-│   │   └── config.py              # Service configuration
+│   │   ├── app.py                 # POST/GET /analyze (async polling)
+│   │   ├── auth.py                # GitHub OIDC auth + run-key derivation
+│   │   ├── client.py              # Python client (POST + poll loop)
+│   │   ├── config.py              # Service configuration
+│   │   └── jobs.py                # In-memory job model and registry
 │   └── utils/
 │       ├── core/                  # Analysis pipeline orchestration
 │       ├── abi/                   # ABI fetching and parsing
@@ -174,6 +228,7 @@ erc7730-analyzer/
 │       ├── screenshots/           # Ledger screenshot capture via cs-tester
 │       ├── rpc_helpers.py         # JSON-RPC fallback utilities
 │       └── audit_rules/           # Static analysis rule definitions (JSON)
+├── tests/                         # pytest suite (auth, jobs, API contract)
 ├── docs/
 │   └── DEPLOYMENT.md             # Deployment and local testing guide
 ├── testing/registry/              # Test descriptor files

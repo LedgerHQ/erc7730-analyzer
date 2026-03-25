@@ -189,6 +189,7 @@ class AnalyzeRequest(BaseModel):
 
     enable_screenshots: bool | None = Field(None)
     screenshot_device: Literal["stax", "flex"] | None = Field(None)
+    verbose: bool | None = Field(None, description="Enable detailed live logs during polling")
 
 
 class HealthResponse(BaseModel):
@@ -237,7 +238,7 @@ def _resolve_run_key(
 # Background analysis execution
 # ---------------------------------------------------------------------------
 class _JobLogHandler(logging.Handler):
-    """Forwards INFO+ log records into the job's log buffer."""
+    """Forwards live log records into the job's log buffer."""
 
     def __init__(self, job: AnalysisJob, max_lines: int):
         super().__init__()
@@ -310,12 +311,18 @@ async def _execute_analysis(
 ) -> None:
     """Background coroutine: acquire semaphore, run analysis, update job."""
     handler = _JobLogHandler(job, max_log_lines)
-    handler.setLevel(logging.INFO)
     root_logger = logging.getLogger()
+    utils_logger = logging.getLogger("utils")
+    utils_logger_level = utils_logger.level
+    loop = asyncio.get_running_loop()
+    handler.setLevel(logging.INFO if job.verbose else logging.WARNING)
+
+    def _report_progress(message: str) -> None:
+        loop.call_soon_threadsafe(job.set_status, "running", message)
 
     try:
         async with semaphore:
-            job.set_status("running", "Analysis started")
+            job.set_status("running", "Starting analysis")
 
             os.environ["ETHERSCAN_API_KEY"] = cfg.etherscan_api_key
             os.environ["OPENAI_API_KEY"] = cfg.openai_api_key
@@ -350,8 +357,10 @@ async def _execute_analysis(
                 screenshot_device=_or(overrides.screenshot_device, cfg.screenshot_device),
                 cs_tester_root=cfg.cs_tester_root,
                 coin_apps_path=cfg.coin_apps_path,
+                progress_callback=_report_progress,
             )
 
+            utils_logger.setLevel(logging.INFO if job.verbose else logging.WARNING)
             root_logger.addHandler(handler)
             try:
                 results = await asyncio.wait_for(
@@ -383,6 +392,7 @@ async def _execute_analysis(
         logger.exception("[SERVICE] Analysis failed for %s", job.run_key)
         job.set_error("Internal analysis error")
     finally:
+        utils_logger.setLevel(utils_logger_level)
         job.cleanup_tmp()
 
 
@@ -418,6 +428,8 @@ async def analyze_start(
         caller_meta = {}
 
     job, created = await registry.create_or_get(run_key, caller_metadata=caller_meta)
+    if created:
+        job.verbose = bool(body.verbose)
 
     if not created:
         status_code = 200 if job.is_terminal else 202
@@ -472,6 +484,7 @@ async def analyze_start(
 async def analyze_status(
     authorization: str | None = Header(None),
     run_key: str | None = Query(None, description="Required when OIDC auth is disabled"),
+    include_logs: bool | None = Query(None, description="Include live log lines for running jobs"),
 ):
     """Poll the status of a running analysis or retrieve the final result.
 
@@ -489,13 +502,14 @@ async def analyze_status(
         raise HTTPException(status_code=404, detail="No analysis found for this run")
 
     include_result = job.status == "succeeded"
+    effective_include_logs = job.verbose if include_logs is None else include_logs
     status_code = 200 if job.is_terminal else 202
 
     return JSONResponse(
         status_code=status_code,
         content=job.to_status_dict(
             include_result=include_result,
-            include_logs=True,
+            include_logs=effective_include_logs,
             poll_after_seconds=cfg.poll_interval_hint,
         ),
     )

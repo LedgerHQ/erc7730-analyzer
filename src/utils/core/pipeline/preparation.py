@@ -128,7 +128,7 @@ class AnalyzerPipelinePreparationMixin:
                 code_block += f"{library}\n\n"
 
         code_block += f"\n{'=' * 60}\n"
-        logger.info(code_block)
+        logger.debug(code_block)
 
     def _build_missing_abi_report_data(
         self,

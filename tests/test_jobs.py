@@ -16,6 +16,7 @@ class TestAnalysisJob:
     def test_initial_state_is_queued(self):
         job = AnalysisJob(run_key="test")
         assert job.status == "queued"
+        assert job.verbose is False
         assert not job.is_terminal
 
     def test_running_is_not_terminal(self):

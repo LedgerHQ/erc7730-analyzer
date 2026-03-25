@@ -30,6 +30,7 @@ class AnalyzerPipelineMixin(
         raw_txs_file: Path | None = None,
         prepared_inputs_file: Path | None = None,
     ) -> dict[str, Any]:
+        self.report_progress("Loading descriptor and ABI")
         context = self._setup_analysis_context(
             erc7730_file,
             abi_file,
@@ -39,16 +40,25 @@ class AnalyzerPipelineMixin(
             return {}
 
         context["erc7730_file"] = erc7730_file
+        selector_count = len(context.get("selectors", []))
 
         if prepared_inputs_file:
+            self.report_progress("Capturing screenshots")
             self._capture_screenshots(context)
+            self.report_progress(f"Preparing audit tasks for {selector_count} selector(s)")
             self._prepare_selector_audit_tasks_from_prepared_inputs(context)
         else:
+            self.report_progress(f"Fetching transactions for {selector_count} selector(s)")
             self._collect_selector_transactions(context, raw_txs_file)
+            self.report_progress("Capturing screenshots")
             self._capture_screenshots(context)
+            self.report_progress("Extracting source code")
             self._extract_source_and_context(context)
+            self.report_progress(f"Preparing audit tasks for {selector_count} selector(s)")
             self._prepare_selector_audit_tasks(context)
+        self.report_progress(f"Running audits for {len(context.get('prepared_selectors', []))} selector(s)")
         self._run_batch_audits(context)
+        self.report_progress("Finalizing analysis results")
         results = self._finalize_results(context)
 
         if hasattr(self, "tx_fetcher") and hasattr(self.tx_fetcher, "close_snowflake_connections"):

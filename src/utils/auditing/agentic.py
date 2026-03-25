@@ -148,7 +148,7 @@ def _summarize_report_model(report: AuditReport | None) -> str:
 def _log_phase_report(phase: str, selector: str, report: AuditReport | None, summary: str = "") -> None:
     """Log a detailed breakdown of one agent phase's report."""
     if report is None:
-        logger.info("[AGENTIC][%s][%s] No report produced.", phase, selector)
+        logger.debug("[AGENTIC][%s][%s] No report produced.", phase, selector)
         return
 
     sep = "─" * 60
@@ -206,7 +206,7 @@ def _log_phase_report(phase: str, selector: str, report: AuditReport | None, sum
             lines.append(f"    • {sl.parameter}: {sl.explanation} (impact: {sl.impact})")
 
     lines.append(sep)
-    logger.info("\n".join(lines))
+    logger.debug("\n".join(lines))
 
 
 def _summarize_tool_result(result: dict[str, Any]) -> str:
@@ -555,7 +555,7 @@ class SelectorToolRunner:
         bounded = requests[:max_requests]
 
         for request in bounded:
-            logger.info(
+            logger.debug(
                 "[AGENTIC][TOOL][%s] Running %s rationale=%s args=%s",
                 self.task.selector,
                 request.tool,
@@ -596,7 +596,7 @@ class SelectorToolRunner:
                 _single_line(result.get("error")),
             )
         else:
-            logger.info(
+            logger.debug(
                 "[AGENTIC][TOOL][%s] %s complete: %s",
                 self.task.selector,
                 request.tool,
@@ -1033,14 +1033,14 @@ async def _parse_structured_response(
     if has_screenshots and isinstance(user_content, list):
         effective_system_prompt = system_prompt + "\n\n" + SCREENSHOT_INSTRUCTIONS
         n_imgs = sum(1 for b in user_content if b.get("type") == "input_image")
-        logger.info("[AGENTIC][%s][%s] Including %d Ledger screenshot(s)", phase, selector, n_imgs)
+        logger.debug("[AGENTIC][%s][%s] Including %d Ledger screenshot(s)", phase, selector, n_imgs)
 
     last_error: Exception | None = None
 
     for attempt in range(max_retries + 1):
         try:
             async with semaphore:
-                logger.info(
+                logger.debug(
                     "[AGENTIC][%s][%s] Starting model call (attempt %s/%s, payload_chars=%s)",
                     phase,
                     selector,
@@ -1076,7 +1076,7 @@ async def _parse_structured_response(
                     cached_tokens = getattr(usage.input_tokens_details, "cached_tokens", 0)
                 if getattr(usage, "output_tokens_details", None):
                     reasoning_tokens = getattr(usage.output_tokens_details, "reasoning_tokens", 0)
-                logger.info(
+                logger.debug(
                     "[AGENTIC][%s][%s] Tokens: input=%s | cached=%s | output=%s | reasoning=%s | total=%s",
                     phase.upper(),
                     selector,
@@ -1126,7 +1126,7 @@ async def _run_phase_with_tools(
 
     for round_index in range(max_rounds):
         finalize_now = round_index == max_rounds - 1
-        logger.info(
+        logger.debug(
             "[AGENTIC][%s][%s] Round %s/%s start finalize_now=%s accumulated_tool_results=%s",
             phase_name,
             selector,
@@ -1161,7 +1161,7 @@ async def _run_phase_with_tools(
         status = getattr(parsed, "status", "ready")
         summary = _single_line(getattr(parsed, "summary", ""))
         requests = getattr(parsed, "tool_requests", []) or []
-        logger.info(
+        logger.debug(
             "[AGENTIC][%s][%s] Model returned status=%s summary=%s tool_requests=%s",
             phase_name,
             selector,
@@ -1171,7 +1171,7 @@ async def _run_phase_with_tools(
         )
         if status == "ready":
             report = getattr(parsed, "draft_report", None) or getattr(parsed, "validated_report", None)
-            logger.info(
+            logger.debug(
                 "[AGENTIC][%s][%s] Phase ready after round %s report=%s",
                 phase_name,
                 selector,
@@ -1192,7 +1192,7 @@ async def _run_phase_with_tools(
                 max_requests_per_round,
             )
         for request_index, request in enumerate(requests[:max_requests_per_round], start=1):
-            logger.info(
+            logger.debug(
                 "[AGENTIC][%s][%s] Tool request %s/%s tool=%s rationale=%s args=%s",
                 phase_name,
                 selector,
@@ -1202,7 +1202,7 @@ async def _run_phase_with_tools(
                 _single_line(request.rationale),
                 _single_line(request.arguments_json, 280),
             )
-        logger.info(
+        logger.debug(
             "[AGENTIC][%s][%s] Executing %s tool request(s) in round %s",
             phase_name,
             selector,
@@ -1238,7 +1238,7 @@ async def generate_multi_agent_audit_async(
 
     model = task.llm_model or DEFAULT_MODEL
     effort = task.llm_reasoning_effort or DEFAULT_REASONING_EFFORT
-    logger.info("[AGENTIC][%s] Using model=%s reasoning_effort=%s", task.selector, model, effort)
+    logger.debug("[AGENTIC][%s] Using model=%s reasoning_effort=%s", task.selector, model, effort)
 
     primary_output, primary_tool_results = await _run_phase_with_tools(
         phase_name="primary",
@@ -1259,7 +1259,7 @@ async def generate_multi_agent_audit_async(
     )
     if primary_output.draft_report is None:
         raise RuntimeError(f"Primary auditor returned ready without draft_report for {task.selector}.")
-    logger.info(
+    logger.debug(
         "[AGENTIC][%s] Primary complete report=%s tool_results=%s",
         task.selector,
         _summarize_report_model(primary_output.draft_report),
@@ -1289,7 +1289,7 @@ async def generate_multi_agent_audit_async(
     )
     if validator_output.validated_report is None:
         raise RuntimeError(f"Validator returned ready without validated_report for {task.selector}.")
-    logger.info(
+    logger.debug(
         "[AGENTIC][%s] Validator complete report=%s changes=%s tool_results=%s",
         task.selector,
         _summarize_report_model(validator_output.validated_report),
@@ -1306,7 +1306,7 @@ async def generate_multi_agent_audit_async(
         change_lines = [f"[AGENTIC][VALIDATOR][{task.selector}] Changes vs Primary:"]
         for vc in validator_output.changes:
             change_lines.append(f"  • [{vc.action}] {vc.subject}: {vc.explanation}")
-        logger.info("\n".join(change_lines))
+        logger.debug("\n".join(change_lines))
 
     reducer_skipped = False
     reducer_used_validator_report_fallback = False
@@ -1335,7 +1335,7 @@ async def generate_multi_agent_audit_async(
                 task.selector,
             )
 
-        logger.info(
+        logger.debug(
             "[AGENTIC][reducer][%s] Starting reducer primary_tools=%s validator_tools=%s validator_changes=%s",
             task.selector,
             len(primary_tool_results),
@@ -1396,7 +1396,7 @@ async def generate_multi_agent_audit_async(
     critical_report, detailed_report = format_audit_reports(report_data)
     record_completed_analysis(task, report_data)
 
-    logger.info(
+    logger.debug(
         "[AGENTIC][%s] Multi-agent selector audit complete report=%s",
         task.selector,
         _summarize_report_model(final_report),

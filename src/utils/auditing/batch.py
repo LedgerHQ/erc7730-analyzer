@@ -167,7 +167,7 @@ async def generate_clear_signing_audit_async(
             user_payload = ""
             try:
                 if attempt == 0:
-                    logger.info(f"[SINGLE] Starting API call for selector {task.selector}")
+                    logger.debug(f"[SINGLE] Starting API call for selector {task.selector}")
                 else:
                     logger.warning(f"[SINGLE] Retry {attempt}/{max_retries} for selector {task.selector}")
 
@@ -181,7 +181,7 @@ async def generate_clear_signing_audit_async(
                 if has_screenshots and isinstance(user_content, list):
                     system_prompt = SYSTEM_INSTRUCTIONS + "\n\n" + SCREENSHOT_INSTRUCTIONS
                     n_imgs = sum(1 for b in user_content if b.get("type") == "input_image")
-                    logger.info("[SINGLE] Including %d Ledger screenshot(s) for %s", n_imgs, task.selector)
+                    logger.debug("[SINGLE] Including %d Ledger screenshot(s) for %s", n_imgs, task.selector)
 
                 model = task.llm_model or DEFAULT_MODEL
                 effort = task.llm_reasoning_effort or DEFAULT_REASONING_EFFORT
@@ -198,7 +198,7 @@ async def generate_clear_signing_audit_async(
                 )
 
                 # Log successful response with usage stats
-                logger.info(f"[SINGLE] ✅ Received response for {task.selector}")
+                logger.debug(f"[SINGLE] ✅ Received response for {task.selector}")
                 if hasattr(response, "usage") and response.usage:
                     usage = response.usage
                     # Extract cached tokens from input_tokens_details
@@ -211,12 +211,12 @@ async def generate_clear_signing_audit_async(
                     if hasattr(usage, "output_tokens_details") and usage.output_tokens_details:
                         reasoning_tokens = getattr(usage.output_tokens_details, "reasoning_tokens", 0)
 
-                    logger.info(f"[SINGLE]   Input tokens: {getattr(usage, 'input_tokens', 0):,}")
-                    logger.info(f"[SINGLE]   Cached tokens: {cached_tokens:,}")
-                    logger.info(f"[SINGLE]   Output tokens: {getattr(usage, 'output_tokens', 0):,}")
+                    logger.debug(f"[SINGLE]   Input tokens: {getattr(usage, 'input_tokens', 0):,}")
+                    logger.debug(f"[SINGLE]   Cached tokens: {cached_tokens:,}")
+                    logger.debug(f"[SINGLE]   Output tokens: {getattr(usage, 'output_tokens', 0):,}")
                     if reasoning_tokens > 0:
-                        logger.info(f"[SINGLE]   Reasoning tokens: {reasoning_tokens:,}")
-                    logger.info(f"[SINGLE]   Total tokens: {getattr(usage, 'total_tokens', 0):,}")
+                        logger.debug(f"[SINGLE]   Reasoning tokens: {reasoning_tokens:,}")
+                    logger.debug(f"[SINGLE]   Total tokens: {getattr(usage, 'total_tokens', 0):,}")
 
                 report_data = response.output_parsed.model_dump()
 

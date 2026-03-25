@@ -36,8 +36,8 @@ from .rules import SCREENSHOT_INSTRUCTIONS, SYSTEM_INSTRUCTIONS
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_MODEL = "gpt-5.4"
-DEFAULT_REASONING_EFFORT = "high"
+DEFAULT_MODEL = "gpt-5.4-nano"
+DEFAULT_REASONING_EFFORT = "low"
 
 TOOL_CATALOG = """\
 Available evidence tools:

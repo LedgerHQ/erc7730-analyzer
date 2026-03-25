@@ -42,15 +42,15 @@ Environment Variables (can also be set in .env file):
   COREDAO_API_KEY          Core DAO API key (optional, for chain 1116)
   OPENAI_API_KEY           OpenAI API key for AI-powered audits (optional)
   ANALYSIS_MODE            Audit strategy: single or multi (default: single)
-  LOOKBACK_DAYS            Number of days to look back (default: 20)
-  MAX_CONCURRENT_API_CALLS Maximum concurrent API calls (default: 20)
+  LOOKBACK_DAYS            Number of days to look back (default: 7)
+  MAX_CONCURRENT_API_CALLS Maximum concurrent API calls (default: 2)
   MAX_API_RETRIES          Maximum retry attempts per API call (default: 3)
-  MAX_SELECTOR_TOOL_ROUNDS Maximum evidence-gathering rounds in multi mode (default: 2)
-  MAX_TOOL_REQUESTS_PER_ROUND Maximum tool requests per round in multi mode (default: 2)
+  MAX_SELECTOR_TOOL_ROUNDS Maximum evidence-gathering rounds in multi mode (default: 1)
+  MAX_TOOL_REQUESTS_PER_ROUND Maximum tool requests per round in multi mode (default: 1)
   RPC_URL_<CHAIN_ID>       Optional per-chain RPC URL override used by state-check tools
   INFURA_RPC_KEY           Optional Infura key fallback used for mainnet state-check tools
-  LLM_MODEL                LLM model name (default: gpt-5.4)
-  LLM_REASONING_EFFORT     Reasoning effort: low, medium, high (default: high)
+  LLM_MODEL                LLM model name (default: gpt-5.4-nano)
+  LLM_REASONING_EFFORT     Reasoning effort: low, medium, high (default: low)
   ENABLE_SCREENSHOTS       Enable Ledger device screenshot capture (default: false)
   CS_TESTER_DEVICE         Device model for screenshots: stax or flex (default: stax)
   CS_TESTER_ROOT           Path to pre-built device-sdk-ts repo root
@@ -99,14 +99,14 @@ Priority: Command-line arguments > Environment variables > Defaults
     parser.add_argument(
         "--lookback-days",
         type=int,
-        default=int(os.getenv("LOOKBACK_DAYS") or "20"),
-        help="Number of days to look back for transaction history (env: LOOKBACK_DAYS, default: 20)",
+        default=int(os.getenv("LOOKBACK_DAYS") or "7"),
+        help="Number of days to look back for transaction history (env: LOOKBACK_DAYS, default: 7)",
     )
     parser.add_argument(
         "--max-concurrent",
         type=int,
-        default=int(os.getenv("MAX_CONCURRENT_API_CALLS") or "20"),
-        help="Maximum number of concurrent API calls (env: MAX_CONCURRENT_API_CALLS, default: 20)",
+        default=int(os.getenv("MAX_CONCURRENT_API_CALLS") or "2"),
+        help="Maximum number of concurrent API calls (env: MAX_CONCURRENT_API_CALLS, default: 2)",
     )
     parser.add_argument(
         "--max-retries",
@@ -123,23 +123,25 @@ Priority: Command-line arguments > Environment variables > Defaults
     parser.add_argument(
         "--max-selector-tool-rounds",
         type=int,
-        default=int(os.getenv("MAX_SELECTOR_TOOL_ROUNDS") or "2"),
-        help="Maximum evidence-gathering rounds per selector in multi mode (env: MAX_SELECTOR_TOOL_ROUNDS, default: 2)",
+        default=int(os.getenv("MAX_SELECTOR_TOOL_ROUNDS") or "1"),
+        help="Maximum evidence-gathering rounds per selector in multi mode (env: MAX_SELECTOR_TOOL_ROUNDS, default: 1)",
     )
     parser.add_argument(
         "--max-tool-requests-per-round",
         type=int,
-        default=int(os.getenv("MAX_TOOL_REQUESTS_PER_ROUND") or "2"),
-        help="Maximum tool requests the model can make per round in multi mode (env: MAX_TOOL_REQUESTS_PER_ROUND, default: 2)",
+        default=int(os.getenv("MAX_TOOL_REQUESTS_PER_ROUND") or "1"),
+        help="Maximum tool requests the model can make per round in multi mode (env: MAX_TOOL_REQUESTS_PER_ROUND, default: 1)",
     )
     parser.add_argument(
-        "--model", default=os.getenv("LLM_MODEL") or "gpt-5.4", help="LLM model name (env: LLM_MODEL, default: gpt-5.4)"
+        "--model",
+        default=os.getenv("LLM_MODEL") or "gpt-5.4-nano",
+        help="LLM model name (env: LLM_MODEL, default: gpt-5.4-nano)",
     )
     parser.add_argument(
         "--reasoning-effort",
         choices=("low", "medium", "high"),
-        default=os.getenv("LLM_REASONING_EFFORT") or "high",
-        help="Reasoning effort for the LLM (env: LLM_REASONING_EFFORT, default: high)",
+        default=os.getenv("LLM_REASONING_EFFORT") or "low",
+        help="Reasoning effort for the LLM (env: LLM_REASONING_EFFORT, default: low)",
     )
     parser.add_argument(
         "--enable-screenshots",

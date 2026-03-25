@@ -34,14 +34,14 @@ class ServiceConfig:
     disable_oidc_auth: bool = False
 
     # --- analyzer defaults (overridable per request) ---
-    default_model: str = "gpt-5.4"
-    default_reasoning_effort: str = "high"
+    default_model: str = "gpt-5.4-nano"
+    default_reasoning_effort: str = "low"
     default_analysis_mode: str = "single"
-    lookback_days: int = 20
-    max_concurrent_api_calls: int = 20
+    lookback_days: int = 7
+    max_concurrent_api_calls: int = 2
     max_api_retries: int = 3
-    max_selector_tool_rounds: int = 2
-    max_tool_requests_per_round: int = 2
+    max_selector_tool_rounds: int = 1
+    max_tool_requests_per_round: int = 1
 
     # --- screenshots ---
     enable_screenshots: bool = False
@@ -75,14 +75,14 @@ def load_config(env_file: str | Path | None = None) -> ServiceConfig:
         allowed_repos=allowed,
         oidc_issuer=os.getenv("OIDC_ISSUER_URL", "https://token.actions.githubusercontent.com"),
         disable_oidc_auth=os.getenv("DISABLE_OIDC_AUTH", "").lower() in ("1", "true", "yes"),
-        default_model=os.getenv("LLM_MODEL", "gpt-5.4"),
-        default_reasoning_effort=os.getenv("LLM_REASONING_EFFORT", "high"),
+        default_model=os.getenv("LLM_MODEL", "gpt-5.4-nano"),
+        default_reasoning_effort=os.getenv("LLM_REASONING_EFFORT", "low"),
         default_analysis_mode=os.getenv("ANALYSIS_MODE", "single"),
-        lookback_days=int(os.getenv("LOOKBACK_DAYS", "20")),
-        max_concurrent_api_calls=int(os.getenv("MAX_CONCURRENT_API_CALLS", "20")),
+        lookback_days=int(os.getenv("LOOKBACK_DAYS", "7")),
+        max_concurrent_api_calls=int(os.getenv("MAX_CONCURRENT_API_CALLS", "2")),
         max_api_retries=int(os.getenv("MAX_API_RETRIES", "3")),
-        max_selector_tool_rounds=int(os.getenv("MAX_SELECTOR_TOOL_ROUNDS", "2")),
-        max_tool_requests_per_round=int(os.getenv("MAX_TOOL_REQUESTS_PER_ROUND", "2")),
+        max_selector_tool_rounds=int(os.getenv("MAX_SELECTOR_TOOL_ROUNDS", "1")),
+        max_tool_requests_per_round=int(os.getenv("MAX_TOOL_REQUESTS_PER_ROUND", "1")),
         enable_screenshots=os.getenv("ENABLE_SCREENSHOTS", "").lower() in ("1", "true", "yes"),
         screenshot_device=os.getenv("CS_TESTER_DEVICE", "stax"),
         cs_tester_root=os.getenv("CS_TESTER_ROOT"),

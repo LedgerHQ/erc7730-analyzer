@@ -144,10 +144,14 @@ jobs:
           SERVICE_ARN: ${{ secrets.APPRUNNER_SERVICE_ARN }}
           AWS_REGION: ${{ vars.AWS_REGION }}
           DEPLOY_SHA: ${{ env.DEPLOY_REF_SHA }}
-          LLM_MODEL: ${{ vars.LLM_MODEL || 'gpt-5.4' }}
-          ANALYSIS_MODE: ${{ vars.ANALYSIS_MODE || 'multi' }}
-          LLM_REASONING_EFFORT: ${{ vars.LLM_REASONING_EFFORT || 'high' }}
-          ENABLE_SCREENSHOTS: ${{ vars.ENABLE_SCREENSHOTS || 'true' }}
+          LLM_MODEL: ${{ vars.LLM_MODEL || 'gpt-5.4-nano' }}
+          ANALYSIS_MODE: ${{ vars.ANALYSIS_MODE || 'single' }}
+          LLM_REASONING_EFFORT: ${{ vars.LLM_REASONING_EFFORT || 'low' }}
+          ENABLE_SCREENSHOTS: ${{ vars.ENABLE_SCREENSHOTS || 'false' }}
+          LOOKBACK_DAYS: ${{ vars.LOOKBACK_DAYS || '7' }}
+          MAX_CONCURRENT_API_CALLS: ${{ vars.MAX_CONCURRENT_API_CALLS || '2' }}
+          MAX_SELECTOR_TOOL_ROUNDS: ${{ vars.MAX_SELECTOR_TOOL_ROUNDS || '1' }}
+          MAX_TOOL_REQUESTS_PER_ROUND: ${{ vars.MAX_TOOL_REQUESTS_PER_ROUND || '1' }}
         run: |
           if [ -z "$SERVICE_ARN" ]; then
             echo "::notice::APPRUNNER_SERVICE_ARN not set — run 'terraform apply' in infra/ first"
@@ -168,6 +172,10 @@ jobs:
             --arg analysis_mode       "$ANALYSIS_MODE" \
             --arg reasoning           "$LLM_REASONING_EFFORT" \
             --arg screenshots         "$ENABLE_SCREENSHOTS" \
+            --arg lookback_days       "$LOOKBACK_DAYS" \
+            --arg max_concurrent      "$MAX_CONCURRENT_API_CALLS" \
+            --arg max_tool_rounds     "$MAX_SELECTOR_TOOL_ROUNDS" \
+            --arg max_tool_requests   "$MAX_TOOL_REQUESTS_PER_ROUND" \
             --arg cal_url             "https://crypto-assets-service.api.ledger.com" \
             --arg cal_staging         "https://crypto-assets-service.api.ledger-test.com" \
             --arg openai_secret       "$(resolve_secret "${NS}/openai-api-key")" \
@@ -189,6 +197,10 @@ jobs:
                     ANALYSIS_MODE: $analysis_mode,
                     LLM_REASONING_EFFORT: $reasoning,
                     ENABLE_SCREENSHOTS: $screenshots,
+                    LOOKBACK_DAYS: $lookback_days,
+                    MAX_CONCURRENT_API_CALLS: $max_concurrent,
+                    MAX_SELECTOR_TOOL_ROUNDS: $max_tool_rounds,
+                    MAX_TOOL_REQUESTS_PER_ROUND: $max_tool_requests,
                     SNOWFLAKE_ENABLED: "true",
                     CAL_SERVICE_URL: $cal_url,
                     CAL_SERVICE_STAGING: $cal_staging,

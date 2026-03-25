@@ -23,7 +23,6 @@ class ServiceConfig:
     coredao_api_key: str = ""
     infura_rpc_key: str = ""
     gating_token: str = ""
-    github_token: str = ""
 
     # --- CAL service ---
     cal_service_url: str = "https://crypto-assets-service.api.ledger.com"
@@ -71,7 +70,6 @@ def load_config(env_file: str | Path | None = None) -> ServiceConfig:
         coredao_api_key=os.getenv("COREDAO_API_KEY", ""),
         infura_rpc_key=os.getenv("INFURA_RPC_KEY", ""),
         gating_token=os.getenv("GATING_TOKEN", ""),
-        github_token=os.getenv("GITHUB_TOKEN", ""),
         cal_service_url=os.getenv("CAL_SERVICE_URL", "https://crypto-assets-service.api.ledger.com"),
         cal_service_staging=os.getenv("CAL_SERVICE_STAGING", "https://crypto-assets-service.api.ledger-test.com"),
         allowed_repos=allowed,

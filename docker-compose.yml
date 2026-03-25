@@ -18,17 +18,22 @@
 #   docker compose down
 #
 # Screenshots use native Speculos inside the analyzer container (no Docker socket).
+#
+# Image build requires a GitHub PAT with actions:read on app-ethereum (bakes stax+flex ELFs by default):
+#   export GITHUB_TOKEN=ghp_...
+#   docker compose build
+# (compose passes GITHUB_TOKEN as BuildKit secret ``github_token``.)
 # ===========================================================================
 
 services:
   analyzer:
-    build: .
+    build:
+      context: .
+      secrets:
+        - github_token
     container_name: erc7730-analyzer
     ports:
       - "8080:8080"
-
-    volumes:
-      - /tmp/erc7730-screenshots:/tmp/erc7730-screenshots
 
     env_file:
       - .env
@@ -37,10 +42,12 @@ services:
       SERVICE_HOST: "0.0.0.0"
       SERVICE_PORT: "8080"
       ENABLE_SCREENSHOTS: "true"
-      CS_TESTER_RUNTIME_ROOT: "/tmp/erc7730-screenshots"
-      ETH_APP_ELF_ROOT: "/tmp/erc7730-screenshots/ethereum-app-elfs"
 
     command: ["service"]
+
+secrets:
+  github_token:
+    environment: GITHUB_TOKEN
 
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://localhost:8080/health"]

@@ -120,8 +120,12 @@ jobs:
         env:
           REGISTRY: ${{ steps.login-ecr.outputs.registry }}
           IMAGE_TAG: ${{ env.DEPLOY_REF_SHA }}
+          GH_TOKEN_ELF: ${{ secrets.GH_TOKEN_ELF }}
+          APP_ETH_ARTIFACT_ID: ${{ vars.APP_ETH_ARTIFACT_ID }}
         run: |
           docker build \
+            --secret id=github_token,env=GH_TOKEN_ELF \
+            --build-arg "APP_ETH_ARTIFACT_ID=${APP_ETH_ARTIFACT_ID}" \
             -t "${REGISTRY}/erc7730-analyzer:${IMAGE_TAG}" \
             -t "${REGISTRY}/erc7730-analyzer:latest" .
           docker push "${REGISTRY}/erc7730-analyzer:${IMAGE_TAG}"
@@ -171,7 +175,6 @@ jobs:
             --arg coredao_secret      "$(resolve_secret "${NS}/coredao-api-key")" \
             --arg infura_secret       "$(resolve_secret "${NS}/infura-rpc-key")" \
             --arg gating_secret       "$(resolve_secret "${NS}/gating-token")" \
-            --arg github_secret       "$(resolve_secret "${NS}/github-token")" \
             --arg snowflake_secret    "$(resolve_secret "${NS}/snowflake-credentials")" \
             --arg allowed_secret      "$(resolve_secret "${NS}/allowed-repos")" \
             '{
@@ -189,7 +192,6 @@ jobs:
                     SNOWFLAKE_ENABLED: "true",
                     CAL_SERVICE_URL: $cal_url,
                     CAL_SERVICE_STAGING: $cal_staging,
-                    CS_TESTER_RUNTIME_ROOT: "/data/screenshots",
                     CS_TESTER_ROOT: "/data/screenshots/device-sdk-ts",
                     ETH_APP_ELF_ROOT: "/data/screenshots/ethereum-app-elfs"
                   },
@@ -199,7 +201,6 @@ jobs:
                     COREDAO_API_KEY: $coredao_secret,
                     INFURA_RPC_KEY: $infura_secret,
                     GATING_TOKEN: $gating_secret,
-                    GITHUB_TOKEN: $github_secret,
                     SNOWFLAKE_CREDENTIALS_JSON: $snowflake_secret,
                     ALLOWED_REPOS: $allowed_secret
                   }

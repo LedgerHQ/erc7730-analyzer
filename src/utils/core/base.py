@@ -1,5 +1,7 @@
 """Base analyzer state and shared configuration."""
 
+from collections.abc import Callable
+
 from web3 import Web3
 
 from ..clients.transactions import TransactionFetcher
@@ -44,6 +46,7 @@ class AnalyzerBase:
         screenshot_device: str = "stax",
         cs_tester_root: str | None = None,
         coin_apps_path: str | None = None,
+        progress_callback: Callable[[str], None] | None = None,
     ):
         self.etherscan_api_key = etherscan_api_key
         self.coredao_api_key = coredao_api_key
@@ -61,6 +64,7 @@ class AnalyzerBase:
         self.screenshot_device = screenshot_device
         self.cs_tester_root = cs_tester_root
         self.coin_apps_path = coin_apps_path
+        self.progress_callback = progress_callback
 
         self.w3 = Web3()
         self.abi_helper = None
@@ -73,3 +77,8 @@ class AnalyzerBase:
         self.erc4626_context = None
         self.erc20_context = None
         self.protocol_name = None
+
+    def report_progress(self, message: str) -> None:
+        """Publish a coarse-grained progress update for external polling clients."""
+        if self.progress_callback:
+            self.progress_callback(message)

@@ -99,6 +99,7 @@ def poll_analysis(
     service_url: str,
     run_key: str,
     auth_token: str | None = None,
+    include_logs: bool = False,
 ) -> dict[str, Any]:
     """``GET /analyze`` — poll the job status."""
     headers: dict[str, str] = {}
@@ -106,7 +107,7 @@ def poll_analysis(
         headers["Authorization"] = f"Bearer {auth_token}"
 
     url = f"{service_url.rstrip('/')}/analyze"
-    params: dict[str, str] = {}
+    params: dict[str, str] = {"include_logs": "true" if include_logs else "false"}
     if not auth_token:
         params["run_key"] = run_key
 
@@ -125,6 +126,7 @@ def run_analysis(
     overrides: dict[str, Any] | None = None,
     get_auth_token: Callable[[], str | None] | None = None,
     max_poll_seconds: int = _MAX_POLL_SECONDS,
+    verbose: bool = False,
 ) -> dict[str, Any]:
     """Start analysis, poll until completion, and return the final payload.
 
@@ -136,6 +138,8 @@ def run_analysis(
 
     token = _token()
     print("[CLIENT] Starting analysis...", file=sys.stderr)
+    if verbose:
+        print("[CLIENT] Verbose live logs enabled", file=sys.stderr)
     start_resp = start_analysis(
         service_url=service_url,
         descriptor_path=descriptor_path,
@@ -155,6 +159,7 @@ def run_analysis(
     poll_interval = start_resp.get("poll_after_seconds", 5)
     deadline = time.monotonic() + max_poll_seconds
     seen_log_lines: set[str] = set()
+    last_status_line: tuple[str, str] | None = None
 
     while time.monotonic() < deadline:
         time.sleep(poll_interval)
@@ -164,17 +169,22 @@ def run_analysis(
             service_url=service_url,
             run_key=run_key,
             auth_token=token,
+            include_logs=verbose,
         )
 
         status = resp["status"]
         status_msg = resp.get("status_message", "")
 
-        for line in resp.get("recent_logs", []):
-            if line not in seen_log_lines:
-                seen_log_lines.add(line)
-                print(line, file=sys.stderr)
+        if verbose:
+            for line in resp.get("recent_logs", []):
+                if line not in seen_log_lines:
+                    seen_log_lines.add(line)
+                    print(line, file=sys.stderr)
 
-        print(f"[STATUS] {status}: {status_msg}", file=sys.stderr)
+        status_line = (status, status_msg)
+        if status_line != last_status_line:
+            print(f"[STATUS] {status}: {status_msg}", file=sys.stderr)
+            last_status_line = status_line
 
         if status in ("succeeded", "failed", "expired"):
             return resp
@@ -202,6 +212,12 @@ Examples:
       --service-url "$ANALYZER_SERVICE_URL" \\
       --descriptor calldata-MyToken.json \\
       --analysis-mode multi
+
+  # Verbose polling with live logs:
+  python -m service.client \\
+      --service-url "$ANALYZER_SERVICE_URL" \\
+      --descriptor calldata-MyToken.json \\
+      --verbose
 
   # Local service with DISABLE_OIDC_AUTH=1:
   python -m service.client --no-auth --service-url http://127.0.0.1:8080 --descriptor ...
@@ -238,6 +254,11 @@ Examples:
     parser.add_argument("--enable-screenshots", action="store_true", default=None, help="Enable screenshot capture")
     parser.add_argument("--no-screenshots", action="store_true", default=False, help="Explicitly disable screenshots")
     parser.add_argument("--screenshot-device", choices=("stax", "flex"), default=None)
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Print detailed live analysis logs during polling",
+    )
 
     args = parser.parse_args()
 
@@ -268,6 +289,8 @@ Examples:
         overrides["enable_screenshots"] = False
     elif args.enable_screenshots:
         overrides["enable_screenshots"] = True
+    if args.verbose:
+        overrides["verbose"] = True
 
     skip_auth = args.no_auth or os.getenv("DISABLE_OIDC_AUTH", "").lower() in ("1", "true", "yes")
     if skip_auth:
@@ -283,6 +306,7 @@ Examples:
         abi_path=args.abi,
         overrides=overrides,
         get_auth_token=token_getter,
+        verbose=args.verbose,
     )
 
     status = report.get("status", "")

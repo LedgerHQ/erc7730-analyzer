@@ -43,6 +43,7 @@ class AnalysisJob:
     run_attempt: str = ""
 
     status_message: str = ""
+    verbose: bool = False
     log_lines: list[str] = field(default_factory=list)
 
     result: dict[str, Any] | None = None

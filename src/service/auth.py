@@ -72,7 +72,7 @@ def verify_oidc_token(
             f"Repository '{repo}' is not in the allow-list: {allowed_repos}"
         )
 
-    logger.info(
+    logger.debug(
         "[AUTH] Token verified — issuer=%s repo=%s workflow=%s ref=%s",
         issuer,
         repo,

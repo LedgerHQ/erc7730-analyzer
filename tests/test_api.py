@@ -28,6 +28,7 @@ async def _blocking_execute(*, job, semaphore, **kwargs):
     """Mock that holds the semaphore indefinitely (for capacity tests)."""
     async with semaphore:
         job.set_status("running", "Holding semaphore")
+        job.append_log("live log line")
         await asyncio.sleep(60)
 
 
@@ -83,6 +84,29 @@ class TestGetAnalyze:
             get = await client.get("/analyze", params={"run_key": run_key})
             assert get.status_code == 202
             assert get.json()["status"] == "running"
+            assert "recent_logs" not in get.json()
+
+    async def test_running_job_includes_logs_when_verbose(self, client: httpx.AsyncClient):
+        with patch.object(app_mod, "_execute_analysis", _blocking_execute):
+            post = await client.post("/analyze", json={"descriptor": {"x": 1}, "verbose": True})
+            run_key = post.json()["run_key"]
+
+            await asyncio.sleep(0.1)
+
+            get = await client.get("/analyze", params={"run_key": run_key})
+            assert get.status_code == 202
+            assert get.json()["recent_logs"] == ["live log line"]
+
+    async def test_running_job_can_explicitly_suppress_logs(self, client: httpx.AsyncClient):
+        with patch.object(app_mod, "_execute_analysis", _blocking_execute):
+            post = await client.post("/analyze", json={"descriptor": {"x": 1}, "verbose": True})
+            run_key = post.json()["run_key"]
+
+            await asyncio.sleep(0.1)
+
+            get = await client.get("/analyze", params={"run_key": run_key, "include_logs": "false"})
+            assert get.status_code == 202
+            assert "recent_logs" not in get.json()
 
 
 class TestFullPollingFlow:

@@ -159,12 +159,17 @@ The analyzer runs as a FastAPI service behind AWS App Runner. It exposes an
 async polling API so analyses can run far longer than App Runner's 120-second
 request timeout.
 
+The polling client is quiet by default and prints coarse status transitions.
+Pass `--verbose` to `erc7730-client` to opt into detailed live analysis logs.
+
 ### `POST /analyze`
 
 Start (or resume) an analysis. Returns immediately with a job handle.
 
 - **Auth**: Bearer token (GitHub OIDC JWT). Skipped when `DISABLE_OIDC_AUTH=true`.
 - **Body**: JSON matching `AnalyzeRequest` (required field: `descriptor`).
+- **Verbose live logs**: set `verbose: true` in the request body to capture
+  detailed analysis logs for polling clients.
 - **Idempotency**: when OIDC is enabled the job is keyed by
   `(repository, run_id, run_attempt)` from the JWT. Repeating the same POST
   returns the existing job instead of starting a duplicate.
@@ -179,9 +184,12 @@ Poll the status of a running analysis or retrieve the final result.
 
 - **Auth**: same Bearer token. When OIDC is disabled, pass `?run_key=<key>`
   (the key returned by POST).
+- **Live logs**: pass `?include_logs=true` to include the latest live log lines
+  for a running job. When omitted, the server defaults to the job's requested
+  verbosity.
 - **Responses**:
-  - `202 Accepted` — job queued or running (includes `poll_after_seconds` hint
-    and `recent_logs` tail).
+  - `202 Accepted` — job queued or running (includes `poll_after_seconds` and a
+    coarse `status_message`; `recent_logs` is only included when live logs are enabled).
   - `200 OK` — job succeeded (includes `protocol`, `has_criticals`,
     `summary_report`, `criticals_report`, `results_json`).
   - `404 Not Found` — no job for this run.
@@ -203,7 +211,7 @@ In addition to the standard config variables listed above, the service accepts:
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `JOB_RETENTION_TTL` | `3600` | Seconds to retain completed jobs before eviction |
-| `MAX_RETAINED_LOG_LINES` | `500` | Max log lines kept per job for progress polling |
+| `MAX_RETAINED_LOG_LINES` | `500` | Max live log lines kept per job for verbose polling |
 | `POLL_INTERVAL_HINT` | `5` | Suggested poll interval returned to clients (seconds) |
 
 ## Project Structure

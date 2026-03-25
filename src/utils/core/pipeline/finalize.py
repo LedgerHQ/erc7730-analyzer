@@ -52,8 +52,8 @@ class AnalyzerPipelineFinalizeMixin:
                 expanded_erc7730_format = audit_report_json.get("erc7730_format")
 
                 if audit_result.success:
-                    logger.info(f"\nCritical Report:\n{audit_report_critical}\n")
-                    logger.info(f"\nDetailed Report:\n{audit_report_detailed}\n")
+                    logger.debug(f"\nCritical Report:\n{audit_report_critical}\n")
+                    logger.debug(f"\nDetailed Report:\n{audit_report_detailed}\n")
                 else:
                     logger.error(f"Audit failed for {selector}: {audit_result.error}")
             else:

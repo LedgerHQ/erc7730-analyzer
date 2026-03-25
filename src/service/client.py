@@ -182,6 +182,12 @@ Examples:
         action="store_true",
         help="Omit bearer token (use when the service runs with DISABLE_OIDC_AUTH)",
     )
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=None,
+        help="Directory to write report artifacts to (default: ./output relative to CWD)",
+    )
 
     # LLM overrides
     parser.add_argument("--analysis-mode", choices=("single", "multi"), default=None, help="Audit strategy")
@@ -250,10 +256,9 @@ Examples:
         auth_token=token,
     )
 
-    # Write reports to output/ relative to the project root (not CWD)
-    project_root = Path(__file__).resolve().parent.parent.parent
-    output_dir = project_root / "output"
-    output_dir.mkdir(exist_ok=True)
+    # Write reports under --output-dir or ./output relative to CWD
+    output_dir = args.output_dir if args.output_dir else Path.cwd() / "output"
+    output_dir.mkdir(parents=True, exist_ok=True)
 
     protocol = report.get("protocol", "unknown")
     has_criticals = report.get("has_criticals", False)

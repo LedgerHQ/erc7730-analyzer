@@ -436,7 +436,7 @@ def main():
         host=host,
         port=port,
         workers=1,
-        limit_concurrency=1,
+        limit_concurrency=2,
         log_level="info",
     )
 

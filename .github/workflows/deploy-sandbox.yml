@@ -21,6 +21,8 @@ concurrency:
 permissions:
   id-token: write
   contents: read
+  # Download app-ethereum CI artifacts (public repo) during Docker build.
+  actions: read
 
 jobs:
   deploy:
@@ -61,7 +63,6 @@ jobs:
           COREDAO_API_KEY: ${{ secrets.COREDAO_API_KEY }}
           INFURA_RPC_KEY: ${{ secrets.INFURA_RPC_KEY }}
           GATING_TOKEN: ${{ secrets.GATING_TOKEN }}
-          GH_TOKEN_ELF: ${{ secrets.GH_TOKEN_ELF }}
           ALLOWED_REPOS: ${{ secrets.ALLOWED_REPOS }}
           SNOWFLAKE_USER: ${{ secrets.SNOWFLAKE_USER }}
           SNOWFLAKE_INSTANCE: ${{ secrets.SNOWFLAKE_INSTANCE }}
@@ -93,7 +94,6 @@ jobs:
           sync_secret "$COREDAO_API_KEY"    "${NS}/coredao-api-key"
           sync_secret "$INFURA_RPC_KEY"     "${NS}/infura-rpc-key"
           sync_secret "$GATING_TOKEN"       "${NS}/gating-token"
-          sync_secret "$GH_TOKEN_ELF"   "${NS}/github-token"
           sync_secret "$ALLOWED_REPOS"      "${NS}/allowed-repos"
 
           # Snowflake credentials are packed into a single JSON blob
@@ -120,11 +120,11 @@ jobs:
         env:
           REGISTRY: ${{ steps.login-ecr.outputs.registry }}
           IMAGE_TAG: ${{ env.DEPLOY_REF_SHA }}
-          GH_TOKEN_ELF: ${{ secrets.GH_TOKEN_ELF }}
+          CI_GH_TOKEN: ${{ github.token }}
           APP_ETH_ARTIFACT_ID: ${{ vars.APP_ETH_ARTIFACT_ID }}
         run: |
           docker build \
-            --secret id=github_token,env=GH_TOKEN_ELF \
+            --secret id=github_token,env=CI_GH_TOKEN \
             --build-arg "APP_ETH_ARTIFACT_ID=${APP_ETH_ARTIFACT_ID}" \
             -t "${REGISTRY}/erc7730-analyzer:${IMAGE_TAG}" \
             -t "${REGISTRY}/erc7730-analyzer:latest" .

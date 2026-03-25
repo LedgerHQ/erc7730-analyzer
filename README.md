@@ -141,10 +141,13 @@ Set in `.env` or pass directly:
 | `ENABLE_SCREENSHOTS` | No | Capture Ledger device screenshots (`true`/`false`) |
 | `CS_TESTER_ROOT` | No | Path to `device-sdk-ts` repo root |
 | `ETH_APP_ELF_ROOT` | No | Path to directory containing Ethereum app ELF files |
-| `LLM_MODEL` | No | Model name (default: `gpt-5.4`) |
-| `LLM_REASONING_EFFORT` | No | `low`, `medium`, or `high` (default: `high`) |
+| `LLM_MODEL` | No | Model name (default: `gpt-5.4-nano`) |
+| `LLM_REASONING_EFFORT` | No | `low`, `medium`, or `high` (default: `low`) |
 | `ANALYSIS_MODE` | No | `single` or `multi` (default: `single`) |
-| `LOOKBACK_DAYS` | No | Transaction lookback period in days (default: `20`) |
+| `LOOKBACK_DAYS` | No | Transaction lookback period in days (default: `7`) |
+| `MAX_CONCURRENT_API_CALLS` | No | Max concurrent internal API/model calls (default: `2`) |
+| `MAX_SELECTOR_TOOL_ROUNDS` | No | Max multi-agent evidence-gathering rounds (default: `1`) |
+| `MAX_TOOL_REQUESTS_PER_ROUND` | No | Max tool requests per multi-agent round (default: `1`) |
 
 ### CLI Arguments
 

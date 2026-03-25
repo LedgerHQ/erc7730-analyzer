@@ -38,7 +38,7 @@ MAX_TXS_PER_SELECTOR = 2
 MAX_CONCURRENT_SPECULOS = min(max(os.cpu_count() or 4, 3), 8)
 CS_TESTER_MAX_RETRIES = 3
 CS_TESTER_RETRY_DELAY = 3
-TRIM_HEAD = 3
+TRIM_HEAD = 1
 TRIM_TAIL = 3
 
 PERSISTENT_SPECULOS_PORT = 5555
@@ -385,7 +385,7 @@ class ScreenshotRunner:
         return port
 
     async def _wait_for_speculos_api(self, port: int, timeout: int = SPECULOS_STARTUP_TIMEOUT) -> None:
-        """Block until the Speculos HTTP API is fully responsive."""
+        """Block until the Speculos HTTP API and Ethereum app are responsive."""
         import urllib.request
         import urllib.error
 
@@ -394,16 +394,22 @@ class ScreenshotRunner:
             try:
                 resp = urllib.request.urlopen(url, timeout=2)
                 resp.close()
-                return
+                break
             except (urllib.error.URLError, OSError, ConnectionRefusedError):
                 await asyncio.sleep(0.5)
-        raise TimeoutError(f"Speculos API not ready on port {port} after {timeout}s")
+        else:
+            raise TimeoutError(f"Speculos API not ready on port {port} after {timeout}s")
+        await asyncio.to_thread(self._wait_for_app_ready_sync, port)
+        await asyncio.to_thread(self._set_speculos_automation, port)
 
     def _restart_persistent_speculos_sync(self) -> None:
         """Restart Speculos to get a clean app state between cs-tester runs.
 
         Docker: ``docker restart --timeout 1`` (~1.2s) then wait for API.
         Native: kill + respawn the process.
+
+        After the HTTP API responds, sends a GET_VERSION APDU to the Ethereum
+        app to ensure it has fully loaded before returning.
         """
         import time
         import urllib.error
@@ -436,11 +442,78 @@ class ScreenshotRunner:
             try:
                 resp = urllib.request.urlopen(url, timeout=2)
                 resp.close()
-                logger.debug("[SCREENSHOTS] Speculos restarted and ready on port %d", port)
-                return
+                break
             except (urllib.error.URLError, OSError, ConnectionRefusedError):
                 time.sleep(0.5)
-        logger.warning("[SCREENSHOTS] Speculos API not ready after restart — continuing anyway")
+        else:
+            logger.warning("[SCREENSHOTS] Speculos API not ready after restart — continuing anyway")
+            return
+
+        self._wait_for_app_ready_sync(port)
+        self._set_speculos_automation(port)
+
+    @staticmethod
+    def _wait_for_app_ready_sync(port: int, timeout: int = 10) -> None:
+        """Confirm the Ethereum app is fully ready for transaction processing.
+
+        Phase 1: Poll GET_APP_CONFIGURATION until the app responds with 9000.
+        Phase 2: Wait for the clear-signing subsystem to finish initializing
+                 (the app responds to basic APDUs before its internal state
+                 machine is ready to accept transaction signing commands).
+        """
+        import time
+        import urllib.error
+        import urllib.request
+
+        apdu_url = f"http://localhost:{port}/apdu"
+        get_config = json.dumps({"data": "e006000000"}).encode()
+        for attempt in range(timeout * 4):
+            try:
+                req = urllib.request.Request(
+                    apdu_url,
+                    data=get_config,
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                resp = urllib.request.urlopen(req, timeout=2)
+                body = json.loads(resp.read())
+                resp.close()
+                status = body.get("data", "")[-4:]
+                if status == "9000":
+                    logger.debug("[SCREENSHOTS] Ethereum app APDU OK on port %d, waiting for subsystem init", port)
+                    time.sleep(1.5)
+                    return
+                logger.debug("[SCREENSHOTS] App APDU returned status %s, retrying...", status)
+            except (urllib.error.URLError, OSError, ConnectionRefusedError, json.JSONDecodeError):
+                pass
+            time.sleep(0.25)
+        logger.warning("[SCREENSHOTS] Ethereum app did not respond to GET_APP_CONFIGURATION after %ds — continuing", timeout)
+
+    @staticmethod
+    def _set_speculos_automation(port: int) -> None:
+        """Install Speculos automation rules to dismiss first-boot prompts.
+
+        The Ethereum app shows modal prompts like 'Enable Transaction Check?'
+        the first time a transaction is sent after a fresh start.  These rules
+        automatically tap 'Maybe later' whenever that text appears on screen.
+        """
+        import urllib.error
+        import urllib.request
+
+        url = f"http://localhost:{port}/automation"
+        rules = {
+            "version": 1,
+            "rules": [
+                {"text": "Maybe later", "actions": [["finger", 200, 620, True], ["finger", 200, 620, False]]},
+            ],
+        }
+        try:
+            payload = json.dumps(rules).encode()
+            req = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"}, method="POST")
+            urllib.request.urlopen(req, timeout=5).close()
+            logger.info("[SCREENSHOTS] Speculos automation rules installed on port %d", port)
+        except (urllib.error.URLError, OSError) as exc:
+            logger.warning("[SCREENSHOTS] Failed to set Speculos automation rules: %s", exc)
 
     def _stop_persistent_speculos(self) -> None:
         """Tear down the persistent Speculos instance."""
@@ -697,19 +770,25 @@ class ScreenshotRunner:
         *,
         max_wait: int = 120,
         stable_after: float = 3.0,
+        min_grace: float = 15.0,
     ) -> bool:
         """Poll until cs-tester exits or screenshot files stop appearing.
 
-        Returns ``True`` only when cs-tester succeeded: either a clean exit
-        (code 0) or screenshots stabilised while the process is still alive
-        (the common ``--external-speculos`` hang-after-success case).
+        Returns ``True`` when usable screenshots were produced — either from
+        a clean exit (code 0), screenshots stabilising while alive, or a
+        non-zero exit that still left blind-signed screenshots on disk.
 
-        Returns ``False`` on non-zero exit, timeout with no screenshots, or
-        any other failure.
+        Returns ``False`` only when no screenshots exist at all.
+
+        The *min_grace* period prevents premature termination: during this
+        initial window, stability-based termination only fires when more
+        than 2 screenshots already exist (the home screen alone isn't
+        enough to declare "done").
         """
         import time
 
-        deadline = time.monotonic() + max_wait
+        start = time.monotonic()
+        deadline = start + max_wait
         last_count = 0
         last_change = time.monotonic()
 
@@ -722,6 +801,13 @@ class ScreenshotRunner:
                 stderr = ""
                 if proc.stderr:
                     stderr = proc.stderr.read().decode(errors="replace")[-500:]
+                has_screenshots = any(screenshots_dir.glob("screenshot_*.png"))
+                if has_screenshots:
+                    logger.info(
+                        "[SCREENSHOTS][%s] cs-tester exited with code %d for tx %s (blind-signed, keeping screenshots)",
+                        selector, ret, tx_hash[:10],
+                    )
+                    return True
                 logger.warning(
                     "[SCREENSHOTS][%s] cs-tester exited with code %d for tx %s: %s",
                     selector, ret, tx_hash[:10], stderr,
@@ -733,12 +819,19 @@ class ScreenshotRunner:
                 last_count = current_count
                 last_change = time.monotonic()
 
-            if last_count > 0 and (time.monotonic() - last_change) >= stable_after:
-                logger.info(
-                    "[SCREENSHOTS][%s] %d screenshot(s) stable for %.0fs — terminating cs-tester for tx %s",
-                    selector, last_count, stable_after, tx_hash[:10],
-                )
-                return True
+            elapsed = time.monotonic() - start
+            in_grace = elapsed < min_grace
+            stable_elapsed = time.monotonic() - last_change
+
+            if last_count > 0 and stable_elapsed >= stable_after:
+                if in_grace and last_count <= 2:
+                    pass  # too early — wait for clear-signing screens
+                else:
+                    logger.info(
+                        "[SCREENSHOTS][%s] %d screenshot(s) stable for %.0fs — terminating cs-tester for tx %s",
+                        selector, last_count, stable_after, tx_hash[:10],
+                    )
+                    return True
 
             time.sleep(0.5)
 
@@ -790,6 +883,11 @@ class ScreenshotRunner:
         cmd = [*self._pnpm_cmd(*cs_global_opts)]
 
         env = dict(os.environ)
+
+        from .erc7730_api import ensure_running as _ensure_erc7730_api
+        api_port = _ensure_erc7730_api()
+        env["ERC7730_API_URL"] = f"http://127.0.0.1:{api_port}"
+
         if not custom_app_path.is_file():
             logger.warning(
                 "[SCREENSHOTS][%s] No Ethereum app ELF at %s for device %s",
@@ -850,8 +948,10 @@ class ScreenshotRunner:
 
         all_pngs = sorted(screenshots_dir.glob("screenshot_*.png"), key=_sort_key)
 
-        if len(all_pngs) > TRIM_HEAD + TRIM_TAIL:
+        if len(all_pngs) > TRIM_HEAD + TRIM_TAIL + 1:
             meaningful = all_pngs[TRIM_HEAD : len(all_pngs) - TRIM_TAIL]
+        elif len(all_pngs) > TRIM_HEAD:
+            meaningful = all_pngs[TRIM_HEAD:]
         elif all_pngs:
             meaningful = all_pngs
         else:

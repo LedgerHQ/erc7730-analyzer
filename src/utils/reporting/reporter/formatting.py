@@ -367,7 +367,7 @@ def render_screenshots_section(
         if not paths:
             continue
 
-        images_md: list[str] = []
+        images_html: list[str] = []
         for src_path_str in paths:
             src = Path(src_path_str)
             if not src.exists() or src.suffix.lower() != ".png":
@@ -375,8 +375,8 @@ def render_screenshots_section(
 
             if inline_base64:
                 b64 = base64.b64encode(src.read_bytes()).decode()
-                images_md.append(
-                    f"![{src.stem}](data:image/png;base64,{b64})"
+                images_html.append(
+                    f'<img src="data:image/png;base64,{b64}" width="180" alt="{src.stem}">'
                 )
             else:
                 dst_name = f"{tx_hash[2:10]}_{src.name}"
@@ -384,14 +384,13 @@ def render_screenshots_section(
                 if not dst.exists():
                     shutil.copy2(src, dst)
                 rel = os.path.relpath(dst, report_dir)
-                images_md.append(f"![{src.stem}]({rel})")
+                images_html.append(f'<img src="{rel}" width="180" alt="{src.stem}">')
 
-        if not images_md:
+        if not images_html:
             continue
 
         tx_block = f"#### Transaction {idx} — `{tx_hash}`\n\n"
 
-        # Collapsible decoded parameters (same style as transaction samples)
         tx_info = tx_params.get(tx_hash.lower())
         if tx_info:
             decoded = tx_info.get("decoded_input", {})
@@ -411,7 +410,7 @@ def render_screenshots_section(
                 tx_block += "\n".join(param_lines) + "\n"
                 tx_block += "```\n\n"
 
-        tx_block += " | ".join(images_md) + "\n"
+        tx_block += "<p>" + " ".join(images_html) + "</p>\n"
         tx_sections.append(tx_block)
 
     if not tx_sections:

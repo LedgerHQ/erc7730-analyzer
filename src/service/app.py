@@ -1,8 +1,13 @@
-"""FastAPI application — single /analyze endpoint with SSE streaming.
+"""FastAPI application — async job-based /analyze endpoint.
 
-Usage
------
-    python -m service.app
+``POST /analyze`` starts (or resumes) an analysis and returns immediately.
+``GET  /analyze`` polls job status or retrieves the final result.
+``GET  /health``   liveness probe.
+
+Run-scoped identity: when OIDC auth is enabled, jobs are keyed by
+``(repository, run_id, run_attempt)`` from the GitHub JWT claims.
+When OIDC is disabled (local dev), the POST generates a UUID key that the
+client passes back via query parameter on GET.
 """
 
 from __future__ import annotations
@@ -13,7 +18,6 @@ import json
 import logging
 import os
 import re
-import shutil
 import tempfile
 import uuid
 from contextlib import asynccontextmanager
@@ -23,21 +27,32 @@ from typing import Any, Literal
 
 import jwt
 import uvicorn
-from fastapi import FastAPI, Header, HTTPException, Request, Response
+from fastapi import FastAPI, Header, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
-from sse_starlette.sse import EventSourceResponse
 
-from .auth import GITHUB_OIDC_ISSUER, verify_request_token
+from .auth import (
+    GITHUB_OIDC_ISSUER,
+    derive_run_key,
+    extract_caller_metadata,
+    verify_request_token,
+)
 from .config import ServiceConfig, load_config
+from .jobs import AnalysisJob, JobRegistry
 
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Global config (populated at startup)
+# Global state (populated at startup)
 # ---------------------------------------------------------------------------
 _config: ServiceConfig | None = None
+_registry: JobRegistry | None = None
+_analysis_semaphore: asyncio.Semaphore | None = None
+_cleanup_task: asyncio.Task | None = None
+
+_MAX_CONCURRENT_ANALYSES = 1
+_ANALYSIS_TIMEOUT_SECONDS = 60 * 45  # 45 minutes
 
 
 def get_config() -> ServiceConfig:
@@ -45,13 +60,39 @@ def get_config() -> ServiceConfig:
     return _config
 
 
+def get_registry() -> JobRegistry:
+    assert _registry is not None, "Service not initialised"
+    return _registry
+
+
+def get_semaphore() -> asyncio.Semaphore:
+    assert _analysis_semaphore is not None, "Service not initialised"
+    return _analysis_semaphore
+
+
 # ---------------------------------------------------------------------------
 # Lifespan
 # ---------------------------------------------------------------------------
+async def _periodic_cleanup(registry: JobRegistry, interval: int = 60) -> None:
+    """Background loop that evicts expired jobs."""
+    while True:
+        await asyncio.sleep(interval)
+        try:
+            await registry.cleanup_expired()
+        except Exception:
+            logger.exception("[SERVICE] Job cleanup error")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global _config  # noqa: PLW0603
+    global _config, _registry, _analysis_semaphore, _cleanup_task  # noqa: PLW0603
     _config = load_config()
+    _registry = JobRegistry(
+        retention_ttl_seconds=_config.job_retention_ttl,
+        max_log_lines=_config.max_retained_log_lines,
+    )
+    _analysis_semaphore = asyncio.Semaphore(_MAX_CONCURRENT_ANALYSES)
+    _cleanup_task = asyncio.create_task(_periodic_cleanup(_registry))
 
     if _config.disable_oidc_auth:
         logger.warning(
@@ -59,7 +100,6 @@ async def lifespan(app: FastAPI):
             "do not expose this instance to untrusted networks"
         )
     else:
-        # Guard against misconfigured OIDC issuer in production
         if _config.oidc_issuer != GITHUB_OIDC_ISSUER:
             if not os.getenv("ALLOW_CUSTOM_OIDC"):
                 raise RuntimeError(
@@ -76,6 +116,8 @@ async def lifespan(app: FastAPI):
         _config.allowed_repos,
     )
     yield
+    if _cleanup_task:
+        _cleanup_task.cancel()
     logger.info("[SERVICE] Shutting down")
 
 
@@ -84,7 +126,7 @@ async def lifespan(app: FastAPI):
 # ---------------------------------------------------------------------------
 app = FastAPI(
     title="ERC-7730 Analyzer Service",
-    version="0.1.0",
+    version="0.2.0",
     lifespan=lifespan,
     docs_url=None,
     redoc_url=None,
@@ -95,7 +137,6 @@ app = FastAPI(
 # Middleware
 # ---------------------------------------------------------------------------
 
-# Restrictive CORS — no browser origins allowed
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[],
@@ -108,18 +149,15 @@ _MAX_BODY_BYTES = 5 * 1024 * 1024  # 5 MB
 
 @app.middleware("http")
 async def _security_middleware(request: Request, call_next):
-    # Attach a unique request ID for log correlation
     request_id = str(uuid.uuid4())
     request.state.request_id = request_id
 
-    # Reject oversized payloads early
     content_length = request.headers.get("content-length")
     if content_length and int(content_length) > _MAX_BODY_BYTES:
         return JSONResponse(status_code=413, content={"detail": "Payload too large"})
 
     response: Response = await call_next(request)
 
-    # Security response headers
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["Cache-Control"] = "no-store"
@@ -128,40 +166,27 @@ async def _security_middleware(request: Request, call_next):
     return response
 
 
-# Cap in-flight analyses
-_MAX_CONCURRENT_ANALYSES = 1
-_analysis_semaphore = asyncio.Semaphore(_MAX_CONCURRENT_ANALYSES)
-
-
 # ---------------------------------------------------------------------------
 # Request / response models
 # ---------------------------------------------------------------------------
 class AnalyzeRequest(BaseModel):
-    """Payload sent by the CI client.
-
-    Every field except ``descriptor`` is optional.  When omitted the server
-    falls back to its own ``ServiceConfig`` defaults.
-    """
+    """Payload sent by the CI client."""
 
     descriptor: dict[str, Any] = Field(..., description="Full ERC-7730 JSON descriptor")
     descriptor_filename: str = Field("calldata-unknown.json", description="Original filename", max_length=255)
     abi: dict[str, Any] | list[Any] | None = Field(None, description="Optional ABI override")
 
-    # LLM
     analysis_mode: Literal["single", "multi"] | None = Field(None, description="single / multi")
     model: str | None = Field(None, max_length=64)
     reasoning_effort: Literal["low", "medium", "high"] | None = Field(None)
 
-    # Data collection
     lookback_days: int | None = Field(None, ge=1, le=90)
     max_concurrent_api_calls: int | None = Field(None, ge=1, le=50)
     max_api_retries: int | None = Field(None, ge=1, le=10)
 
-    # Agentic
     max_selector_tool_rounds: int | None = Field(None, ge=1, le=10)
     max_tool_requests_per_round: int | None = Field(None, ge=1, le=10)
 
-    # Screenshots (enable_screenshots can override server default per-request)
     enable_screenshots: bool | None = Field(None)
     screenshot_device: Literal["stax", "flex"] | None = Field(None)
 
@@ -171,98 +196,194 @@ class HealthResponse(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# Helpers
+# Auth / identity helpers
 # ---------------------------------------------------------------------------
-class _SSEProgress:
-    """Thin adapter that lets the analyzer report progress via SSE."""
-
-    def __init__(self, queue: asyncio.Queue):
-        self._q = queue
-
-    def put(self, event_type: str, data: Any):
-        self._q.put_nowait({"event": event_type, "data": json.dumps(data) if not isinstance(data, str) else data})
-
-
-async def _run_analysis(
-    descriptor_path: Path,
-    abi_path: Path | None,
+async def _authenticate(
     cfg: ServiceConfig,
-    overrides: AnalyzeRequest,
-    progress: _SSEProgress,
-) -> dict[str, Any]:
-    """Run the analyzer in a thread so we don't block the event loop."""
-    # Inject secrets into os.environ for downstream code that reads them
-    os.environ["ETHERSCAN_API_KEY"] = cfg.etherscan_api_key
-    os.environ["OPENAI_API_KEY"] = cfg.openai_api_key
-    if cfg.coredao_api_key:
-        os.environ["COREDAO_API_KEY"] = cfg.coredao_api_key
-    if cfg.infura_rpc_key:
-        os.environ["INFURA_RPC_KEY"] = cfg.infura_rpc_key
-    if cfg.gating_token:
-        os.environ["GATING_TOKEN"] = cfg.gating_token
-    if cfg.cal_service_url:
-        os.environ["CAL_SERVICE_URL"] = cfg.cal_service_url
-    if cfg.cal_service_staging:
-        os.environ["CAL_SERVICE_STAGING"] = cfg.cal_service_staging
+    authorization: str | None,
+) -> dict[str, Any] | None:
+    """Verify JWT and return claims, or ``None`` if auth is disabled."""
+    if cfg.disable_oidc_auth:
+        return None
+    try:
+        return await verify_request_token(
+            authorization,
+            allowed_repos=cfg.allowed_repos,
+            issuer=cfg.oidc_issuer,
+        )
+    except jwt.exceptions.PyJWTError:
+        raise HTTPException(status_code=401, detail="Authentication failed") from None
 
-    from utils.core import ERC7730Analyzer
 
-    def _or(request_val, server_val):
-        return request_val if request_val is not None else server_val
-
-    analyzer = ERC7730Analyzer(
-        etherscan_api_key=cfg.etherscan_api_key,
-        coredao_api_key=cfg.coredao_api_key,
-        lookback_days=_or(overrides.lookback_days, cfg.lookback_days),
-        max_concurrent_api_calls=_or(overrides.max_concurrent_api_calls, cfg.max_concurrent_api_calls),
-        max_api_retries=_or(overrides.max_api_retries, cfg.max_api_retries),
-        analysis_mode=_or(overrides.analysis_mode, cfg.default_analysis_mode),
-        max_selector_tool_rounds=_or(overrides.max_selector_tool_rounds, cfg.max_selector_tool_rounds),
-        max_tool_requests_per_round=_or(overrides.max_tool_requests_per_round, cfg.max_tool_requests_per_round),
-        llm_model=_or(overrides.model, cfg.default_model),
-        llm_reasoning_effort=_or(overrides.reasoning_effort, cfg.default_reasoning_effort),
-        enable_screenshots=_or(overrides.enable_screenshots, cfg.enable_screenshots),
-        screenshot_device=_or(overrides.screenshot_device, cfg.screenshot_device),
-        cs_tester_root=cfg.cs_tester_root,
-        coin_apps_path=cfg.coin_apps_path,
+def _resolve_run_key(
+    claims: dict[str, Any] | None,
+    query_run_key: str | None,
+) -> str:
+    """Derive the run key from JWT claims or fall back to a query parameter."""
+    if claims is not None:
+        try:
+            return derive_run_key(claims)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from None
+    if query_run_key:
+        return query_run_key
+    raise HTTPException(
+        status_code=400,
+        detail="run_key query parameter is required when OIDC auth is disabled",
     )
 
-    progress.put("status", "Analysis started")
 
-    # Intercept log records to stream them as SSE events
-    log_queue = progress._q
-    _handler = _QueueLogHandler(log_queue)
-    _handler.setLevel(logging.INFO)
-    root_logger = logging.getLogger()
-    root_logger.addHandler(_handler)
+# ---------------------------------------------------------------------------
+# Background analysis execution
+# ---------------------------------------------------------------------------
+class _JobLogHandler(logging.Handler):
+    """Forwards INFO+ log records into the job's log buffer."""
 
-    try:
-        results = await asyncio.to_thread(
-            analyzer.analyze,
-            descriptor_path,
-            abi_path,
-            None,  # raw_txs
-            None,  # prepared_inputs
-        )
-    finally:
-        root_logger.removeHandler(_handler)
-
-    return results
-
-
-class _QueueLogHandler(logging.Handler):
-    """Forwards INFO+ log records into the SSE queue as 'log' events."""
-
-    def __init__(self, queue: asyncio.Queue):
+    def __init__(self, job: AnalysisJob, max_lines: int):
         super().__init__()
-        self._q = queue
+        self._job = job
+        self._max_lines = max_lines
 
     def emit(self, record: logging.LogRecord):
         try:
             msg = self.format(record)
-            self._q.put_nowait({"event": "log", "data": msg})
+            self._job.append_log(msg, max_lines=self._max_lines)
         except Exception:
             pass
+
+
+def _build_report_payload(
+    results: dict[str, Any],
+    tmp_dir: Path,
+    safe_filename: str,
+) -> dict[str, Any]:
+    from utils.reporting.reporter import (
+        generate_criticals_report,
+        generate_summary_file,
+    )
+
+    report_dir = tmp_dir / "output"
+    report_dir.mkdir(exist_ok=True)
+
+    context = results.get("context", {})
+    metadata = results.get("metadata", {})
+    protocol_name = (
+        context.get("$id")
+        or metadata.get("contractName")
+        or metadata.get("owner")
+        or metadata.get("info", {}).get("legalName")
+        or safe_filename.replace("calldata-", "").replace(".json", "")
+    )
+    context_id = re.sub(r"[^a-zA-Z0-9_-]", "_", protocol_name)[:64]
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+    summary_file = report_dir / f"FULL_REPORT_{context_id}_{ts}.md"
+    generate_summary_file(results, summary_file, inline_base64=True)
+
+    criticals_file = report_dir / f"CRITICALS_{context_id}_{ts}.md"
+    generate_criticals_report(results, criticals_file, inline_base64=True)
+
+    has_criticals = False
+    if criticals_file.exists():
+        content = criticals_file.read_text()
+        has_criticals = "| 🔴" in content
+
+    return {
+        "protocol": context_id,
+        "has_criticals": has_criticals,
+        "summary_report": summary_file.read_text() if summary_file.exists() else "",
+        "criticals_report": criticals_file.read_text() if criticals_file.exists() else "",
+        "results_json": results,
+    }
+
+
+async def _execute_analysis(
+    *,
+    job: AnalysisJob,
+    descriptor_path: Path,
+    abi_path: Path | None,
+    safe_filename: str,
+    cfg: ServiceConfig,
+    overrides: AnalyzeRequest,
+    semaphore: asyncio.Semaphore,
+    max_log_lines: int,
+) -> None:
+    """Background coroutine: acquire semaphore, run analysis, update job."""
+    handler = _JobLogHandler(job, max_log_lines)
+    handler.setLevel(logging.INFO)
+    root_logger = logging.getLogger()
+
+    try:
+        async with semaphore:
+            job.set_status("running", "Analysis started")
+
+            os.environ["ETHERSCAN_API_KEY"] = cfg.etherscan_api_key
+            os.environ["OPENAI_API_KEY"] = cfg.openai_api_key
+            if cfg.coredao_api_key:
+                os.environ["COREDAO_API_KEY"] = cfg.coredao_api_key
+            if cfg.infura_rpc_key:
+                os.environ["INFURA_RPC_KEY"] = cfg.infura_rpc_key
+            if cfg.gating_token:
+                os.environ["GATING_TOKEN"] = cfg.gating_token
+            if cfg.cal_service_url:
+                os.environ["CAL_SERVICE_URL"] = cfg.cal_service_url
+            if cfg.cal_service_staging:
+                os.environ["CAL_SERVICE_STAGING"] = cfg.cal_service_staging
+
+            from utils.core import ERC7730Analyzer
+
+            def _or(request_val, server_val):
+                return request_val if request_val is not None else server_val
+
+            analyzer = ERC7730Analyzer(
+                etherscan_api_key=cfg.etherscan_api_key,
+                coredao_api_key=cfg.coredao_api_key,
+                lookback_days=_or(overrides.lookback_days, cfg.lookback_days),
+                max_concurrent_api_calls=_or(overrides.max_concurrent_api_calls, cfg.max_concurrent_api_calls),
+                max_api_retries=_or(overrides.max_api_retries, cfg.max_api_retries),
+                analysis_mode=_or(overrides.analysis_mode, cfg.default_analysis_mode),
+                max_selector_tool_rounds=_or(overrides.max_selector_tool_rounds, cfg.max_selector_tool_rounds),
+                max_tool_requests_per_round=_or(overrides.max_tool_requests_per_round, cfg.max_tool_requests_per_round),
+                llm_model=_or(overrides.model, cfg.default_model),
+                llm_reasoning_effort=_or(overrides.reasoning_effort, cfg.default_reasoning_effort),
+                enable_screenshots=_or(overrides.enable_screenshots, cfg.enable_screenshots),
+                screenshot_device=_or(overrides.screenshot_device, cfg.screenshot_device),
+                cs_tester_root=cfg.cs_tester_root,
+                coin_apps_path=cfg.coin_apps_path,
+            )
+
+            root_logger.addHandler(handler)
+            try:
+                results = await asyncio.wait_for(
+                    asyncio.to_thread(
+                        analyzer.analyze,
+                        descriptor_path,
+                        abi_path,
+                        None,  # raw_txs
+                        None,  # prepared_inputs
+                    ),
+                    timeout=_ANALYSIS_TIMEOUT_SECONDS,
+                )
+            finally:
+                root_logger.removeHandler(handler)
+
+            if not results or not isinstance(results, dict):
+                job.set_error("Analysis returned no results")
+                return
+
+            job.set_status("running", "Generating reports")
+            payload = _build_report_payload(results, job.tmp_dir, safe_filename)
+            job.set_result(payload)
+
+    except asyncio.CancelledError:
+        job.set_error("Analysis cancelled")
+    except asyncio.TimeoutError:
+        job.set_error("Analysis timed out")
+    except Exception:
+        logger.exception("[SERVICE] Analysis failed for %s", job.run_key)
+        job.set_error("Internal analysis error")
+    finally:
+        job.cleanup_tmp()
 
 
 # ---------------------------------------------------------------------------
@@ -273,45 +394,49 @@ async def health():
     return HealthResponse()
 
 
-_ANALYSIS_TIMEOUT_SECONDS = 60*45  # 45 minutes
-
-
 @app.post("/analyze")
-async def analyze(
+async def analyze_start(
     body: AnalyzeRequest,
     authorization: str | None = Header(None),
 ):
-    """Run full ERC-7730 analysis and stream progress via SSE.
+    """Start an analysis or return the existing job for this run.
 
-    Returns an SSE stream with these event types:
-    - ``status``: high-level phase transitions
-    - ``log``:    analyzer log lines
-    - ``report``: final JSON payload (results + report markdown)
-    - ``error``:  fatal error message
+    Returns ``202 Accepted`` when the job is queued/running, or
+    ``200 OK`` if the same run already completed.
     """
     cfg = get_config()
+    registry = get_registry()
+    semaphore = get_semaphore()
 
-    # --- auth ---
-    if not cfg.disable_oidc_auth:
-        try:
-            await verify_request_token(
-                authorization,
-                allowed_repos=cfg.allowed_repos,
-                issuer=cfg.oidc_issuer,
-            )
-        except jwt.exceptions.PyJWTError:
-            raise HTTPException(status_code=401, detail="Authentication failed") from None
+    claims = await _authenticate(cfg, authorization)
 
-    # Reject if at capacity
-    if _analysis_semaphore.locked():
+    if claims is not None:
+        run_key = derive_run_key(claims)
+        caller_meta = extract_caller_metadata(claims)
+    else:
+        run_key = f"local:{uuid.uuid4()}"
+        caller_meta = {}
+
+    job, created = await registry.create_or_get(run_key, caller_metadata=caller_meta)
+
+    if not created:
+        status_code = 200 if job.is_terminal else 202
+        return JSONResponse(
+            status_code=status_code,
+            content=job.to_status_dict(
+                include_result=(job.status == "succeeded"),
+                poll_after_seconds=cfg.poll_interval_hint,
+            ),
+        )
+
+    if semaphore.locked():
+        await registry.remove(run_key)
         raise HTTPException(status_code=503, detail="Service at capacity, try again later")
 
-    # Sanitize descriptor_filename to prevent path traversal
     safe_filename = Path(body.descriptor_filename).name
     if not safe_filename or safe_filename.startswith("."):
         safe_filename = "descriptor.json"
 
-    # --- write descriptor (and optional ABI) to temp files ---
     tmp_dir = Path(tempfile.mkdtemp(prefix="erc7730_svc_"))
     descriptor_path = tmp_dir / safe_filename
     descriptor_path.write_text(json.dumps(body.descriptor, indent=2))
@@ -321,96 +446,59 @@ async def analyze(
         abi_path = tmp_dir / "abi.json"
         abi_path.write_text(json.dumps(body.abi, indent=2))
 
-    queue: asyncio.Queue = asyncio.Queue()
-    progress = _SSEProgress(queue)
+    job.tmp_dir = tmp_dir
 
-    async def _event_generator():
-        # Acquire semaphore for the duration of the analysis
-        async with _analysis_semaphore:
-            # Hard deadline for the entire analysis
-            deadline = asyncio.get_event_loop().time() + _ANALYSIS_TIMEOUT_SECONDS
-            analysis_task = asyncio.create_task(
-                _run_analysis(descriptor_path, abi_path, cfg, body, progress)
-            )
+    task = asyncio.create_task(
+        _execute_analysis(
+            job=job,
+            descriptor_path=descriptor_path,
+            abi_path=abi_path,
+            safe_filename=safe_filename,
+            cfg=cfg,
+            overrides=body,
+            semaphore=semaphore,
+            max_log_lines=registry.max_log_lines,
+        )
+    )
+    job._task = task
 
-            try:
-                # Stream SSE events in real-time while analysis runs
-                while not analysis_task.done():
-                    remaining = deadline - asyncio.get_event_loop().time()
-                    if remaining <= 0:
-                        analysis_task.cancel()
-                        yield {"event": "error", "data": "Analysis timed out"}
-                        return
-                    try:
-                        event = await asyncio.wait_for(queue.get(), timeout=min(1.0, remaining))
-                        yield event
-                    except asyncio.TimeoutError:
-                        yield {"event": "ping", "data": ""}
+    return JSONResponse(
+        status_code=202,
+        content=job.to_status_dict(poll_after_seconds=cfg.poll_interval_hint),
+    )
 
-                # Drain remaining queued events
-                while not queue.empty():
-                    yield queue.get_nowait()
 
-                results = analysis_task.result()
+@app.get("/analyze")
+async def analyze_status(
+    authorization: str | None = Header(None),
+    run_key: str | None = Query(None, description="Required when OIDC auth is disabled"),
+):
+    """Poll the status of a running analysis or retrieve the final result.
 
-                if not results or not isinstance(results, dict):
-                    yield {"event": "error", "data": "Analysis returned no results"}
-                    return
+    Returns ``404`` when no job exists, ``202`` when queued/running,
+    or ``200`` with the full result payload when finished.
+    """
+    cfg = get_config()
+    registry = get_registry()
 
-                # Generate reports in-memory
-                from utils.reporting.reporter import (
-                    generate_criticals_report,
-                    generate_summary_file,
-                )
+    claims = await _authenticate(cfg, authorization)
+    resolved_key = _resolve_run_key(claims, run_key)
 
-                report_dir = tmp_dir / "output"
-                report_dir.mkdir(exist_ok=True)
+    job = await registry.get(resolved_key)
+    if job is None:
+        raise HTTPException(status_code=404, detail="No analysis found for this run")
 
-                context = results.get("context", {})
-                metadata = results.get("metadata", {})
-                protocol_name = (
-                    context.get("$id")
-                    or metadata.get("contractName")
-                    or metadata.get("owner")
-                    or metadata.get("info", {}).get("legalName")
-                    or safe_filename.replace("calldata-", "").replace(".json", "")
-                )
-                # Sanitize to safe filesystem characters
-                context_id = re.sub(r"[^a-zA-Z0-9_-]", "_", protocol_name)[:64]
-                ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    include_result = job.status == "succeeded"
+    status_code = 200 if job.is_terminal else 202
 
-                summary_file = report_dir / f"FULL_REPORT_{context_id}_{ts}.md"
-                generate_summary_file(results, summary_file, inline_base64=True)
-
-                criticals_file = report_dir / f"CRITICALS_{context_id}_{ts}.md"
-                generate_criticals_report(results, criticals_file, inline_base64=True)
-
-                has_criticals = False
-                if criticals_file.exists():
-                    content = criticals_file.read_text()
-                    has_criticals = "| 🔴" in content
-
-                payload = {
-                    "protocol": context_id,
-                    "has_criticals": has_criticals,
-                    "summary_report": summary_file.read_text() if summary_file.exists() else "",
-                    "criticals_report": criticals_file.read_text() if criticals_file.exists() else "",
-                    "results_json": results,
-                }
-
-                yield {"event": "report", "data": json.dumps(payload, default=str)}
-                yield {"event": "status", "data": "done"}
-
-            except Exception:
-                # Never leak internal exception details to clients
-                logger.exception("[SERVICE] Analysis failed")
-                yield {"event": "error", "data": "Internal analysis error"}
-
-            finally:
-                # Always clean up the temp directory
-                shutil.rmtree(tmp_dir, ignore_errors=True)
-
-    return EventSourceResponse(_event_generator())
+    return JSONResponse(
+        status_code=status_code,
+        content=job.to_status_dict(
+            include_result=include_result,
+            include_logs=True,
+            poll_after_seconds=cfg.poll_interval_hint,
+        ),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -436,7 +524,7 @@ def main():
         host=host,
         port=port,
         workers=1,
-        limit_concurrency=2,
+        limit_concurrency=20,
         log_level="info",
     )
 

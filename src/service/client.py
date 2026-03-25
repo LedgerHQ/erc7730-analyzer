@@ -1,4 +1,4 @@
-"""Thin SSE client used by CI to call the remote analyzer service.
+"""Async polling client used by CI to call the remote analyzer service.
 
 Usage from CI::
 
@@ -14,12 +14,16 @@ import json
 import logging
 import os
 import sys
+import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import httpx
 
 logger = logging.getLogger(__name__)
+
+_REQUEST_TIMEOUT = httpx.Timeout(connect=30, read=60, write=30, pool=30)
+_MAX_POLL_SECONDS = 2700  # 45 minutes
 
 
 # ---------------------------------------------------------------------------
@@ -50,22 +54,17 @@ def _get_oidc_token(audience: str = "erc7730-analyzer") -> str:
 
 
 # ---------------------------------------------------------------------------
-# Core streaming call
+# Core API calls
 # ---------------------------------------------------------------------------
-def stream_analysis(
+def start_analysis(
     *,
     service_url: str,
     descriptor_path: Path,
     abi_path: Path | None = None,
     overrides: dict[str, Any] | None = None,
     auth_token: str | None = None,
-) -> dict:
-    """POST descriptor to the service and consume the SSE stream.
-
-    ``overrides`` is a flat dict of optional fields matching
-    ``AnalyzeRequest`` (analysis_mode, model, enable_screenshots, …).
-    Returns the final report payload dict, or raises on error.
-    """
+) -> dict[str, Any]:
+    """``POST /analyze`` — start an analysis and return the initial status."""
     descriptor = json.loads(descriptor_path.read_text())
     abi = json.loads(abi_path.read_text()) if abi_path else None
 
@@ -86,66 +85,103 @@ def stream_analysis(
 
     url = f"{service_url.rstrip('/')}/analyze"
 
-    report_payload: dict | None = None
-    error_msg: str | None = None
-
-    with httpx.stream(
-        "POST",
-        url,
-        json=payload,
-        headers=headers,
-        timeout=httpx.Timeout(connect=30, read=600, write=30, pool=30),
-    ) as response:
-        if response.status_code == 401:
-            raise PermissionError(f"Authentication failed: {response.text}")
-        response.raise_for_status()
-
-        buf = ""
-        current_event = "message"
-        for chunk in response.iter_text():
-            buf += chunk
-            while "\n" in buf:
-                line, buf = buf.split("\n", 1)
-                line = line.rstrip("\r")
-
-                if line.startswith("event:"):
-                    current_event = line[len("event:"):].strip()
-                elif line.startswith("data:"):
-                    data = line[len("data:"):].strip()
-                    _handle_sse_event(current_event, data)
-
-                    if current_event == "report":
-                        try:
-                            report_payload = json.loads(data)
-                        except json.JSONDecodeError:
-                            pass
-                    elif current_event == "error":
-                        error_msg = data
-
-                    current_event = "message"
-                elif line == "":
-                    current_event = "message"
-
-    if error_msg:
-        raise RuntimeError(f"Service returned error: {error_msg}")
-    if report_payload is None:
-        raise RuntimeError("Stream ended without a report event")
-
-    return report_payload
+    resp = httpx.post(url, json=payload, headers=headers, timeout=_REQUEST_TIMEOUT)
+    if resp.status_code == 401:
+        raise PermissionError(f"Authentication failed: {resp.text}")
+    if resp.status_code == 503:
+        raise RuntimeError(f"Service at capacity: {resp.text}")
+    resp.raise_for_status()
+    return resp.json()
 
 
-def _handle_sse_event(event_type: str, data: str):
-    """Print SSE events to stderr for CI log visibility."""
-    if event_type == "log":
-        print(data, file=sys.stderr)
-    elif event_type == "status":
-        print(f"[STATUS] {data}", file=sys.stderr)
-    elif event_type == "ping":
-        pass
-    elif event_type == "error":
-        print(f"[ERROR] {data}", file=sys.stderr)
-    elif event_type == "report":
-        print("[STATUS] Report received", file=sys.stderr)
+def poll_analysis(
+    *,
+    service_url: str,
+    run_key: str,
+    auth_token: str | None = None,
+) -> dict[str, Any]:
+    """``GET /analyze`` — poll the job status."""
+    headers: dict[str, str] = {}
+    if auth_token:
+        headers["Authorization"] = f"Bearer {auth_token}"
+
+    url = f"{service_url.rstrip('/')}/analyze"
+    params: dict[str, str] = {}
+    if not auth_token:
+        params["run_key"] = run_key
+
+    resp = httpx.get(url, headers=headers, params=params, timeout=_REQUEST_TIMEOUT)
+    if resp.status_code == 401:
+        raise PermissionError(f"Authentication failed: {resp.text}")
+    resp.raise_for_status()
+    return resp.json()
+
+
+def run_analysis(
+    *,
+    service_url: str,
+    descriptor_path: Path,
+    abi_path: Path | None = None,
+    overrides: dict[str, Any] | None = None,
+    get_auth_token: Callable[[], str | None] | None = None,
+    max_poll_seconds: int = _MAX_POLL_SECONDS,
+) -> dict[str, Any]:
+    """Start analysis, poll until completion, and return the final payload.
+
+    ``get_auth_token`` is called before every request so short-lived OIDC
+    tokens are refreshed transparently.
+    """
+    def _token() -> str | None:
+        return get_auth_token() if get_auth_token else None
+
+    token = _token()
+    print("[CLIENT] Starting analysis...", file=sys.stderr)
+    start_resp = start_analysis(
+        service_url=service_url,
+        descriptor_path=descriptor_path,
+        abi_path=abi_path,
+        overrides=overrides,
+        auth_token=token,
+    )
+
+    run_key = start_resp["run_key"]
+    status = start_resp["status"]
+    print(f"[CLIENT] Run key: {run_key}", file=sys.stderr)
+    print(f"[CLIENT] Status:  {status}", file=sys.stderr)
+
+    if status in ("succeeded", "failed", "expired"):
+        return start_resp
+
+    poll_interval = start_resp.get("poll_after_seconds", 5)
+    deadline = time.monotonic() + max_poll_seconds
+    seen_log_lines: set[str] = set()
+
+    while time.monotonic() < deadline:
+        time.sleep(poll_interval)
+
+        token = _token()
+        resp = poll_analysis(
+            service_url=service_url,
+            run_key=run_key,
+            auth_token=token,
+        )
+
+        status = resp["status"]
+        status_msg = resp.get("status_message", "")
+
+        for line in resp.get("recent_logs", []):
+            if line not in seen_log_lines:
+                seen_log_lines.add(line)
+                print(line, file=sys.stderr)
+
+        print(f"[STATUS] {status}: {status_msg}", file=sys.stderr)
+
+        if status in ("succeeded", "failed", "expired"):
+            return resp
+
+        poll_interval = min(resp.get("poll_after_seconds", 5), 15)
+
+    raise RuntimeError(f"Analysis timed out after {max_poll_seconds}s (last status: {status})")
 
 
 # ---------------------------------------------------------------------------
@@ -173,7 +209,6 @@ Examples:
         """,
     )
 
-    # Required
     parser.add_argument("--service-url", required=True, help="Base URL of the analyzer service")
     parser.add_argument("--descriptor", type=Path, required=True, help="Path to ERC-7730 JSON descriptor")
     parser.add_argument("--abi", type=Path, default=None, help="Optional ABI file")
@@ -189,21 +224,17 @@ Examples:
         help="Directory to write report artifacts to (default: ./output relative to CWD)",
     )
 
-    # LLM overrides
     parser.add_argument("--analysis-mode", choices=("single", "multi"), default=None, help="Audit strategy")
     parser.add_argument("--model", default=None, help="LLM model name")
     parser.add_argument("--reasoning-effort", choices=("low", "medium", "high"), default=None)
 
-    # Data collection overrides
     parser.add_argument("--lookback-days", type=int, default=None, help="Transaction lookback window")
     parser.add_argument("--max-concurrent", type=int, default=None, help="Max concurrent API calls")
     parser.add_argument("--max-retries", type=int, default=None, help="Max API retries")
 
-    # Agentic overrides
     parser.add_argument("--max-selector-tool-rounds", type=int, default=None)
     parser.add_argument("--max-tool-requests-per-round", type=int, default=None)
 
-    # Screenshot overrides
     parser.add_argument("--enable-screenshots", action="store_true", default=None, help="Enable screenshot capture")
     parser.add_argument("--no-screenshots", action="store_true", default=False, help="Explicitly disable screenshots")
     parser.add_argument("--screenshot-device", choices=("stax", "flex"), default=None)
@@ -212,7 +243,6 @@ Examples:
 
     logging.basicConfig(level=logging.INFO, format="%(message)s")
 
-    # Build overrides dict (only non-None values are sent)
     overrides: dict[str, Any] = {}
 
     if args.analysis_mode:
@@ -234,7 +264,6 @@ Examples:
     if args.screenshot_device:
         overrides["screenshot_device"] = args.screenshot_device
 
-    # Screenshots: explicit enable / disable / server default
     if args.no_screenshots:
         overrides["enable_screenshots"] = False
     elif args.enable_screenshots:
@@ -243,18 +272,24 @@ Examples:
     skip_auth = args.no_auth or os.getenv("DISABLE_OIDC_AUTH", "").lower() in ("1", "true", "yes")
     if skip_auth:
         print("[CLIENT] Skipping OIDC token (DISABLE_OIDC_AUTH or --no-auth)", file=sys.stderr)
-        token = None
+        token_getter: Callable[[], str | None] | None = None
     else:
-        print("[CLIENT] Requesting GitHub OIDC token...", file=sys.stderr)
-        token = _get_oidc_token()
+        print("[CLIENT] Will use GitHub OIDC tokens", file=sys.stderr)
+        token_getter = _get_oidc_token
 
-    report = stream_analysis(
+    report = run_analysis(
         service_url=args.service_url,
         descriptor_path=args.descriptor,
         abi_path=args.abi,
         overrides=overrides,
-        auth_token=token,
+        get_auth_token=token_getter,
     )
+
+    status = report.get("status", "")
+    if status == "failed":
+        error = report.get("error", "Unknown error")
+        print(f"[CLIENT] Analysis failed: {error}", file=sys.stderr)
+        sys.exit(1)
 
     # Write reports under --output-dir or ./output relative to CWD
     output_dir = args.output_dir if args.output_dir else Path.cwd() / "output"

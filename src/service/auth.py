@@ -98,3 +98,39 @@ async def verify_request_token(
 
     token = authorization.removeprefix("Bearer ").strip()
     return verify_oidc_token(token, allowed_repos=allowed_repos, issuer=issuer)
+
+
+# ---------------------------------------------------------------------------
+# Run-scoped identity helpers
+# ---------------------------------------------------------------------------
+
+def derive_run_key(claims: dict[str, Any]) -> str:
+    """Derive a stable run-scoped key from GitHub OIDC JWT claims.
+
+    The key is unique per workflow run attempt:
+    ``{repository}:{run_id}:{run_attempt}``.
+
+    Raises ``ValueError`` if required claims are missing.
+    """
+    repository = claims.get("repository", "")
+    run_id = claims.get("run_id", "")
+    run_attempt = claims.get("run_attempt", "")
+    if not repository or not run_id:
+        raise ValueError(
+            "JWT claims must include 'repository' and 'run_id' "
+            "for run-scoped identification"
+        )
+    return f"{repository}:{run_id}:{run_attempt or '1'}"
+
+
+def extract_caller_metadata(claims: dict[str, Any]) -> dict[str, str]:
+    """Extract observability metadata from JWT claims."""
+    return {
+        "repository": str(claims.get("repository", "")),
+        "workflow": str(claims.get("workflow", "")),
+        "ref": str(claims.get("ref", "")),
+        "sha": str(claims.get("sha", "")),
+        "sub": str(claims.get("sub", "")),
+        "run_id": str(claims.get("run_id", "")),
+        "run_attempt": str(claims.get("run_attempt", "1")),
+    }

@@ -49,6 +49,11 @@ class ServiceConfig:
     cs_tester_root: str | None = None
     coin_apps_path: str | None = None
 
+    # --- job registry ---
+    job_retention_ttl: int = 3600
+    max_retained_log_lines: int = 500
+    poll_interval_hint: int = 5
+
     # --- server ---
     host: str = "0.0.0.0"
     port: int = 8080
@@ -87,6 +92,9 @@ def load_config(env_file: str | Path | None = None) -> ServiceConfig:
         screenshot_device=os.getenv("CS_TESTER_DEVICE", "stax"),
         cs_tester_root=os.getenv("CS_TESTER_ROOT"),
         coin_apps_path=os.getenv("COIN_APPS_PATH"),
+        job_retention_ttl=int(os.getenv("JOB_RETENTION_TTL", "3600")),
+        max_retained_log_lines=int(os.getenv("MAX_RETAINED_LOG_LINES", "500")),
+        poll_interval_hint=int(os.getenv("POLL_INTERVAL_HINT", "5")),
         host=os.getenv("SERVICE_HOST", "0.0.0.0"),
         port=int(os.getenv("SERVICE_PORT", "8080")),
     )

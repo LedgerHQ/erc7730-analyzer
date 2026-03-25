@@ -153,9 +153,16 @@ class AnalyzerPipelineScreenshotsMixin:
         total = sum(
             len(s) for tx_list in screenshot_map.values() for entry in tx_list for s in entry.get("screenshots", [])
         )
-        logger.info(
-            "[SCREENSHOTS] Captured %d meaningful screenshot(s) across %d selector(s)",
-            total,
-            len(screenshot_map),
-        )
+        if total == 0:
+            logger.warning(
+                "[SCREENSHOTS] All %d selector capture(s) produced 0 screenshots — "
+                "check Speculos/qemu-user-static and cs-tester logs above for errors",
+                len(selectors_info),
+            )
+        else:
+            logger.info(
+                "[SCREENSHOTS] Captured %d meaningful screenshot(s) across %d selector(s)",
+                total,
+                len(screenshot_map),
+            )
         context["screenshot_data"] = screenshot_map

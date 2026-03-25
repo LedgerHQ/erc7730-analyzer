@@ -54,17 +54,9 @@ Environment Variables (can also be set in .env file):
   ENABLE_SCREENSHOTS       Enable Ledger device screenshot capture (default: false)
   CS_TESTER_DEVICE         Device model for screenshots: stax or flex (default: stax)
   CS_TESTER_ROOT           Path to pre-built device-sdk-ts repo root
-  ETH_APP_ELF_ROOT         Cache directory for downloaded app-ethereum ELF files
-  COIN_APPS_PATH           Legacy fallback path to directory containing device ELF files
-  DMK_REPO                 device-sdk-ts repository slug (default: LedgerHQ/device-sdk-ts)
-  DMK_REF                  device-sdk-ts ref to pull (default: develop)
-  APP_ETHEREUM_REPO_OWNER  app-ethereum repository owner (default: LedgerHQ)
-  APP_ETHEREUM_REPO_NAME   app-ethereum repository name (default: app-ethereum)
-  APP_ETHEREUM_BRANCH      app-ethereum branch to track (default: develop)
-  APP_ETHEREUM_WORKFLOW_NAME app-ethereum workflow name used for ELF artifact lookup
-  APP_ETHEREUM_ARTIFACT_NAME app-ethereum artifact name containing ELF files (default: ragger_elfs)
-  APP_ETHEREUM_ARTIFACT_TOKEN Optional alias for GITHUB_TOKEN
-  GITHUB_TOKEN             GitHub PAT used to download latest app-ethereum ELF artifact
+  CS_TESTER_RUNTIME_ROOT   Base dir for local dev defaults under /tmp/erc7730-screenshots (optional)
+  ETH_APP_ELF_ROOT         Root containing <device>/bin/app.elf (baked in Docker; override for local dev)
+  COIN_APPS_PATH           Legacy path for local coin-apps layouts (optional)
   SPECULOS_BASE_API_PORT   First port to try for native Speculos HTTP API (default: 5000)
   SPECULOS_STARTUP_TIMEOUT Seconds to wait for Speculos HTTP API (default: 20)
   GATING_TOKEN             Token passed through to cs-tester

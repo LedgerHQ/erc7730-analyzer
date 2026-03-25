@@ -200,8 +200,6 @@ async def _run_analysis(
         os.environ["INFURA_RPC_KEY"] = cfg.infura_rpc_key
     if cfg.gating_token:
         os.environ["GATING_TOKEN"] = cfg.gating_token
-    if cfg.github_token:
-        os.environ["GITHUB_TOKEN"] = cfg.github_token
     if cfg.cal_service_url:
         os.environ["CAL_SERVICE_URL"] = cfg.cal_service_url
     if cfg.cal_service_staging:
@@ -437,8 +435,8 @@ def main():
         "service.app:app",
         host=host,
         port=port,
-        workers=2,
-        limit_concurrency=10,
+        workers=1,
+        limit_concurrency=1,
         log_level="info",
     )
 

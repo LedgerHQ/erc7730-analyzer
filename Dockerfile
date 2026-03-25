@@ -5,12 +5,16 @@
 # Bakes the full analyzer + screenshot pipeline into a single image:
 #   - Python 3.12 via uv (managed install; no Debian python3 package)
 #   - Node 20 + pnpm + device-sdk-ts (pre-built)
-#   - Runtime cache for Ethereum .elf app files fetched from app-ethereum CI
+#   - Ethereum app .elf files baked from app-ethereum CI (default: stax + flex; build-time only)
 #   - Native Speculos via the ``speculos`` PyPI package + qemu-user-static
 #     (cs-tester uses --external-speculos; no Docker-in-Docker)
 #
-# Build:
-#   docker build -t erc7730-analyzer .
+# Build (requires a GitHub PAT with ``actions:read`` for app-ethereum artifacts):
+#   docker build -t erc7730-analyzer \
+#     --secret id=github_token,env=GITHUB_TOKEN .
+#
+# Optional: ``--build-arg APP_ETH_ARTIFACT_ID=<id>`` pins the artifact; ``--build-arg CS_ELF_DEVICES=stax,flex``
+# controls which device trees are extracted from that zip (comma-separated).
 #
 # Run (service mode — default):
 #   docker run --rm -p 8080:8080 --env-file .env erc7730-analyzer
@@ -25,6 +29,8 @@ ARG DMK_REPO=Maroutis/device-sdk-ts
 ARG DMK_REF=feat/external-speculos
 ARG CS_DEVICE=stax
 ARG UV_VERSION=0.11.0
+ARG APP_ETH_ARTIFACT_ID=
+ARG CS_ELF_DEVICES=stax,flex
 
 # ---------- stage 1: build device-sdk-ts (public) ----------
 FROM node:20-bookworm-slim AS dmk-builder
@@ -46,6 +52,29 @@ RUN printf '{\n  "repo": "%s",\n  "ref": "%s"\n}\n' \
         "${DMK_REPO}" "${DMK_REF}" \
     > .erc7730_analyzer_dmk_ready.json
 
+# ---------- stage: fetch Ethereum app ELF (requires BuildKit secret github_token) ----------
+FROM debian:bookworm-slim AS elf-fetcher
+
+ARG APP_ETH_ARTIFACT_ID=
+ARG CS_ELF_DEVICES=stax,flex
+
+RUN apt-get update -qq \
+    && apt-get install -qq -y --no-install-recommends ca-certificates python3 python3-requests \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /fetch
+COPY src/utils/screenshots/elf_artifacts.py ./elf_artifacts.py
+
+RUN mkdir -p /out
+
+RUN --mount=type=secret,id=github_token \
+    export GITHUB_TOKEN="$(tr -d '\n\r' </run/secrets/github_token)" && \
+    if [ -n "${APP_ETH_ARTIFACT_ID}" ]; then \
+      python3 elf_artifacts.py --output-root /out --devices "${CS_ELF_DEVICES}" --artifact-id "${APP_ETH_ARTIFACT_ID}"; \
+    else \
+      python3 elf_artifacts.py --output-root /out --devices "${CS_ELF_DEVICES}"; \
+    fi
+
 # ---------- uv binary provider (enables ARG expansion for the image tag) ----------
 ARG UV_VERSION
 FROM ghcr.io/astral-sh/uv:${UV_VERSION} AS uv-bin
@@ -61,7 +90,6 @@ RUN apt-get update -qq \
     && apt-get install -qq -y --no-install-recommends \
         ca-certificates \
         curl \
-        git \
         gnupg \
         jq \
         qemu-user-static \
@@ -89,12 +117,11 @@ RUN uv sync --frozen --no-dev --no-progress --quiet
 # ---------- Pre-built device-sdk-ts (artifact copy only) ----------
 COPY --from=dmk-builder /build /data/screenshots/device-sdk-ts
 
-# ---------- Runtime directories ----------
-RUN mkdir -p /data/screenshots/ethereum-app-elfs
+# ---------- Baked Ethereum app ELF (from elf-fetcher stage) ----------
+COPY --from=elf-fetcher /out /data/screenshots/ethereum-app-elfs
 
 # ---------- Runtime config ----------
 ENV PYTHONUNBUFFERED=1
-ENV CS_TESTER_RUNTIME_ROOT=/data/screenshots
 ENV CS_TESTER_ROOT=/data/screenshots/device-sdk-ts
 ENV ETH_APP_ELF_ROOT=/data/screenshots/ethereum-app-elfs
 ENV CS_TESTER_DEVICE=${CS_DEVICE}

@@ -17,15 +17,6 @@ from typing import Any, TypedDict
 
 import requests
 
-from .elf_artifacts import (
-    DEFAULT_ARTIFACT_NAME,
-    DEFAULT_BRANCH,
-    DEFAULT_OWNER,
-    DEFAULT_REPO,
-    DEFAULT_WORKFLOW_NAME,
-    fetch_latest_ethereum_app_elf,
-    normalize_device_name,
-)
 from .raw_tx import fetch_raw_transaction_async
 
 logger = logging.getLogger(__name__)
@@ -40,8 +31,18 @@ DEFAULT_COIN_APPS_PATH = str(
     _LEGACY_COIN_APPS_PATH if _LEGACY_COIN_APPS_PATH.exists() else DEFAULT_RUNTIME_ROOT / "coin-apps"
 )
 DEFAULT_ETH_APP_ELF_ROOT = str(DEFAULT_RUNTIME_ROOT / "ethereum-app-elfs")
-DEFAULT_DMK_REPO = "LedgerHQ/device-sdk-ts"
-DEFAULT_DMK_REF = "develop"
+
+DEVICE_ALIASES = {
+    "nanosp": "nanos2",
+}
+
+
+def normalize_device_name(device: str) -> str:
+    """Map analyzer/device-sdk aliases to artifact directory names."""
+    device_name = (device or "").strip().lower()
+    return DEVICE_ALIASES.get(device_name, device_name)
+
+
 SPECULOS_BASE_API_PORT = int(os.getenv("SPECULOS_BASE_API_PORT", "5000"))
 SPECULOS_STARTUP_TIMEOUT = float(os.getenv("SPECULOS_STARTUP_TIMEOUT", "20"))
 SPECULOS_SHUTDOWN_GRACE_SEC = float(os.getenv("SPECULOS_SHUTDOWN_GRACE_SEC", "5"))
@@ -52,10 +53,8 @@ CS_TESTER_RETRY_DELAY = 3
 TRIM_HEAD = 3
 TRIM_TAIL = 3
 
-_BOOT_LOCK = threading.Lock()
 _SPECULOS_PORT_LOCK = threading.Lock()
 _RESERVED_PORTS: set[int] = set()
-_DMK_STAMP_FILENAME = ".erc7730_analyzer_dmk_ready.json"
 
 
 class TxScreenshots(TypedDict):
@@ -104,17 +103,10 @@ def _release_speculos_ports(api_port: int, apdu_port: int) -> None:
 class ScreenshotRunner:
     """Generate Ledger device screenshots using cs-tester + native Speculos.
 
-    In the Docker/API deployment model, device-sdk-ts is pre-built in the
-    image. At runtime the runner:
-
-    - Pulls latest device-sdk-ts changes (public, no auth) when applicable
-    - Checks the latest successful app-ethereum CI artifact and refreshes the
-      device-specific Ethereum app ELF if it changed
-    - Starts Speculos via the Python ``speculos`` package (no Docker); cs-tester
-      uses ``--external-speculos`` to attach to that instance.
-
-    Legacy COIN_APPS_PATH support is retained as a fallback, but the primary
-    path is the CI artifact-backed custom app ELF.
+    In the Docker/API deployment model, device-sdk-ts and the Ethereum app ELF
+    are baked into the image at build time. At runtime the runner only verifies
+    those assets exist, then starts Speculos via the Python ``speculos`` package;
+    cs-tester uses ``--external-speculos`` to attach to that instance.
     """
 
     def __init__(
@@ -125,23 +117,12 @@ class ScreenshotRunner:
         device: str = "stax",
     ):
         self.etherscan_api_key = etherscan_api_key
-        self.runtime_root = Path(os.getenv("CS_TESTER_RUNTIME_ROOT", str(DEFAULT_RUNTIME_ROOT)))
         self.cs_tester_root = Path(cs_tester_root or os.getenv("CS_TESTER_ROOT", DEFAULT_CS_TESTER_ROOT))
         self.coin_apps_path = Path(coin_apps_path or os.getenv("COIN_APPS_PATH", DEFAULT_COIN_APPS_PATH))
         self.eth_app_elf_root = Path(os.getenv("ETH_APP_ELF_ROOT", DEFAULT_ETH_APP_ELF_ROOT))
         self.device = os.getenv("CS_TESTER_DEVICE", device)
-        self.dmk_repo = os.getenv("DMK_REPO", DEFAULT_DMK_REPO)
-        self.dmk_ref = os.getenv("DMK_REF", DEFAULT_DMK_REF)
         self.gating_token = os.getenv("GATING_TOKEN", "").strip()
-        self.github_token = (
-            os.getenv("APP_ETHEREUM_ARTIFACT_TOKEN", "").strip() or os.getenv("GITHUB_TOKEN", "").strip()
-        )
-        self.app_eth_owner = os.getenv("APP_ETHEREUM_REPO_OWNER", DEFAULT_OWNER)
-        self.app_eth_repo = os.getenv("APP_ETHEREUM_REPO_NAME", DEFAULT_REPO)
-        self.app_eth_branch = os.getenv("APP_ETHEREUM_BRANCH", DEFAULT_BRANCH)
-        self.app_eth_workflow_name = os.getenv("APP_ETHEREUM_WORKFLOW_NAME", DEFAULT_WORKFLOW_NAME)
         self._speculos_sem: asyncio.Semaphore | None = None
-        self.app_eth_artifact_name = os.getenv("APP_ETHEREUM_ARTIFACT_NAME", DEFAULT_ARTIFACT_NAME)
         self.last_unavailability_reasons: list[str] = []
 
     # ------------------------------------------------------------------
@@ -160,10 +141,8 @@ class ScreenshotRunner:
             self._add_unavailability_reason(f"cs-tester not found at {self.cs_tester_root}")
             return False
         if not self._has_any_ethereum_app():
-            if not self.github_token:
-                self._add_unavailability_reason("missing GITHUB_TOKEN")
             self._add_unavailability_reason(
-                f"no Ethereum app ELF available at {self._artifact_elf_path()} and no legacy COIN_APPS_PATH fallback"
+                f"no Ethereum app ELF at {self._artifact_elf_path()} — rebuild the Docker image or set ETH_APP_ELF_ROOT"
             )
             return False
         if not shutil.which("pnpm") and not shutil.which("corepack"):
@@ -183,9 +162,6 @@ class ScreenshotRunner:
     def _add_unavailability_reason(self, reason: str) -> None:
         if reason not in self.last_unavailability_reasons:
             self.last_unavailability_reasons.append(reason)
-
-    def _coin_apps_has_elfs(self) -> bool:
-        return any(self.coin_apps_path.glob(f"{self.device}/*/Ethereum/*.elf"))
 
     def _artifact_elf_path(self) -> Path:
         normalized_device = normalize_device_name(self.device)
@@ -213,156 +189,18 @@ class ScreenshotRunner:
     # ------------------------------------------------------------------
 
     def _ensure_runtime_ready(self) -> bool:
-        """Verify pre-built assets exist and refresh mutable runtime assets."""
+        """Verify pre-built assets exist (no runtime downloads or git/pnpm updates)."""
         if not (self.cs_tester_root / "apps" / "clear-signing-tester").is_dir():
             self._add_unavailability_reason(
                 f"device-sdk-ts not found at {self.cs_tester_root} — build the Docker image or clone manually"
             )
             return False
-
-        self.runtime_root.mkdir(parents=True, exist_ok=True)
-        self.eth_app_elf_root.mkdir(parents=True, exist_ok=True)
-
-        with _BOOT_LOCK:
-            if not os.getenv("CS_TESTER_RUNTIME_ROOT"):
-                self._maybe_update_dmk()
-            self._maybe_update_elfs()
-
-        if self._has_any_ethereum_app():
-            return True
-
-        if not self.github_token:
-            self._add_unavailability_reason("missing GITHUB_TOKEN")
-        self._add_unavailability_reason(
-            f"no Ethereum app ELF available at {self._artifact_elf_path()} and no legacy COIN_APPS_PATH fallback"
-        )
-        return False
-
-    # ------------------------------------------------------------------
-    # device-sdk-ts update (public, no auth)
-    # ------------------------------------------------------------------
-
-    def _maybe_update_dmk(self) -> None:
-        """Pull latest device-sdk-ts changes if the checkout is a git repo.
-
-        If no stamp file exists but the build is already functional
-        (node_modules + apps/clear-signing-tester present), write a stamp
-        and skip the update — avoids needless reinstalls on local setups.
-        """
-        if not (self.cs_tester_root / ".git").is_dir():
-            return
-
-        stamp_path = self.cs_tester_root / _DMK_STAMP_FILENAME
-        stamp = self._read_stamp(stamp_path)
-
-        if stamp and stamp.get("ref") == self.dmk_ref:
-            logger.info("[SCREENSHOTS][SETUP] device-sdk-ts already at %s — skipping pull", self.dmk_ref)
-            return
-
-        build_functional = (self.cs_tester_root / "node_modules").is_dir() and (
-            self.cs_tester_root / "apps" / "clear-signing-tester"
-        ).is_dir()
-
-        if not stamp and build_functional:
-            logger.info("[SCREENSHOTS][SETUP] device-sdk-ts build already present — writing stamp, skipping update")
-            stamp_path.write_text(json.dumps({"repo": self.dmk_repo, "ref": self.dmk_ref}, indent=2))
-            return
-
-        # Save current HEAD so we can revert if install/build fails
-        prev_head = subprocess.run(
-            ["git", "rev-parse", "HEAD"],
-            cwd=str(self.cs_tester_root),
-            capture_output=True,
-            text=True,
-        ).stdout.strip()
-
-        try:
-            logger.info("[SCREENSHOTS][SETUP] Pulling device-sdk-ts %s@%s", self.dmk_repo, self.dmk_ref)
-            self._run_command(
-                ["git", "fetch", "--depth", "1", "origin", self.dmk_ref],
-                cwd=self.cs_tester_root,
-                timeout=300,
-                description=f"Fetching {self.dmk_repo}@{self.dmk_ref}",
+        if not self._has_any_ethereum_app():
+            self._add_unavailability_reason(
+                f"no Ethereum app ELF at {self._artifact_elf_path()} — rebuild the Docker image or set ETH_APP_ELF_ROOT"
             )
-
-            # Check if FETCH_HEAD is the same as current HEAD (no change)
-            fetch_head = subprocess.run(
-                ["git", "rev-parse", "FETCH_HEAD"],
-                cwd=str(self.cs_tester_root),
-                capture_output=True,
-                text=True,
-            ).stdout.strip()
-            if fetch_head == prev_head:
-                logger.info("[SCREENSHOTS][SETUP] device-sdk-ts already up to date")
-                stamp_path.write_text(json.dumps({"repo": self.dmk_repo, "ref": self.dmk_ref}, indent=2))
-                return
-
-            self._run_command(
-                ["git", "checkout", "--detach", "FETCH_HEAD"],
-                cwd=self.cs_tester_root,
-                timeout=120,
-                description=f"Checking out {self.dmk_repo}@{self.dmk_ref}",
-            )
-            self._run_command(
-                self._pnpm_cmd("install", "--frozen-lockfile"),
-                cwd=self.cs_tester_root,
-                timeout=600,
-                description="Installing device-sdk-ts dependencies",
-            )
-            self._run_command(
-                self._pnpm_cmd("build:libs"),
-                cwd=self.cs_tester_root,
-                timeout=600,
-                description="Building device-sdk-ts libraries",
-            )
-            stamp_path.write_text(json.dumps({"repo": self.dmk_repo, "ref": self.dmk_ref}, indent=2))
-        except Exception as exc:
-            logger.warning("[SCREENSHOTS][SETUP] device-sdk-ts update failed, reverting to %s: %s", prev_head[:10], exc)
-            if prev_head:
-                subprocess.run(
-                    ["git", "checkout", "--detach", prev_head],
-                    cwd=str(self.cs_tester_root),
-                    capture_output=True,
-                    timeout=60,
-                )
-
-    # ------------------------------------------------------------------
-    # ELF update (app-ethereum CI artifacts via PAT)
-    # ------------------------------------------------------------------
-
-    def _maybe_update_elfs(self) -> None:
-        """Refresh the device ELF from the latest successful app-ethereum build artifact."""
-        if not self.github_token:
-            logger.info("[SCREENSHOTS][SETUP] GITHUB_TOKEN not set — skipping artifact ELF refresh")
-            return
-
-        try:
-            result = fetch_latest_ethereum_app_elf(
-                token=self.github_token,
-                device=self.device,
-                output_root=self.eth_app_elf_root,
-                owner=self.app_eth_owner,
-                repo=self.app_eth_repo,
-                branch=self.app_eth_branch,
-                workflow_name=self.app_eth_workflow_name,
-                artifact_name=self.app_eth_artifact_name,
-            )
-        except Exception as exc:
-            logger.warning("[SCREENSHOTS][SETUP] Failed to refresh Ethereum app ELF: %s", exc)
-            return
-
-        if result["updated"]:
-            logger.info(
-                "[SCREENSHOTS][SETUP] Refreshed Ethereum app ELF from run=%s artifact=%s",
-                result["run_id"],
-                result["artifact_id"],
-            )
-        else:
-            logger.info(
-                "[SCREENSHOTS][SETUP] Ethereum app ELF already current (run=%s artifact=%s)",
-                result["run_id"],
-                result["artifact_id"],
-            )
+            return False
+        return True
 
     # ------------------------------------------------------------------
     # Native Speculos (Python package)
@@ -455,37 +293,6 @@ class ScreenshotRunner:
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
-
-    def _read_stamp(self, path: Path) -> dict[str, Any] | None:
-        if not path.is_file():
-            return None
-        try:
-            data = json.loads(path.read_text())
-        except Exception:
-            return None
-        return data if isinstance(data, dict) else None
-
-    def _run_command(
-        self,
-        cmd: list[str],
-        *,
-        cwd: Path | None = None,
-        env: dict[str, str] | None = None,
-        timeout: int | None = None,
-        description: str,
-    ) -> None:
-        logger.info("[SCREENSHOTS][SETUP] %s", description)
-        result = subprocess.run(
-            cmd,
-            cwd=str(cwd) if cwd else None,
-            env=env,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-        )
-        if result.returncode != 0:
-            stderr = (result.stderr or result.stdout or "").strip()
-            raise RuntimeError(f"{description} failed: {stderr[-600:] or f'exit {result.returncode}'}")
 
     def _pnpm_cmd(self, *args: str) -> list[str]:
         if shutil.which("pnpm"):

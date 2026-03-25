@@ -9,7 +9,8 @@
 #   - Native Speculos via the ``speculos`` PyPI package + qemu-user-static
 #     (cs-tester uses --external-speculos; no Docker-in-Docker)
 #
-# Build (requires a GitHub PAT with ``actions:read`` for app-ethereum artifacts):
+# Build (requires a token that can call the Actions API for app-ethereum artifacts;
+# locally use a PAT with ``actions:read``; deploy CI uses ``github.token``):
 #   docker build -t erc7730-analyzer \
 #     --secret id=github_token,env=GITHUB_TOKEN .
 #

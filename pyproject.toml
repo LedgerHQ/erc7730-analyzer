@@ -40,6 +40,7 @@ dev = [
 [project.scripts]
 analyze_7730 = "main:main"
 analyze_7730_service = "service.app:main"
+erc7730-client = "service.client:main"
 
 # Specific to uv but previous declaration is enough for setuptools
 [tool.uv]

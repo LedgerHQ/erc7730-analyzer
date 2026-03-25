@@ -129,7 +129,7 @@ async def _security_middleware(request: Request, call_next):
 
 
 # Cap in-flight analyses
-_MAX_CONCURRENT_ANALYSES = 3
+_MAX_CONCURRENT_ANALYSES = 1
 _analysis_semaphore = asyncio.Semaphore(_MAX_CONCURRENT_ANALYSES)
 
 

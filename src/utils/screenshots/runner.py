@@ -54,6 +54,7 @@ TRIM_TAIL = 3
 
 _BOOT_LOCK = threading.Lock()
 _SPECULOS_PORT_LOCK = threading.Lock()
+_RESERVED_PORTS: set[int] = set()
 _DMK_STAMP_FILENAME = ".erc7730_analyzer_dmk_ready.json"
 
 
@@ -69,14 +70,35 @@ def _tcp_port_in_use(port: int) -> bool:
 
 
 def _allocate_speculos_api_apdu_ports() -> tuple[int, int]:
-    """Return a pair (api_port, apdu_port) with consecutive free ports."""
+    """Return a pair (api_port, apdu_port) with consecutive free ports.
+
+    Ports are added to ``_RESERVED_PORTS`` so that concurrent threads cannot
+    allocate the same pair before Speculos actually binds them.  The caller
+    **must** call ``_release_speculos_ports`` when done (typically in a
+    ``finally`` block).
+    """
     with _SPECULOS_PORT_LOCK:
         candidate = SPECULOS_BASE_API_PORT
         while candidate < 65534:
-            if not _tcp_port_in_use(candidate) and not _tcp_port_in_use(candidate + 1):
-                return candidate, candidate + 1
+            api, apdu = candidate, candidate + 1
+            if (
+                api not in _RESERVED_PORTS
+                and apdu not in _RESERVED_PORTS
+                and not _tcp_port_in_use(api)
+                and not _tcp_port_in_use(apdu)
+            ):
+                _RESERVED_PORTS.add(api)
+                _RESERVED_PORTS.add(apdu)
+                return api, apdu
             candidate += 2
         raise RuntimeError("Could not allocate free TCP ports for Speculos (api + apdu)")
+
+
+def _release_speculos_ports(api_port: int, apdu_port: int) -> None:
+    """Release previously reserved ports so they can be reused."""
+    with _SPECULOS_PORT_LOCK:
+        _RESERVED_PORTS.discard(api_port)
+        _RESERVED_PORTS.discard(apdu_port)
 
 
 class ScreenshotRunner:
@@ -363,7 +385,12 @@ class ScreenshotRunner:
         raise TimeoutError(f"Speculos did not become ready on port {api_port}: {last_err or 'unknown'}")
 
     def _start_speculos_process(self, elf_path: Path, api_port: int, apdu_port: int) -> subprocess.Popen:
-        """Launch Speculos as a subprocess (headless)."""
+        """Launch Speculos as a subprocess (headless).
+
+        Stderr is captured via PIPE so that crash diagnostics are available
+        when the process exits unexpectedly (e.g. missing qemu/binfmt inside
+        a container).  Call ``_read_speculos_stderr`` to drain it.
+        """
         cmd = [
             sys.executable,
             "-m",
@@ -388,15 +415,34 @@ class ScreenshotRunner:
         return subprocess.Popen(
             cmd,
             stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
             env=dict(os.environ),
         )
 
     @staticmethod
+    def _read_speculos_stderr(proc: subprocess.Popen | None, limit: int = 1500) -> str:
+        """Drain and return up to *limit* chars from a Speculos process's stderr."""
+        if proc is None or proc.stderr is None:
+            return ""
+        try:
+            raw = proc.stderr.read()
+            text = raw.decode("utf-8", errors="replace").strip() if isinstance(raw, bytes) else str(raw).strip()
+            return text[-limit:] if len(text) > limit else text
+        except Exception:
+            return ""
+
+    @staticmethod
     def _stop_speculos_process(proc: subprocess.Popen | None) -> None:
-        if proc is None or proc.poll() is not None:
+        if proc is None:
             return
         try:
+            if proc.stderr is not None:
+                try:
+                    proc.stderr.close()
+                except Exception:
+                    pass
+            if proc.poll() is not None:
+                return
             proc.terminate()
             try:
                 proc.wait(timeout=SPECULOS_SHUTDOWN_GRACE_SEC)
@@ -672,11 +718,13 @@ class ScreenshotRunner:
             speculos_proc = self._start_speculos_process(custom_app_path, api_port, apdu_port)
             time.sleep(0.1)
             if speculos_proc.poll() is not None:
+                stderr_tail = self._read_speculos_stderr(speculos_proc)
                 logger.warning(
-                    "[SCREENSHOTS][%s] Speculos exited immediately (code=%s) for tx %s",
+                    "[SCREENSHOTS][%s] Speculos exited immediately (code=%s) for tx %s. stderr:\n%s",
                     selector,
                     speculos_proc.returncode,
                     tx_hash[:10],
+                    stderr_tail or "(empty)",
                 )
                 return {"tx_hash": tx_hash, "screenshots": []}
             self._wait_for_speculos_ready(api_port, SPECULOS_STARTUP_TIMEOUT)
@@ -717,7 +765,7 @@ class ScreenshotRunner:
                     selector,
                     result.returncode,
                     tx_hash[:10],
-                    result.stderr[-500:] if result.stderr else "(no stderr)",
+                    (result.stderr or "(no stderr)")[-2000:],
                 )
                 return {"tx_hash": tx_hash, "screenshots": []}
 
@@ -729,13 +777,21 @@ class ScreenshotRunner:
             logger.warning("[SCREENSHOTS][%s] pnpm not found", selector)
             return {"tx_hash": tx_hash, "screenshots": []}
         except TimeoutError as exc:
-            logger.warning("[SCREENSHOTS][%s] Speculos did not become ready for tx %s: %s", selector, tx_hash[:10], exc)
+            stderr_tail = self._read_speculos_stderr(speculos_proc)
+            logger.warning(
+                "[SCREENSHOTS][%s] Speculos did not become ready for tx %s: %s. stderr:\n%s",
+                selector,
+                tx_hash[:10],
+                exc,
+                stderr_tail or "(empty)",
+            )
             return {"tx_hash": tx_hash, "screenshots": []}
         except Exception as exc:
             logger.warning("[SCREENSHOTS][%s] cs-tester failed for tx %s: %s", selector, tx_hash[:10], exc)
             return {"tx_hash": tx_hash, "screenshots": []}
         finally:
             self._stop_speculos_process(speculos_proc)
+            _release_speculos_ports(api_port, apdu_port)
 
         all_pngs = sorted(screenshots_dir.glob("screenshot_*.png"), key=_sort_key)
 

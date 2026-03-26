@@ -68,9 +68,7 @@ def verify_oidc_token(
 
     repo = claims.get("repository", "")
     if repo not in allowed_repos:
-        raise jwt.InvalidTokenError(
-            f"Repository '{repo}' is not in the allow-list: {allowed_repos}"
-        )
+        raise jwt.InvalidTokenError(f"Repository '{repo}' is not in the allow-list: {allowed_repos}")
 
     logger.debug(
         "[AUTH] Token verified — issuer=%s repo=%s workflow=%s ref=%s",
@@ -104,6 +102,7 @@ async def verify_request_token(
 # Run-scoped identity helpers
 # ---------------------------------------------------------------------------
 
+
 def derive_run_key(claims: dict[str, Any]) -> str:
     """Derive a stable run-scoped key from GitHub OIDC JWT claims.
 
@@ -116,10 +115,7 @@ def derive_run_key(claims: dict[str, Any]) -> str:
     run_id = claims.get("run_id", "")
     run_attempt = claims.get("run_attempt", "")
     if not repository or not run_id:
-        raise ValueError(
-            "JWT claims must include 'repository' and 'run_id' "
-            "for run-scoped identification"
-        )
+        raise ValueError("JWT claims must include 'repository' and 'run_id' for run-scoped identification")
     return f"{repository}:{run_id}:{run_attempt or '1'}"
 
 

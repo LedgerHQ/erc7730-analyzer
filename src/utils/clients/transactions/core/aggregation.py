@@ -62,7 +62,9 @@ class TransactionFetcherCoreAggregationMixin:
             base: dict[str, list[dict[str, Any]]],
             extra: dict[str, list[dict[str, Any]]],
         ) -> dict[str, list[dict[str, Any]]]:
-            merged: dict[str, list[dict[str, Any]]] = {selector: list(base.get(selector, [])) for selector in normalized_selectors}
+            merged: dict[str, list[dict[str, Any]]] = {
+                selector: list(base.get(selector, [])) for selector in normalized_selectors
+            }
             for selector in normalized_selectors:
                 seen: set[str] = set()
                 combined: list[dict[str, Any]] = []
@@ -107,9 +109,13 @@ class TransactionFetcherCoreAggregationMixin:
 
         if not self.etherscan_api_key and not has_blockscout:
             logger.warning("No block explorer API key provided, cannot fetch transactions")
-            return combined_result if any(len(txs) > 0 for txs in combined_result.values()) else {s: [] for s in selectors}
+            return (
+                combined_result if any(len(txs) > 0 for txs in combined_result.values()) else {s: [] for s in selectors}
+            )
         if not self.etherscan_api_key and has_blockscout:
-            logger.info("No explorer API key provided; using Blockscout-only transaction fallback for chain %s", chain_id)
+            logger.info(
+                "No explorer API key provided; using Blockscout-only transaction fallback for chain %s", chain_id
+            )
 
         preferred_api = self.api_type_per_chain.get(chain_id)
         skip_etherscan = not self.etherscan_api_key or is_etherscan_tx_endpoint_unsupported(chain_id)
@@ -125,7 +131,11 @@ class TransactionFetcherCoreAggregationMixin:
 
         if not api_sequence:
             logger.warning("No supported transaction-history fallback is available for chain %s", chain_id)
-            return combined_result if any(len(txs) > 0 for txs in combined_result.values()) else {s.lower(): [] for s in selectors}
+            return (
+                combined_result
+                if any(len(txs) > 0 for txs in combined_result.values())
+                else {s.lower(): [] for s in selectors}
+            )
 
         # Try the preferred API first, then fallback as needed.
         for api_attempt, use_blockscout in enumerate(api_sequence):
@@ -137,7 +147,9 @@ class TransactionFetcherCoreAggregationMixin:
             if api_attempt > 0:
                 logger.info(f"Switching to {api_name} API for chain {chain_id}")
 
-            logger.info(f"Fetching transactions for {len(selectors_to_fetch)} selectors on chain {chain_id} using {api_name}")
+            logger.info(
+                f"Fetching transactions for {len(selectors_to_fetch)} selectors on chain {chain_id} using {api_name}"
+            )
             if payable_selectors:
                 logger.info(f"  - {len(payable_selectors)} payable function(s) - will fetch diverse samples")
 
@@ -157,7 +169,9 @@ class TransactionFetcherCoreAggregationMixin:
             if any(len(txs) > 0 for txs in result.values()):
                 combined_result = merge_results(combined_result, result)
                 selectors_to_fetch = [
-                    selector for selector in normalized_selectors if len(combined_result.get(selector, [])) < per_selector
+                    selector
+                    for selector in normalized_selectors
+                    if len(combined_result.get(selector, [])) < per_selector
                 ]
                 logger.info(f"✓ Successfully found transactions using {api_name}")
                 self.api_type_per_chain[chain_id] = api_name
@@ -190,7 +204,13 @@ class TransactionFetcherCoreAggregationMixin:
             logger.warning(
                 "Returning partial transaction coverage for chain %s; %s selector(s) remain underfilled",
                 chain_id,
-                len([selector for selector in normalized_selectors if len(combined_result.get(selector, [])) < per_selector]),
+                len(
+                    [
+                        selector
+                        for selector in normalized_selectors
+                        if len(combined_result.get(selector, [])) < per_selector
+                    ]
+                ),
             )
             return combined_result
 

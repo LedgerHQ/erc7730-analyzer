@@ -85,7 +85,7 @@ async def _periodic_cleanup(registry: JobRegistry, interval: int = 60) -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global _config, _registry, _analysis_semaphore, _cleanup_task  # noqa: PLW0603
+    global _config, _registry, _analysis_semaphore, _cleanup_task
     _config = load_config()
     _registry = JobRegistry(
         retention_ttl_seconds=_config.job_retention_ttl,
@@ -386,7 +386,7 @@ async def _execute_analysis(
 
     except asyncio.CancelledError:
         job.set_error("Analysis cancelled")
-    except asyncio.TimeoutError:
+    except TimeoutError:
         job.set_error("Analysis timed out")
     except Exception:
         logger.exception("[SERVICE] Analysis failed for %s", job.run_key)

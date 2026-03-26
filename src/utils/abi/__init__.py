@@ -539,7 +539,9 @@ def fetch_contract_abi_from_blockscout(contract_address: str, chain_id: int) -> 
         try:
             parsed = json.loads(abi)
         except Exception as exc:
-            logger.warning("Failed to parse Blockscout ABI JSON for %s on chain %s: %s", contract_address, chain_id, exc)
+            logger.warning(
+                "Failed to parse Blockscout ABI JSON for %s on chain %s: %s", contract_address, chain_id, exc
+            )
             return None
         if isinstance(parsed, list) and parsed:
             logger.info("Fetched ABI with %s entries from Blockscout for %s", len(parsed), contract_address)

@@ -292,7 +292,10 @@ class TransactionFetcherCoreQueryMixin:
 
                     # Check if this transaction matches any selector we're looking for
                     tx_selector = inp[:10].lower()
-                    if tx_selector in selector_candidates and len(selector_candidates[tx_selector]) < selector_candidate_limit:
+                    if (
+                        tx_selector in selector_candidates
+                        and len(selector_candidates[tx_selector]) < selector_candidate_limit
+                    ):
                         selector_candidates[tx_selector].append(tx)
                         logger.debug(f"Found candidate for {tx_selector}: {tx.get('hash')}")
 

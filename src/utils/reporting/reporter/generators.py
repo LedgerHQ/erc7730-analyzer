@@ -96,9 +96,7 @@ def _collect_accounted_parameter_roots(fields: Any) -> tuple[set[str], set[str]]
     return shown, hidden
 
 
-def generate_summary_file(
-    results: dict, summary_file: Path, *, inline_base64: bool = False
-):
+def generate_summary_file(results: dict, summary_file: Path, *, inline_base64: bool = False):
     """
     Generate a single comprehensive report file with summary table and detailed sections.
 
@@ -174,18 +172,9 @@ def generate_summary_file(
                 coverage_info = overall_assessment.get("coverage_score") or {}
                 risk_level = security_risk.get("level") or "Unknown"
                 coverage_score = coverage_info.get("score", "N/A")
-                critical_issues_from_ai = [
-                    _stringify_issue(c)
-                    for c in audit_report_json.get("critical_issues", [])
-                ]
-                ai_missing_params = [
-                    _stringify_issue(m)
-                    for m in audit_report_json.get("missing_parameters", [])
-                ]
-                display_issues_from_ai = [
-                    _stringify_issue(d)
-                    for d in audit_report_json.get("display_issues", [])
-                ]
+                critical_issues_from_ai = [_stringify_issue(c) for c in audit_report_json.get("critical_issues", [])]
+                ai_missing_params = [_stringify_issue(m) for m in audit_report_json.get("missing_parameters", [])]
+                display_issues_from_ai = [_stringify_issue(d) for d in audit_report_json.get("display_issues", [])]
                 recommendations = audit_report_json.get("recommendations", {})
             elif audit_report_detailed:
                 risk_level = extract_risk_level(audit_report_detailed)
@@ -241,18 +230,9 @@ def generate_summary_file(
                 coverage_info = overall_assessment.get("coverage_score") or {}
                 risk_level = security_risk.get("level") or "Unknown"
                 coverage_score = coverage_info.get("score", "N/A")
-                critical_issues_from_ai = [
-                    _stringify_issue(c)
-                    for c in audit_report_json.get("critical_issues", [])
-                ]
-                ai_missing_params = [
-                    _stringify_issue(m)
-                    for m in audit_report_json.get("missing_parameters", [])
-                ]
-                display_issues_from_ai = [
-                    _stringify_issue(d)
-                    for d in audit_report_json.get("display_issues", [])
-                ]
+                critical_issues_from_ai = [_stringify_issue(c) for c in audit_report_json.get("critical_issues", [])]
+                ai_missing_params = [_stringify_issue(m) for m in audit_report_json.get("missing_parameters", [])]
+                display_issues_from_ai = [_stringify_issue(d) for d in audit_report_json.get("display_issues", [])]
                 recommendations = audit_report_json.get("recommendations", {})
             elif audit_report_detailed:
                 risk_level = extract_risk_level(audit_report_detailed)
@@ -460,9 +440,7 @@ def generate_summary_file(
     logger.info(f"Comprehensive report saved to {summary_file}")
 
 
-def generate_criticals_report(
-    results: dict, criticals_file: Path, *, inline_base64: bool = False
-):
+def generate_criticals_report(results: dict, criticals_file: Path, *, inline_base64: bool = False):
     """
     Generate a mini report containing ONLY critical issues and recommendations.
 

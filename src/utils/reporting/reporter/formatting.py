@@ -375,9 +375,7 @@ def render_screenshots_section(
 
             if inline_base64:
                 b64 = base64.b64encode(src.read_bytes()).decode()
-                images_md.append(
-                    f"![{src.stem}](data:image/png;base64,{b64})"
-                )
+                images_md.append(f"![{src.stem}](data:image/png;base64,{b64})")
             else:
                 dst_name = f"{tx_hash[2:10]}_{src.name}"
                 dst = screenshots_dir / dst_name

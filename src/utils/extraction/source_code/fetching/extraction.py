@@ -107,7 +107,7 @@ class SourceCodeFetchingExtractionMixin:
                     logger.debug(
                         "  Selector %s has only non-facet provenance on chain(s) %s; ignoring for diamond shortcut",
                         selector,
-                        sorted({s.get('chain_id') for s in sources}),
+                        sorted({s.get("chain_id") for s in sources}),
                     )
                 # Find a source that matches the current chain_id
                 matching_source = None

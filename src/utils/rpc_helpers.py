@@ -91,7 +91,10 @@ def mark_etherscan_proxy_eth_call_unsupported(chain_id: int) -> None:
 def is_etherscan_proxy_eth_call_unsupported(chain_id: int) -> bool:
     """Check whether Etherscan proxy eth_call is known unsupported for this chain."""
     chain_id = int(chain_id)
-    return chain_id in _ETHERSCAN_PROXY_ETH_CALL_UNSUPPORTED_CHAINS or chain_id in _ETHERSCAN_CHAIN_COVERAGE_UNSUPPORTED_CHAINS
+    return (
+        chain_id in _ETHERSCAN_PROXY_ETH_CALL_UNSUPPORTED_CHAINS
+        or chain_id in _ETHERSCAN_CHAIN_COVERAGE_UNSUPPORTED_CHAINS
+    )
 
 
 def mark_etherscan_contract_endpoint_unsupported(chain_id: int) -> None:
@@ -104,7 +107,10 @@ def mark_etherscan_contract_endpoint_unsupported(chain_id: int) -> None:
 def is_etherscan_contract_endpoint_unsupported(chain_id: int) -> bool:
     """Check whether Etherscan contract endpoints are known unsupported for this chain."""
     chain_id = int(chain_id)
-    return chain_id in _ETHERSCAN_CONTRACT_ENDPOINT_UNSUPPORTED_CHAINS or chain_id in _ETHERSCAN_CHAIN_COVERAGE_UNSUPPORTED_CHAINS
+    return (
+        chain_id in _ETHERSCAN_CONTRACT_ENDPOINT_UNSUPPORTED_CHAINS
+        or chain_id in _ETHERSCAN_CHAIN_COVERAGE_UNSUPPORTED_CHAINS
+    )
 
 
 def mark_etherscan_tx_endpoint_unsupported(chain_id: int) -> None:
@@ -117,7 +123,10 @@ def mark_etherscan_tx_endpoint_unsupported(chain_id: int) -> None:
 def is_etherscan_tx_endpoint_unsupported(chain_id: int) -> bool:
     """Check whether Etherscan transaction-history endpoints are known unsupported for this chain."""
     chain_id = int(chain_id)
-    return chain_id in _ETHERSCAN_TX_ENDPOINT_UNSUPPORTED_CHAINS or chain_id in _ETHERSCAN_CHAIN_COVERAGE_UNSUPPORTED_CHAINS
+    return (
+        chain_id in _ETHERSCAN_TX_ENDPOINT_UNSUPPORTED_CHAINS
+        or chain_id in _ETHERSCAN_CHAIN_COVERAGE_UNSUPPORTED_CHAINS
+    )
 
 
 def rpc_request(

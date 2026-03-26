@@ -16,7 +16,7 @@ import logging
 import shutil
 import time
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
 
@@ -31,8 +31,8 @@ class AnalysisJob:
 
     run_key: str
     status: JobStatus = "queued"
-    started_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
-    updated_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    started_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+    updated_at: datetime = field(default_factory=lambda: datetime.now(UTC))
 
     repository: str = ""
     workflow: str = ""
@@ -57,7 +57,7 @@ class AnalysisJob:
         return self.status in ("succeeded", "failed", "expired")
 
     def touch(self) -> None:
-        self.updated_at = datetime.now(timezone.utc)
+        self.updated_at = datetime.now(UTC)
 
     def append_log(self, line: str, *, max_lines: int = 500) -> None:
         self.log_lines.append(line)

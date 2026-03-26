@@ -45,7 +45,9 @@ class AnalyzerPipelineSourceMixin:
                 if self.selector_sources:
                     # Show a few sample mappings
                     sample_sels = list(self.selector_sources.keys())[:3]
-                    logger.info(f"  Using {len(self.selector_sources)} selector provenance entries (sample: {sample_sels})")
+                    logger.info(
+                        f"  Using {len(self.selector_sources)} selector provenance entries (sample: {sample_sels})"
+                    )
                 else:
                     logger.warning("  No selector_sources available - Diamond detection may have failed")
 

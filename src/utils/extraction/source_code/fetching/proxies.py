@@ -277,7 +277,9 @@ class SourceCodeFetchingProxyMixin:
             def _log_call_payload(label: str, payload: object) -> None:
                 payload_str = str(payload)
                 if len(payload_str) > 100:
-                    logger.debug(f"{label} response: {payload_str[:100]}... (truncated, {len(payload_str)} chars total)")
+                    logger.debug(
+                        f"{label} response: {payload_str[:100]}... (truncated, {len(payload_str)} chars total)"
+                    )
                 else:
                     logger.debug(f"{label} response: {payload_str}")
 

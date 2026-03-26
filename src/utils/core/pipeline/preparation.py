@@ -391,9 +391,9 @@ class AnalyzerPipelinePreparationMixin:
                 synthetic_report_data = self._build_missing_abi_report_data(
                     selector=selector,
                     function_signature=function_data["signature"],
-                    erc7730_format=erc7730_data.get("display", {}).get("formats", {}).get(
-                        self.selector_to_format_key.get(selector, selector), {}
-                    ),
+                    erc7730_format=erc7730_data.get("display", {})
+                    .get("formats", {})
+                    .get(self.selector_to_format_key.get(selector, selector), {}),
                     abi_resolution=abi_resolution,
                     format_key=self.selector_to_format_key.get(selector, selector),
                 )
@@ -811,9 +811,9 @@ class AnalyzerPipelinePreparationMixin:
                 synthetic_report_data = self._build_missing_abi_report_data(
                     selector=selector,
                     function_signature=function_data["signature"],
-                    erc7730_format=erc7730_data.get("display", {}).get("formats", {}).get(
-                        self.selector_to_format_key.get(selector, selector), {}
-                    ),
+                    erc7730_format=erc7730_data.get("display", {})
+                    .get("formats", {})
+                    .get(self.selector_to_format_key.get(selector, selector), {}),
                     abi_resolution=abi_resolution,
                     format_key=self.selector_to_format_key.get(selector, selector),
                 )

@@ -136,6 +136,7 @@ def run_analysis(
     ``get_auth_token`` is called before every request so short-lived OIDC
     tokens are refreshed transparently.
     """
+
     def _token() -> str | None:
         return get_auth_token() if get_auth_token else None
 

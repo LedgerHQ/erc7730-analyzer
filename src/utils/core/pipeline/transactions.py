@@ -105,7 +105,10 @@ class AnalyzerPipelineTransactionsMixin:
 
             max_workers = max(
                 1,
-                min(len(deployments), int(getattr(self, "max_concurrent_api_calls", len(deployments)) or len(deployments))),
+                min(
+                    len(deployments),
+                    int(getattr(self, "max_concurrent_api_calls", len(deployments)) or len(deployments)),
+                ),
             )
             fallback_deployment_indices = set(range(len(deployments)))
 
@@ -116,7 +119,10 @@ class AnalyzerPipelineTransactionsMixin:
                     1,
                     min(
                         len(deployments_by_chain),
-                        int(getattr(self, "max_concurrent_api_calls", len(deployments_by_chain)) or len(deployments_by_chain)),
+                        int(
+                            getattr(self, "max_concurrent_api_calls", len(deployments_by_chain))
+                            or len(deployments_by_chain)
+                        ),
                     ),
                 )
                 logger.info(
@@ -175,7 +181,9 @@ class AnalyzerPipelineTransactionsMixin:
                             ) = future.result()
                         except Exception as exc:
                             logger.warning("Batched Snowflake transaction fetch failed for chain %s: %s", chain_id, exc)
-                            snowflake_failed_deployment_indices.update(idx for idx, _ in deployments_by_chain.get(chain_id, []))
+                            snowflake_failed_deployment_indices.update(
+                                idx for idx, _ in deployments_by_chain.get(chain_id, [])
+                            )
                             continue
 
                         if chain_result is None:
@@ -187,9 +195,7 @@ class AnalyzerPipelineTransactionsMixin:
                         self.tx_fetcher._snowflake_transaction_row_cache.update(snowflake_cache)
                         self.tx_fetcher.api_type_per_chain.update(api_type_per_chain)
                         if any(
-                            len(txs) > 0
-                            for address_result in chain_result.values()
-                            for txs in address_result.values()
+                            len(txs) > 0 for address_result in chain_result.values() for txs in address_result.values()
                         ):
                             self.tx_fetcher.api_type_per_chain[completed_chain_id] = "Snowflake"
 
@@ -292,7 +298,9 @@ class AnalyzerPipelineTransactionsMixin:
                         contract_address = deployment["address"]
                         chain_id = deployment["chainId"]
                         try:
-                            _, completed_deployment, deployment_txs, snowflake_cache, api_type_per_chain = future.result()
+                            _, completed_deployment, deployment_txs, snowflake_cache, api_type_per_chain = (
+                                future.result()
+                            )
                         except Exception as exc:
                             logger.warning(
                                 "Transaction fetch failed for deployment %s on chain %s: %s",

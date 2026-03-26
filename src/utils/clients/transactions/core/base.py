@@ -204,9 +204,7 @@ class TransactionFetcherCoreBaseMixin:
     def _transaction_origin_key(self, tx: dict[str, Any]) -> str:
         """Return the best available transaction origin/sender key for diversity sampling."""
         origin = (
-            str(tx.get("tx_origin") or tx.get("txOrigin") or tx.get("origin") or tx.get("from") or "")
-            .strip()
-            .lower()
+            str(tx.get("tx_origin") or tx.get("txOrigin") or tx.get("origin") or tx.get("from") or "").strip().lower()
         )
         return origin
 
@@ -356,7 +354,9 @@ class TransactionFetcherCoreBaseMixin:
         # Etherscan requires API key
         if not use_blockscout:
             if is_etherscan_tx_endpoint_unsupported(chain_id):
-                logger.debug("Skipping Etherscan eth_blockNumber on chain %s: endpoint already marked unsupported", chain_id)
+                logger.debug(
+                    "Skipping Etherscan eth_blockNumber on chain %s: endpoint already marked unsupported", chain_id
+                )
                 return None
             if not self.etherscan_api_key:
                 return None

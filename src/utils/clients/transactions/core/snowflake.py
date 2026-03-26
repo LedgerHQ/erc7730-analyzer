@@ -108,7 +108,9 @@ class TransactionFetcherCoreSnowflakeMixin:
                 payable_selectors=payable_selectors,
             )
             result = self._merge_selector_transaction_results(result, window_result, per_selector=per_selector)
-            pending_selectors = [selector for selector in pending_selectors if len(result.get(selector, [])) < per_selector]
+            pending_selectors = [
+                selector for selector in pending_selectors if len(result.get(selector, [])) < per_selector
+            ]
 
         total_matches = sum(len(txs) for txs in result.values())
         if total_matches:
@@ -150,10 +152,7 @@ class TransactionFetcherCoreSnowflakeMixin:
             return None
         if not valid_selectors:
             logger.warning("Skipping Snowflake batched tx history because no valid selectors were provided")
-            return {
-                address: {selector: [] for selector in normalized_selectors}
-                for address in normalized_addresses
-            }
+            return {address: {selector: [] for selector in normalized_selectors} for address in normalized_addresses}
 
         limit_per_selector = self._tx_sample_candidate_limit(per_selector)
         logger.info(
@@ -165,10 +164,7 @@ class TransactionFetcherCoreSnowflakeMixin:
             len(normalized_addresses),
         )
 
-        result = {
-            address: {selector: [] for selector in normalized_selectors}
-            for address in normalized_addresses
-        }
+        result = {address: {selector: [] for selector in normalized_selectors} for address in normalized_addresses}
         pending_selectors = list(valid_selectors)
         for window_days in self._snowflake_query_windows():
             if not pending_selectors:
@@ -217,14 +213,12 @@ class TransactionFetcherCoreSnowflakeMixin:
             pending_selectors = [
                 selector
                 for selector in pending_selectors
-                if any(len(result.get(address, {}).get(selector, [])) < per_selector for address in normalized_addresses)
+                if any(
+                    len(result.get(address, {}).get(selector, [])) < per_selector for address in normalized_addresses
+                )
             ]
 
-        total_matches = sum(
-            len(txs)
-            for address_result in result.values()
-            for txs in address_result.values()
-        )
+        total_matches = sum(len(txs) for address_result in result.values() for txs in address_result.values())
         if total_matches:
             logger.info(
                 "Snowflake returned %s transaction sample(s) across %s deployment(s)",
@@ -386,7 +380,9 @@ ORDER BY block_number DESC, transaction_index DESC
                 )
                 tx_rows = self._run_snowflake_query(database, tx_query)
                 if not tx_rows:
-                    logger.debug("Snowflake receipt lookup found no transaction row for %s on chain %s", tx_hash, chain_id)
+                    logger.debug(
+                        "Snowflake receipt lookup found no transaction row for %s on chain %s", tx_hash, chain_id
+                    )
                     return None
                 cached_tx_row = tx_rows[0]
                 self._snowflake_transaction_row_cache[(chain_id, tx_hash)] = cached_tx_row
@@ -438,9 +434,7 @@ ORDER BY block_number DESC, transaction_index DESC
                 for log in log_rows
             ],
         }
-        logger.debug(
-            "Loaded receipt for %s from Snowflake with %d log(s)", tx_hash, len(receipt.get("logs", []))
-        )
+        logger.debug("Loaded receipt for %s from Snowflake with %d log(s)", tx_hash, len(receipt.get("logs", [])))
         return receipt
 
     def _build_snowflake_receipt_transaction_query(

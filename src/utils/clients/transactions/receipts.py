@@ -144,7 +144,9 @@ class TransactionFetcherReceiptMixin:
         # Final fallback: direct JSON-RPC via public/configured RPC endpoint
         receipt, rpc_error, rpc_url = rpc_get_transaction_receipt(chain_id, tx_hash, timeout=15)
         if receipt:
-            logger.info("Fetched receipt for %s via RPC fallback (%s) in %.1fs", tx_hash, rpc_url, time.monotonic() - t0)
+            logger.info(
+                "Fetched receipt for %s via RPC fallback (%s) in %.1fs", tx_hash, rpc_url, time.monotonic() - t0
+            )
             return receipt
         if rpc_error:
             logger.debug("RPC receipt fallback failed for %s: %s", tx_hash, rpc_error)
@@ -187,9 +189,10 @@ class TransactionFetcherReceiptMixin:
                     }
 
             # ERC-20 Approval event
-            elif event_signature == "0x8c5be1e5ebec7d5bd14f71427d1e84f3dd0314c0f7b2291e5b200ac8c7c3b925" and len(
-                topics
-            ) >= 3:
+            elif (
+                event_signature == "0x8c5be1e5ebec7d5bd14f71427d1e84f3dd0314c0f7b2291e5b200ac8c7c3b925"
+                and len(topics) >= 3
+            ):
                 owner = "0x" + topics[1][-40:]
                 spender = "0x" + topics[2][-40:]
                 value_hex = log.get("data", "0x0")

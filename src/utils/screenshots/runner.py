@@ -444,7 +444,9 @@ class ScreenshotRunner:
                     else:
                         speculos_status = f"exited(code={speculos_ret})"
                         if logger.isEnabledFor(logging.DEBUG):
-                            speculos_stderr_tail = self._read_speculos_stderr(self._persistent_speculos_proc) or "(empty)"
+                            speculos_stderr_tail = (
+                                self._read_speculos_stderr(self._persistent_speculos_proc) or "(empty)"
+                            )
                 logger.warning(
                     "[SCREENSHOTS][%s] cs-tester exited with code %d for tx %s (persistent Speculos: %s)",
                     selector,
@@ -644,6 +646,7 @@ class ScreenshotRunner:
             return {}
 
         try:
+
             async def _one(info: dict[str, Any]) -> tuple[str, list[TxScreenshots]]:
                 sel = info["selector"]
                 tx_screenshots = await self.capture_for_selector_async(
@@ -733,7 +736,11 @@ class ScreenshotRunner:
         stderr_log = screenshots_dir / "cs_tester.stderr.log"
         api_port = self._persistent_speculos_api_port
 
-        if api_port is None or self._persistent_speculos_proc is None or self._persistent_speculos_proc.poll() is not None:
+        if (
+            api_port is None
+            or self._persistent_speculos_proc is None
+            or self._persistent_speculos_proc.poll() is not None
+        ):
             logger.warning(
                 "[SCREENSHOTS][%s] Persistent Speculos is not running for tx %s",
                 selector,
@@ -781,9 +788,10 @@ class ScreenshotRunner:
             ]
             cmd.extend(["--custom-app", str(custom_app_path)])
 
-            with stdout_log.open("w", encoding="utf-8") as stdout_handle, stderr_log.open(
-                "w", encoding="utf-8"
-            ) as stderr_handle:
+            with (
+                stdout_log.open("w", encoding="utf-8") as stdout_handle,
+                stderr_log.open("w", encoding="utf-8") as stderr_handle,
+            ):
                 cs_tester_proc = subprocess.Popen(
                     cmd,
                     cwd=str(self.cs_tester_root),

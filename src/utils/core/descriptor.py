@@ -200,11 +200,11 @@ class AnalyzerDescriptorMixin:
                     canonical_signature = abi_match.get("signature", formatted_key)
                     display_signature = abi_match.get("display_signature", formatted_key)
                     if formatted_key == display_signature:
-                        logger.info(f"Matched selector for v2 signature '{formatted_key}' via ABI: {selector}")
+                        logger.debug(f"Matched selector for v2 signature '{formatted_key}' via ABI: {selector}")
                     elif formatted_key == canonical_signature:
-                        logger.info(f"Matched selector for canonical signature '{formatted_key}' via ABI: {selector}")
+                        logger.debug(f"Matched selector for canonical signature '{formatted_key}' via ABI: {selector}")
                     else:
-                        logger.info(
+                        logger.debug(
                             f"Matched selector for '{formatted_key}' via ABI display "
                             f"'{display_signature}' (canonical '{canonical_signature}'): {selector}"
                         )
@@ -221,11 +221,11 @@ class AnalyzerDescriptorMixin:
 
                 selector = "0x" + self.w3.keccak(text=normalized_signature).hex()[:8]
                 if normalized_signature != formatted_key:
-                    logger.info(
+                    logger.debug(
                         f"Calculated selector for '{formatted_key}' (normalized '{normalized_signature}'): {selector}"
                     )
                 else:
-                    logger.info(f"Calculated selector for '{formatted_key}': {selector}")
+                    logger.debug(f"Calculated selector for '{formatted_key}': {selector}")
 
                 selector_lower = selector.lower()
                 selectors.append(selector_lower)
@@ -388,25 +388,25 @@ class AnalyzerDescriptorMixin:
         if not selector.startswith("0x"):
             function_data = self._match_function_signature_to_abi(selector)
             if function_data:
-                logger.info(f"Found matching function: {function_data['signature']} -> {function_data['selector']}")
+                logger.debug(f"Found matching function: {function_data['signature']} -> {function_data['selector']}")
                 return function_data
 
             normalized_signature = self._normalize_function_signature(selector)
             hex_selector = self.abi_helper._function_signature_to_selector(normalized_signature)
             if normalized_signature != selector:
-                logger.info(
+                logger.debug(
                     f"Converted signature '{selector}' "
                     f"(normalized '{normalized_signature}') to selector '{hex_selector}'"
                 )
             else:
-                logger.info(f"Converted signature '{selector}' to selector '{hex_selector}'")
+                logger.debug(f"Converted signature '{selector}' to selector '{hex_selector}'")
         else:
             hex_selector = selector.lower()
 
         function_data = self.abi_helper.find_function_by_selector(hex_selector)
 
         if function_data:
-            logger.info(f"Found matching function: {function_data['signature']} -> {hex_selector}")
+            logger.debug(f"Found matching function: {function_data['signature']} -> {hex_selector}")
             return function_data
 
         format_key = self.selector_to_format_key.get(hex_selector)
@@ -415,7 +415,7 @@ class AnalyzerDescriptorMixin:
             selector=hex_selector,
         )
         if fallback_metadata:
-            logger.info(
+            logger.debug(
                 f"Falling back to descriptor format key for selector {hex_selector}: {fallback_metadata['signature']}"
             )
             return fallback_metadata

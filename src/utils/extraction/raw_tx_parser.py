@@ -256,7 +256,7 @@ def load_raw_transactions(file_path: Path, fetch_by_hash_callback=None) -> list[
         return parsed_txs
 
     except FileNotFoundError:
-        logger.error(f"Raw transactions file not found: {file_path}")
+        logger.warning(f"Raw transactions file not found: {file_path}")
         return []
     except json.JSONDecodeError as e:
         logger.error(f"Invalid JSON in raw transactions file: {e}")

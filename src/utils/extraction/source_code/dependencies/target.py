@@ -28,7 +28,7 @@ def resolve_target_function(
         per_facet_codes = extracted_code.get("_per_facet_codes", {})
 
         # DEBUG: Log what's available
-        logger.info(
+        logger.debug(
             f"  🔍 DEBUG: _selector_to_facet has {len(selector_to_facet)} mappings, _per_facet_codes has {len(per_facet_codes)} facets"
         )
 
@@ -42,10 +42,10 @@ def resolve_target_function(
             facet_func_count = len(facet_specific_code.get("functions", {}))
             facet_struct_count = len(facet_specific_code.get("structs", {}))
             facet_struct_names = list(facet_specific_code.get("structs", {}).keys())
-            logger.info(
+            logger.debug(
                 f"  🎯 Using facet-specific source for {selector} (facet: {facet_addr[:10]}..., {facet_func_count} functions, {facet_struct_count} structs)"
             )
-            logger.info(
+            logger.debug(
                 f"  🎯 Facet-specific structs: {facet_struct_names[:10]}{'...' if len(facet_struct_names) > 10 else ''}"
             )
         elif facet_addr:
@@ -88,21 +88,21 @@ def resolve_target_function(
     # Get struct mapping for resolving struct types to tuples
     # CRITICAL: Use facet-specific structs to avoid wrong definitions from other facets
     structs = type_source.get("structs", {})
-    logger.info(f"  📚 Found {len(structs)} structs to map from {type_source_name}: {list(structs.keys())}")
+    logger.debug(f"  📚 Found {len(structs)} structs to map from {type_source_name}: {list(structs.keys())}")
 
     # DEBUG: Log actual StargateData definition if present
     if "StargateData" in structs:
-        logger.info(f"  🔍 DEBUG StargateData raw definition from {type_source_name}:")
-        logger.info(f"  {structs['StargateData'][:500]}...")
+        logger.debug(f"  🔍 DEBUG StargateData raw definition from {type_source_name}:")
+        logger.debug(f"  {structs['StargateData'][:500]}...")
         if facet_addr:
-            logger.info(f"  🔍 DEBUG: Facet address used = {facet_addr}")
+            logger.debug(f"  🔍 DEBUG: Facet address used = {facet_addr}")
     struct_type_mapping = {}
     for struct_name, struct_def in structs.items():
         # Extract tuple representation from struct, resolving custom types and nested structs
         tuple_repr = self._struct_to_tuple(struct_def, custom_type_mapping, structs)
         if tuple_repr:
             struct_type_mapping[struct_name] = tuple_repr
-            logger.info(f"  📦 Struct mapping: {struct_name} -> {tuple_repr}")
+            logger.debug(f"  📦 Struct mapping: {struct_name} -> {tuple_repr}")
         else:
             logger.warning(f"  ⚠️  Failed to parse struct: {struct_name}")
 
@@ -127,14 +127,14 @@ def resolve_target_function(
         normalized_target_sig = self._normalize_signature_for_matching(
             function_signature, custom_type_mapping, struct_type_mapping
         )
-        logger.info(f"  Looking for function with normalized signature: {normalized_target_sig}")
+        logger.debug(f"  Looking for function with normalized signature: {normalized_target_sig}")
 
     # Get main contract name and build inheritance hierarchy
     # For Diamond proxies: use facet-specific contract name if available
     main_contract_name = extracted_code.get("contract_name")
     if facet_specific_code and facet_specific_code.get("contract_name"):
         main_contract_name = facet_specific_code.get("contract_name")
-        logger.info(f"  Using facet contract name: {main_contract_name}")
+        logger.debug(f"  Using facet contract name: {main_contract_name}")
 
     # Extract inheritance relationships from source code
     # For Diamond proxies: use facet source code for inheritance parsing
@@ -143,8 +143,8 @@ def resolve_target_function(
     inheritance_map = parser.extract_inheritance_chain()
 
     # DEBUG: Log inheritance extraction results
-    logger.info(f"  🔍 DEBUG: main_contract_name = '{main_contract_name}'")
-    logger.info(f"  🔍 DEBUG: inheritance_map = {inheritance_map}")
+    logger.debug(f"  🔍 DEBUG: main_contract_name = '{main_contract_name}'")
+    logger.debug(f"  🔍 DEBUG: inheritance_map = {inheritance_map}")
 
     # Auto-detect main contract if not provided
     # The main contract is the "leaf" - appears in inheritance_map but isn't a parent of others
@@ -160,17 +160,17 @@ def resolve_target_function(
         if candidates:
             # If multiple candidates, prefer the first one (usually the main contract)
             main_contract_name = candidates[0]
-            logger.info(f"  Auto-detected main contract: {main_contract_name} (from {len(candidates)} candidates)")
+            logger.debug(f"  Auto-detected main contract: {main_contract_name} (from {len(candidates)} candidates)")
             if len(candidates) > 1:
-                logger.info(f"  Other contract candidates: {candidates[1:]}")
+                logger.debug(f"  Other contract candidates: {candidates[1:]}")
 
     # Build full inheritance hierarchy (main -> parents -> grandparents -> ...)
     inheritance_hierarchy = []
     if main_contract_name:
         inheritance_hierarchy = self._build_inheritance_hierarchy(main_contract_name, inheritance_map)
-        logger.info(f"  🔍 DEBUG: Built inheritance_hierarchy = {inheritance_hierarchy}")
+        logger.debug(f"  🔍 DEBUG: Built inheritance_hierarchy = {inheritance_hierarchy}")
         if len(inheritance_hierarchy) > 1:
-            logger.info(f"  Inheritance hierarchy: {' -> '.join(inheritance_hierarchy)}")
+            logger.debug(f"  Inheritance hierarchy: {' -> '.join(inheritance_hierarchy)}")
     else:
         logger.warning("  ⚠️  No main_contract_name - cannot build inheritance hierarchy")
 
@@ -180,7 +180,7 @@ def resolve_target_function(
         target_selector = self._compute_function_selector(
             normalized_target_sig, custom_type_mapping, struct_type_mapping
         )
-        logger.info(f"  Target selector: {target_selector}")
+        logger.debug(f"  Target selector: {target_selector}")
 
     # Collect all matching candidates (by name and visibility) using cached lookup
     # For Diamond proxies with facet-specific code, prefer facet functions
@@ -189,13 +189,13 @@ def resolve_target_function(
             f for f in facet_functions_by_name.get(function_name, []) if f["visibility"] in ["public", "external"]
         ]
         if all_candidates:
-            logger.info(f"  Found {len(all_candidates)} candidates in facet-specific code")
+            logger.debug(f"  Found {len(all_candidates)} candidates in facet-specific code")
         else:
             # Fallback to merged functions
             all_candidates = [
                 f for f in functions_by_name.get(function_name, []) if f["visibility"] in ["public", "external"]
             ]
-            logger.info(f"  No facet candidates, using {len(all_candidates)} from merged code")
+            logger.debug(f"  No facet candidates, using {len(all_candidates)} from merged code")
     else:
         all_candidates = [
             f for f in functions_by_name.get(function_name, []) if f["visibility"] in ["public", "external"]
@@ -208,18 +208,18 @@ def resolve_target_function(
         logger.warning(f"  All {len(all_candidates)} matching functions are interface definitions")
         contract_candidates = all_candidates
 
-    logger.info(f"  Found {len(contract_candidates)} candidate functions with name '{function_name}'")
+    logger.debug(f"  Found {len(contract_candidates)} candidate functions with name '{function_name}'")
 
     # DEBUG: Check Phase 1 condition
-    logger.info(f"  🔍 DEBUG: target_selector={target_selector}, inheritance_hierarchy={inheritance_hierarchy}")
-    logger.info(
+    logger.debug(f"  🔍 DEBUG: target_selector={target_selector}, inheritance_hierarchy={inheritance_hierarchy}")
+    logger.debug(
         f"  🔍 DEBUG: Phase 1 condition check - target_selector: {bool(target_selector)}, inheritance_hierarchy: {bool(inheritance_hierarchy)}"
     )
 
     # PHASE 1: Try to match by EXACT SELECTOR following inheritance hierarchy
     target_function = None
     if target_selector and inheritance_hierarchy:
-        logger.info(f"  Phase 1: Searching by selector {target_selector} following inheritance chain...")
+        logger.debug(f"  Phase 1: Searching by selector {target_selector} following inheritance chain...")
         for contract_name in inheritance_hierarchy:
             # Find candidates in this contract
             contract_funcs = [f for f in contract_candidates if f.get("contract_name") == contract_name]
@@ -238,27 +238,27 @@ def resolve_target_function(
                 func_selector = self._compute_function_selector(func_sig, custom_type_mapping, struct_type_mapping)
 
                 # Debug logging to diagnose selector mismatch
-                logger.info(f"    Checking: {func['signature'][:80]}...")
-                logger.info(f"      Normalized: {func_sig[:80]}...")
-                logger.info(f"      Computed selector: {func_selector} (target: {target_selector})")
+                logger.debug(f"    Checking: {func['signature'][:80]}...")
+                logger.debug(f"      Normalized: {func_sig[:80]}...")
+                logger.debug(f"      Computed selector: {func_selector} (target: {target_selector})")
 
                 if func_selector == target_selector:
                     # Found exact selector match!
                     target_function = func
-                    logger.info(f"  ✓ Found exact selector match in {contract_name}: {func['signature']}")
+                    logger.debug(f"  ✓ Found exact selector match in {contract_name}: {func['signature']}")
                     break
 
             if target_function:
                 break
     else:
-        logger.info(
+        logger.debug(
             f"  ⚠️  Phase 1 SKIPPED - target_selector: {bool(target_selector)}, inheritance_hierarchy: {inheritance_hierarchy}"
         )
 
         # PHASE 1b: If we have facet-specific candidates but no inheritance hierarchy,
         # still try to match by selector directly
         if target_selector and contract_candidates and not target_function:
-            logger.info(f"  Phase 1b: Checking {len(contract_candidates)} candidates by selector (no inheritance)...")
+            logger.debug(f"  Phase 1b: Checking {len(contract_candidates)} candidates by selector (no inheritance)...")
             for func in contract_candidates:
                 # Compute selector for this function
                 func_sig = self._normalize_signature_for_matching(func.get("signature", ""))
@@ -273,14 +273,14 @@ def resolve_target_function(
                     # Found exact selector match!
                     target_function = func
                     contract_name = func.get("contract_name", "Unknown")
-                    logger.info(
+                    logger.debug(
                         f"  ✓ Found selector match: {contract_name}.{func.get('name', 'unknown')} (line {func.get('start_line', 0)})"
                     )
                     break
 
     # PHASE 2: If no selector match, try to match by NAME following inheritance hierarchy
     if not target_function and not selector_only and inheritance_hierarchy:
-        logger.info("  Phase 2: Searching by name following inheritance chain...")
+        logger.debug("  Phase 2: Searching by name following inheritance chain...")
         for contract_name in inheritance_hierarchy:
             # Find candidates in this contract
             contract_funcs = [f for f in contract_candidates if f.get("contract_name") == contract_name]
@@ -291,31 +291,31 @@ def resolve_target_function(
             non_virtual = [f for f in contract_funcs if not f.get("is_virtual", False)]
             if non_virtual:
                 target_function = non_virtual[0]
-                logger.info(
+                logger.debug(
                     f"  ✓ Found by name in {contract_name}: {target_function.get('signature', target_function.get('name', 'unknown'))} (non-virtual)"
                 )
             else:
                 target_function = contract_funcs[0]
-                logger.info(
+                logger.debug(
                     f"  ✓ Found by name in {contract_name}: {target_function.get('signature', target_function.get('name', 'unknown'))} (virtual)"
                 )
             break
 
     # PHASE 3: Fallback - if still not found, use old logic (prefer non-virtual, latest line)
     if not target_function and not selector_only and contract_candidates:
-        logger.info("  Phase 3: Fallback - using non-inheritance matching...")
+        logger.debug("  Phase 3: Fallback - using non-inheritance matching...")
         non_virtual = [f for f in contract_candidates if not f.get("is_virtual", False)]
         if non_virtual:
             # Sort by line number (later = more likely to be the actual implementation)
             non_virtual.sort(key=lambda f: f.get("start_line", 0), reverse=True)
             target_function = non_virtual[0]
-            logger.info(
+            logger.debug(
                 f"  ✓ Selected: {target_function.get('contract_name', 'Unknown')}.{target_function.get('name', 'unknown')} (line {target_function.get('start_line', 0)})"
             )
         else:
             contract_candidates.sort(key=lambda f: f.get("start_line", 0), reverse=True)
             target_function = contract_candidates[0]
-            logger.info(
+            logger.debug(
                 f"  ✓ Selected: {target_function.get('contract_name', 'Unknown')}.{target_function.get('name', 'unknown')} (line {target_function.get('start_line', 0)}, virtual)"
             )
 
@@ -334,7 +334,7 @@ def resolve_target_function(
 
     if not target_function:
         if selector_only:
-            logger.info("  No exact selector match found (selector_only mode)")
+            logger.debug("  No exact selector match found (selector_only mode)")
         else:
             logger.warning(f"Function {function_name} not found - no matching name or visibility")
         empty_result = {

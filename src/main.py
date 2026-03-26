@@ -317,7 +317,7 @@ Priority: Command-line arguments > Environment variables > Defaults
                     break
 
     if has_critical_issues:
-        logger.error("❌ CRITICAL ISSUES FOUND - PR merge should be blocked")
+        logger.warning("❌ CRITICAL ISSUES FOUND - PR merge should be blocked")
         return 1
     else:
         logger.info("✅ NO CRITICAL ISSUES - PR merge is allowed")

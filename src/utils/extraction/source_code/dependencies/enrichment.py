@@ -45,7 +45,7 @@ def build_dependency_result(
     if facet_specific_code:
         dependency_source = facet_specific_code
         dependency_source_name = f"facet {facet_addr[:10]}..."
-        logger.info(f"  📦 Using facet-specific dependencies from {dependency_source_name}")
+        logger.debug(f"  📦 Using facet-specific dependencies from {dependency_source_name}")
     else:
         dependency_source = extracted_code
         dependency_source_name = "merged source"
@@ -72,23 +72,23 @@ def build_dependency_result(
             result["structs"].append(struct_code)
             result["total_lines"] += struct_code.count("\n") + 1
             added_structs.add(struct_name)
-            logger.info(f"    ✓ Including struct: {struct_name} (from {dependency_source_name})")
+            logger.debug(f"    ✓ Including struct: {struct_name} (from {dependency_source_name})")
 
     # PHASE 2: Search for missing structs from signature in interfaces
     struct_types_in_signature = self._extract_struct_types_from_signature(func_signature)
     missing_structs = struct_types_in_signature - added_structs
 
     if missing_structs and source_code:
-        logger.info(f"    🔍 Searching for missing structs in interfaces: {missing_structs}")
+        logger.debug(f"    🔍 Searching for missing structs in interfaces: {missing_structs}")
         for missing_struct in missing_structs:
             struct_def = self._find_struct_in_interfaces(missing_struct, source_code)
             if struct_def:
                 result["structs"].append(struct_def)
                 result["total_lines"] += struct_def.count("\n") + 1
                 added_structs.add(missing_struct)
-                logger.info(f"    ✓ Found struct in interface: {missing_struct}")
+                logger.debug(f"    ✓ Found struct in interface: {missing_struct}")
             else:
-                logger.warning(f"    ✗ Struct {missing_struct} not found in interfaces")
+                logger.debug(f"    ✗ Struct {missing_struct} not found in interfaces")
 
     # PHASE 3: RECURSIVE extraction of nested types from structs
     # This handles types like IStargate.SendParam inside StargateData
@@ -106,7 +106,7 @@ def build_dependency_result(
         if not new_types:
             break
 
-        logger.info(f"    🔄 Iteration {iteration}: Found {len(new_types)} new nested types: {new_types}")
+        logger.debug(f"    🔄 Iteration {iteration}: Found {len(new_types)} new nested types: {new_types}")
         structs_to_process = []  # Reset for next iteration
 
         for type_ref in new_types:
@@ -121,7 +121,7 @@ def build_dependency_result(
                     result["total_lines"] += struct_def.count("\n") + 1
                     added_structs.add(type_ref)
                     structs_to_process.append(struct_def)  # Process this struct for more nested types
-                    logger.info(f"    ✓ Found nested struct: {type_ref}")
+                    logger.debug(f"    ✓ Found nested struct: {type_ref}")
                 else:
                     logger.debug(f"    ⚠ Nested type {type_ref} not found in interface {interface_name}")
             else:
@@ -132,7 +132,7 @@ def build_dependency_result(
                     result["total_lines"] += struct_code.count("\n") + 1
                     added_structs.add(type_ref)
                     structs_to_process.append(struct_code)
-                    logger.info(f"    ✓ Found nested struct: {type_ref} (from {dependency_source_name})")
+                    logger.debug(f"    ✓ Found nested struct: {type_ref} (from {dependency_source_name})")
                 else:
                     # Try interfaces
                     struct_def = self._find_struct_in_interfaces(type_ref, source_code)
@@ -141,7 +141,7 @@ def build_dependency_result(
                         result["total_lines"] += struct_def.count("\n") + 1
                         added_structs.add(type_ref)
                         structs_to_process.append(struct_def)
-                        logger.info(f"    ✓ Found nested struct in interface: {type_ref}")
+                        logger.debug(f"    ✓ Found nested struct in interface: {type_ref}")
 
     # PHASE 4: Check for enums in function body, signature, AND all the structs we've added
     all_text_for_enum_search = func_text_to_search + "\n" + "\n".join(result["structs"])
@@ -152,14 +152,14 @@ def build_dependency_result(
             result["enums"].append(enum_code)
             result["total_lines"] += enum_code.count("\n") + 1
             added_enums.add(enum_name)
-            logger.info(f"    ✓ Including enum: {enum_name} (from {dependency_source_name})")
+            logger.debug(f"    ✓ Including enum: {enum_name} (from {dependency_source_name})")
 
     # PHASE 5: Search for missing enums in interfaces
     potential_types_in_structs = self._extract_enum_types_from_structs(result["structs"])
     missing_types = potential_types_in_structs - added_enums - added_structs
 
     if missing_types and source_code:
-        logger.info(f"    🔍 Searching for missing enums in interfaces: {missing_types}")
+        logger.debug(f"    🔍 Searching for missing enums in interfaces: {missing_types}")
         for missing_type in missing_types:
             # Try as an enum
             enum_def = self._find_enum_in_interfaces(missing_type, source_code)
@@ -167,20 +167,20 @@ def build_dependency_result(
                 result["enums"].append(enum_def)
                 result["total_lines"] += enum_def.count("\n") + 1
                 added_enums.add(missing_type)
-                logger.info(f"    ✓ Found enum in interface: {missing_type}")
+                logger.debug(f"    ✓ Found enum in interface: {missing_type}")
             else:
                 logger.debug(f"    ⚠ Type {missing_type} not found as enum in interfaces")
 
     # Add modifiers used by this function
     modifiers_used = target_function.get("modifiers", [])
     if modifiers_used:
-        logger.info(f"  - Function uses modifiers: {modifiers_used}")
+        logger.debug(f"  - Function uses modifiers: {modifiers_used}")
         for modifier_name in modifiers_used:
             if modifier_name in dependency_source.get("modifiers", {}):
                 modifier_code = dependency_source["modifiers"][modifier_name]
                 result["modifiers"].append(modifier_code)
                 result["total_lines"] += modifier_code.count("\n") + 1
-                logger.info(f"    ✓ Including modifier: {modifier_name} (from {dependency_source_name})")
+                logger.debug(f"    ✓ Including modifier: {modifier_name} (from {dependency_source_name})")
             else:
                 logger.warning(f"    ✗ Modifier {modifier_name} not found in {dependency_source_name}")
 
@@ -193,7 +193,7 @@ def build_dependency_result(
             result["custom_types"].append(type_code)
             result["total_lines"] += type_code.count("\n") + 1
             used_custom_types.add(type_name)
-            logger.info(f"    ✓ Including custom type: {type_name} (from {dependency_source_name})")
+            logger.debug(f"    ✓ Including custom type: {type_name} (from {dependency_source_name})")
 
     # Collect library names from library calls for using statement filtering
     referenced_library_names = set()
@@ -212,7 +212,7 @@ def build_dependency_result(
                 if match:
                     lib_name = match.group(1)
                     referenced_library_names.add(lib_name)
-                    logger.info(f"    ✓ Found library {lib_name} for custom type {type_name} via using statement")
+                    logger.debug(f"    ✓ Found library {lib_name} for custom type {type_name} via using statement")
 
     # Add using statements related to types or libraries referenced in the function
     for using_stmt in dependency_source.get("using_statements", []):
@@ -232,7 +232,7 @@ def build_dependency_result(
         if should_include:
             result["using_statements"].append(using_stmt)
             result["total_lines"] += 1
-            logger.info(f"    ✓ Including using statement: {using_stmt}")
+            logger.debug(f"    ✓ Including using statement: {using_stmt}")
 
     # Add internal functions that are called - WITH RECURSIVE EXTRACTION
     # PRIORITY: Search in main contract first, then in parent/other contracts
@@ -243,7 +243,7 @@ def build_dependency_result(
     # Get main contract name for prioritization
     main_contract = target_function.get("contract_name")
 
-    logger.info(f"  - Initial internal calls found: {internal_calls_to_process}")
+    logger.debug(f"  - Initial internal calls found: {internal_calls_to_process}")
     if main_contract:
         logger.debug(f"  - Will prioritize functions from main contract: {main_contract}")
 
@@ -263,7 +263,7 @@ def build_dependency_result(
             for func_data in dependency_source.get("internal_functions", {}).values():
                 if func_data["name"] == internal_call and func_data.get("contract_name") == main_contract:
                     func_to_use = func_data
-                    logger.info(f"    ✓ Including internal function from main contract: {internal_call}()")
+                    logger.debug(f"    ✓ Including internal function from main contract: {internal_call}()")
                     found = True
                     break
 
@@ -275,7 +275,7 @@ def build_dependency_result(
                     f"{fd.get('name')}({fd.get('contract_name', '?')})"
                     for fd in dependency_source.get("internal_functions", {}).values()
                 ]
-                logger.info(
+                logger.debug(
                     f"    🔍 Searching for '{internal_call}' in {len(available_internal)} internal functions: {available_internal[:10]}"
                 )
 
@@ -283,7 +283,7 @@ def build_dependency_result(
                 if func_data["name"] == internal_call:
                     func_to_use = func_data
                     contract_src = func_data.get("contract_name", "unknown")
-                    logger.info(f"    ✓ Including internal function from {contract_src}: {internal_call}()")
+                    logger.debug(f"    ✓ Including internal function from {contract_src}: {internal_call}()")
                     found = True
                     break
 
@@ -296,7 +296,7 @@ def build_dependency_result(
                 ):
                     if func_data.get("contract_name") == main_contract:
                         func_to_use = func_data
-                        logger.info(
+                        logger.debug(
                             f"    ✓ Including public function from main contract: {internal_call}() [overloaded: {func_data.get('signature')}]"
                         )
                         found = True
@@ -311,7 +311,7 @@ def build_dependency_result(
                 ):
                     func_to_use = func_data
                     contract_src = func_data.get("contract_name", "unknown")
-                    logger.info(
+                    logger.debug(
                         f"    ✓ Including public/external function from {contract_src}: {internal_call}() [overloaded: {func_data.get('signature')}]"
                     )
                     found = True
@@ -335,7 +335,7 @@ def build_dependency_result(
             # Check for super. calls in this function
             nested_super_calls = parser.find_super_calls(func_to_use["body"])
             if nested_super_calls:
-                logger.info(f"      → Found super. calls in {internal_call}(): {nested_super_calls}")
+                logger.debug(f"      → Found super. calls in {internal_call}(): {nested_super_calls}")
                 super_calls.extend(nested_super_calls)  # Add to the main super_calls list
 
             # Scan this function for library calls too
@@ -354,7 +354,7 @@ def build_dependency_result(
     all_funcs_cache = None
 
     if lib_calls_to_process:
-        logger.info(f"  - Library calls found: {lib_calls_to_process}")
+        logger.debug(f"  - Library calls found: {lib_calls_to_process}")
 
     while lib_calls_to_process:
         lib_call = lib_calls_to_process.pop(0)
@@ -384,14 +384,14 @@ def build_dependency_result(
                     )
                     all_code_to_scan.append(func_data["body"])
                     result["total_lines"] += func_data["line_count"]
-                    logger.info(f"    ✓ Found library function {lib_call}")
+                    logger.debug(f"    ✓ Found library function {lib_call}")
 
                     # Recursively find more library calls in this library function
                     nested_lib_calls = parser.find_library_calls(func_data["body"])
                     for nested_call in nested_lib_calls:
                         if nested_call not in processed_lib_calls:
                             lib_calls_to_process.append(nested_call)
-                            logger.info(f"      → Found nested library call: {nested_call}")
+                            logger.debug(f"      → Found nested library call: {nested_call}")
                     found = True
                     break
 
@@ -401,7 +401,7 @@ def build_dependency_result(
             if not found and fallback_source:
                 # Use cached extraction to avoid repeated expensive parsing
                 if all_funcs_cache is None:
-                    logger.info(f"    ⚠ {func_name} not in internal_functions, parsing source code (first time)...")
+                    logger.debug(f"    ⚠ {func_name} not in internal_functions, parsing source code (first time)...")
                     source_parser = SolidityCodeParser(fallback_source)
                     all_funcs_cache = source_parser.extract_functions()
                     logger.debug(f"    ✓ Cached {len(all_funcs_cache)} functions from source code")
@@ -417,14 +417,14 @@ def build_dependency_result(
                         )
                         all_code_to_scan.append(lib_func_body)
                         result["total_lines"] += func_data["line_count"]
-                        logger.info(f"    ✓ Found library function {lib_call} via full source search")
+                        logger.debug(f"    ✓ Found library function {lib_call} via full source search")
 
                         # Recursively find more library calls
                         nested_lib_calls = parser.find_library_calls(lib_func_body)
                         for nested_call in nested_lib_calls:
                             if nested_call not in processed_lib_calls:
                                 lib_calls_to_process.append(nested_call)
-                                logger.info(f"      → Found nested library call: {nested_call}")
+                                logger.debug(f"      → Found nested library call: {nested_call}")
                         found = True
                         break
 
@@ -437,12 +437,12 @@ def build_dependency_result(
             library_code = dependency_source["libraries"][lib_name]
             result["libraries"].append(library_code)
             result["total_lines"] += library_code.count("\n") + 1
-            logger.info(f"    ✓ Including full library: {lib_name} (from {dependency_source_name})")
+            logger.debug(f"    ✓ Including full library: {lib_name} (from {dependency_source_name})")
 
     # Debug: Show all available constants (will be extracted after parent function processing)
     all_constants = list(dependency_source.get("constants", {}).keys())
     if all_constants:
-        logger.info(
+        logger.debug(
             f"  - Available constants in {dependency_source_name}: {', '.join(all_constants[:10])}{' ...' if len(all_constants) > 10 else ''}"
         )
 
@@ -451,21 +451,21 @@ def build_dependency_result(
     if super_calls and extracted_code.get("source_code"):
         # Deduplicate super calls
         super_calls = list(set(super_calls))
-        logger.info("\n🔗 INHERITANCE CHAIN FOLLOWING")
-        logger.info(f"   Found {len(super_calls)} unique super. call(s): {', '.join(super_calls)}")
+        logger.debug("\n🔗 INHERITANCE CHAIN FOLLOWING")
+        logger.debug(f"   Found {len(super_calls)} unique super. call(s): {', '.join(super_calls)}")
 
         # Create a full parser to get inheritance info
         full_parser = SolidityCodeParser(extracted_code["source_code"])
         inheritance_chain = full_parser.extract_inheritance_chain()
 
         if inheritance_chain:
-            logger.info("   Extracted inheritance relationships:")
+            logger.debug("   Extracted inheritance relationships:")
             for contract, parents in inheritance_chain.items():
-                logger.info(f"      {contract} → {', '.join(parents)}")
+                logger.debug(f"      {contract} → {', '.join(parents)}")
 
             # For each super call, search in all parent contracts
             for super_func_name in super_calls:
-                logger.info(f"\n   Searching for super.{super_func_name}() in parent contracts...")
+                logger.debug(f"\n   Searching for super.{super_func_name}() in parent contracts...")
                 found = False
                 # Search through all contracts that have parents
                 for contract_name, parents in inheritance_chain.items():
@@ -482,7 +482,7 @@ def build_dependency_result(
                             )
                             all_code_to_scan.append(parent_func["body"])  # Scan parent functions for constants too
                             result["total_lines"] += parent_func["line_count"]
-                            logger.info(
+                            logger.debug(
                                 f"      ✓ Found in {parent_name}.{super_func_name}() ({parent_func['line_count']} lines)"
                             )
 
@@ -494,18 +494,18 @@ def build_dependency_result(
                                     and nested_call not in internal_calls_to_process
                                 ):
                                     internal_calls_to_process.append(nested_call)
-                                    logger.info(f"         → Found internal call in parent: {nested_call}()")
+                                    logger.debug(f"         → Found internal call in parent: {nested_call}()")
 
                             # Scan for library calls in parent function
                             parent_lib_calls = parser.find_library_calls(parent_func["body"])
                             if parent_lib_calls:
-                                logger.info(f"         → Found library calls in parent: {parent_lib_calls}")
+                                logger.debug(f"         → Found library calls in parent: {parent_lib_calls}")
                                 library_calls.extend(parent_lib_calls)
 
                             # Scan for nested super calls in parent function
                             parent_super_calls = parser.find_super_calls(parent_func["body"])
                             if parent_super_calls:
-                                logger.info(f"         → Found nested super. calls in parent: {parent_super_calls}")
+                                logger.debug(f"         → Found nested super. calls in parent: {parent_super_calls}")
                                 # Add to super_calls list to be processed in the outer loop
                                 for nested_super in parent_super_calls:
                                     if nested_super not in super_calls:
@@ -527,8 +527,8 @@ def build_dependency_result(
     # Process any internal calls discovered from parent functions
     # (parent functions are extracted above, so any new internal calls need to be processed now)
     if internal_calls_to_process:
-        logger.info("\n🔗 PROCESSING INTERNAL CALLS FROM PARENT FUNCTIONS")
-        logger.info(f"   Found {len(internal_calls_to_process)} internal call(s) to process from parent functions")
+        logger.debug("\n🔗 PROCESSING INTERNAL CALLS FROM PARENT FUNCTIONS")
+        logger.debug(f"   Found {len(internal_calls_to_process)} internal call(s) to process from parent functions")
 
         while internal_calls_to_process:
             internal_call = internal_calls_to_process.pop(0)
@@ -547,7 +547,7 @@ def build_dependency_result(
                 for func_data in dependency_source.get("internal_functions", {}).values():
                     if func_data["name"] == internal_call and func_data.get("contract_name") == main_contract:
                         func_to_use = func_data
-                        logger.info(f"    ✓ Including internal function from main contract: {internal_call}()")
+                        logger.debug(f"    ✓ Including internal function from main contract: {internal_call}()")
                         found = True
                         break
 
@@ -557,7 +557,7 @@ def build_dependency_result(
                     if func_data["name"] == internal_call:
                         func_to_use = func_data
                         contract_src = func_data.get("contract_name", "unknown")
-                        logger.info(f"    ✓ Including internal function from {contract_src}: {internal_call}()")
+                        logger.debug(f"    ✓ Including internal function from {contract_src}: {internal_call}()")
                         found = True
                         break
 
@@ -570,7 +570,7 @@ def build_dependency_result(
                     ):
                         if func_data.get("contract_name") == main_contract:
                             func_to_use = func_data
-                            logger.info(
+                            logger.debug(
                                 f"    ✓ Including public function from main contract: {internal_call}() [overloaded: {func_data.get('signature')}]"
                             )
                             found = True
@@ -585,7 +585,7 @@ def build_dependency_result(
                     ):
                         func_to_use = func_data
                         contract_src = func_data.get("contract_name", "unknown")
-                        logger.info(
+                        logger.debug(
                             f"    ✓ Including public/external function from {contract_src}: {internal_call}() [overloaded: {func_data.get('signature')}]"
                         )
                         found = True
@@ -609,7 +609,7 @@ def build_dependency_result(
                 # Check for super. calls in this function
                 nested_super_calls = parser.find_super_calls(func_to_use["body"])
                 if nested_super_calls:
-                    logger.info(f"      → Found super. calls in {internal_call}(): {nested_super_calls}")
+                    logger.debug(f"      → Found super. calls in {internal_call}(): {nested_super_calls}")
                     # Note: We won't process these super calls since parent extraction is already done
                     # This is a limitation - nested super calls from functions discovered via parent functions won't be followed
 
@@ -627,8 +627,8 @@ def build_dependency_result(
 
     # Process any new library calls discovered from parent functions or their internal calls
     if lib_calls_to_process:
-        logger.info("\n🔗 PROCESSING LIBRARY CALLS FROM PARENT FUNCTIONS")
-        logger.info(f"   Found {len(lib_calls_to_process)} library call(s) to process")
+        logger.debug("\n🔗 PROCESSING LIBRARY CALLS FROM PARENT FUNCTIONS")
+        logger.debug(f"   Found {len(lib_calls_to_process)} library call(s) to process")
 
         while lib_calls_to_process:
             lib_call = lib_calls_to_process.pop(0)
@@ -658,14 +658,14 @@ def build_dependency_result(
                         )
                         all_code_to_scan.append(func_data["body"])
                         result["total_lines"] += func_data["line_count"]
-                        logger.info(f"    ✓ Found library function {lib_call}")
+                        logger.debug(f"    ✓ Found library function {lib_call}")
 
                         # Recursively find more library calls in this library function
                         nested_lib_calls = parser.find_library_calls(func_data["body"])
                         for nested_call in nested_lib_calls:
                             if nested_call not in processed_lib_calls:
                                 lib_calls_to_process.append(nested_call)
-                                logger.info(f"      → Found nested library call: {nested_call}")
+                                logger.debug(f"      → Found nested library call: {nested_call}")
                         found = True
                         break
 
@@ -703,7 +703,7 @@ def build_dependency_result(
                         processed_constants.add(const_name)
 
         if constants_found:
-            logger.info(f"  - Constants extracted (including from parent functions): {', '.join(constants_found)}")
+            logger.debug(f"  - Constants extracted (including from parent functions): {', '.join(constants_found)}")
 
     # Check if we need to truncate
     if result["total_lines"] > max_lines:

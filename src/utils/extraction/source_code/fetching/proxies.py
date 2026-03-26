@@ -53,7 +53,7 @@ class SourceCodeFetchingProxyMixin:
                         if not storage_hex.startswith("0x"):
                             storage_hex = "0x" + storage_hex
 
-                        logger.info(f"  RPC storage slot result: {storage_hex}")
+                        logger.debug(f"  RPC storage slot result: {storage_hex}")
 
                         # Check if non-zero
                         if storage_hex != "0x" + "0" * 64 and int(storage_hex, 16) != 0:
@@ -63,13 +63,13 @@ class SourceCodeFetchingProxyMixin:
                                 logger.info(f"Detected EIP-1967 proxy via RPC, implementation: {impl_address}")
                                 return impl_address
                             else:
-                                logger.info("  RPC storage slot is empty (all zeros)")
+                                logger.debug("  RPC storage slot is empty (all zeros)")
                         else:
-                            logger.info("  RPC storage slot is empty or all zeros")
+                            logger.debug("  RPC storage slot is empty or all zeros")
                     else:
-                        logger.info("  Could not connect to RPC endpoint")
+                        logger.warning("  Could not connect to RPC endpoint")
                 except Exception as e:
-                    logger.info(f"  Error reading storage via RPC: {e}")
+                    logger.warning(f"  Error reading storage via RPC: {e}")
 
             # Try Etherscan and Blockscout APIs as fallback
             for use_blockscout in [False, True]:
@@ -114,13 +114,13 @@ class SourceCodeFetchingProxyMixin:
 
                     # Check for API errors first
                     if "error" in data or data.get("status") == "0" or data.get("message") == "NOTOK":
-                        logger.info(f"  {api_name} API error: {data.get('message', 'unknown error')}")
+                        logger.warning(f"  {api_name} API error: {data.get('message', 'unknown error')}")
                         # Continue to next detection method
                         continue
                     elif data.get("result") and data["result"] != "0x" + "0" * 64:
                         # Ensure result is valid hex before extracting address
                         result = data["result"]
-                        logger.info(f"  {api_name} storage slot result: {result}")
+                        logger.debug(f"  {api_name} storage slot result: {result}")
                         if result.startswith("0x") and len(result) == 66:  # 0x + 64 hex chars
                             # Extract address from storage slot (last 20 bytes)
                             impl_address = "0x" + result[-40:]
@@ -128,13 +128,13 @@ class SourceCodeFetchingProxyMixin:
                                 logger.info(f"Detected EIP-1967 proxy, implementation: {impl_address}")
                                 return impl_address
                             else:
-                                logger.info(f"  {api_name} storage slot is empty (all zeros)")
+                                logger.debug(f"  {api_name} storage slot is empty (all zeros)")
                         else:
-                            logger.info(f"  {api_name} storage slot has invalid format (length: {len(result)})")
+                            logger.debug(f"  {api_name} storage slot has invalid format (length: {len(result)})")
                     else:
-                        logger.info(f"  {api_name} storage slot is empty or all zeros")
+                        logger.debug(f"  {api_name} storage slot is empty or all zeros")
                 except Exception as e:
-                    logger.info(f"  Error checking proxy via {api_name}: {e}")
+                    logger.warning(f"  Error checking proxy via {api_name}: {e}")
                     continue
 
             # Try Etherscan's built-in proxy detection
@@ -185,7 +185,7 @@ class SourceCodeFetchingProxyMixin:
                                 )
                                 return impl
                 except Exception as e:
-                    logger.info(f"  Blockscout smart-contracts API failed: {e}")
+                    logger.warning(f"  Blockscout smart-contracts API failed: {e}")
 
             logger.info(f"No proxy implementation detected for {contract_address}")
             return None
@@ -272,14 +272,14 @@ class SourceCodeFetchingProxyMixin:
 
             base_url = f"https://api.etherscan.io/v2/api?chainid={chain_id}"
             logger.info("Testing Diamond proxy using facets() function")
-            logger.info(f"Call data: {facets_selector}")
+            logger.debug(f"Call data: {facets_selector}")
 
             def _log_call_payload(label: str, payload: object) -> None:
                 payload_str = str(payload)
                 if len(payload_str) > 100:
-                    logger.info(f"{label} response: {payload_str[:100]}... (truncated, {len(payload_str)} chars total)")
+                    logger.debug(f"{label} response: {payload_str[:100]}... (truncated, {len(payload_str)} chars total)")
                 else:
-                    logger.info(f"{label} response: {payload_str}")
+                    logger.debug(f"{label} response: {payload_str}")
 
             def _explorer_eth_call(call_data: str, label: str) -> tuple[str | None, str | None]:
                 if is_etherscan_proxy_eth_call_unsupported(chain_id):
@@ -318,7 +318,7 @@ class SourceCodeFetchingProxyMixin:
             def _rpc_eth_call_logged(call_data: str, label: str) -> tuple[str | None, str | None]:
                 result, error_msg, rpc_url = rpc_eth_call(chain_id, contract_address, call_data, timeout=10)
                 if error_msg:
-                    logger.info(f"{label} RPC fallback ({rpc_url or 'no rpc url'}): {error_msg}")
+                    logger.warning(f"{label} RPC fallback ({rpc_url or 'no rpc url'}): {error_msg}")
                     return None, error_msg
                 _log_call_payload(f"{label} RPC fallback via {rpc_url}", result)
                 return result, None
@@ -326,7 +326,7 @@ class SourceCodeFetchingProxyMixin:
             result, error_msg = _explorer_eth_call(facets_selector, "facets()")
             use_rpc_for_followups = False
             if error_msg:
-                logger.info(f"facets() call failed: {error_msg}")
+                logger.warning(f"facets() call failed: {error_msg}")
                 logger.info("Trying direct RPC fallback...")
                 result, error_msg = _rpc_eth_call_logged(facets_selector, "facets()")
                 if error_msg:
@@ -355,7 +355,7 @@ class SourceCodeFetchingProxyMixin:
 
                 # Parse array offset and length
                 array_offset = int(hex_data[0:64], 16)
-                logger.info(f"Array offset: {array_offset}")
+                logger.debug(f"Array offset: {array_offset}")
 
                 # The actual array data starts at array_offset * 2 (hex chars)
                 array_start = array_offset * 2
@@ -364,10 +364,10 @@ class SourceCodeFetchingProxyMixin:
                     return self._detect_diamond_via_sourcecode(contract_address, chain_id)
 
                 array_length = int(hex_data[array_start : array_start + 64], 16)
-                logger.info(f"Number of facets: {array_length}")
+                logger.debug(f"Number of facets: {array_length}")
 
                 if array_length == 0:
-                    logger.info("No facets found in response")
+                    logger.debug("No facets found in response")
                     return {}
 
                 # Now that we confirmed it's a Diamond, map each selector to its facet
@@ -395,7 +395,7 @@ class SourceCodeFetchingProxyMixin:
                         # Check it's not zero address
                         if facet_address != "0x" + "0" * 40:
                             selector_to_facet[selector] = facet_address
-                            logger.info(f"  Selector {selector} -> Facet {facet_address}")
+                            logger.debug(f"  Selector {selector} -> Facet {facet_address}")
                     else:
                         logger.warning(f"  Failed to get facet for selector {selector}: {facet_error or 'no result'}")
 
@@ -415,5 +415,5 @@ class SourceCodeFetchingProxyMixin:
                 return {"_is_diamond_but_unmapped": True}
 
         except Exception as e:
-            logger.debug(f"Diamond proxy detection failed: {e}")
+            logger.warning(f"Diamond proxy detection failed: {e}")
             return {}

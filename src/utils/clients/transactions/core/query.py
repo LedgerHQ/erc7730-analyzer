@@ -274,7 +274,7 @@ class TransactionFetcherCoreQueryMixin:
                             for sel, tx_list in partial_results.items():
                                 logger.info(f"Selector {sel}: found {len(tx_list)}/{per_selector} transactions")
                             return partial_results
-                        logger.warning(f"Attempt {attempt + 1} failed, retrying... ({e})")
+                        logger.info(f"Attempt {attempt + 1} failed, retrying... ({e})")
                         time.sleep(0.7 * (attempt + 1))
 
                 if txs is None:

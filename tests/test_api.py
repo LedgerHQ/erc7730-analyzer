@@ -3,12 +3,20 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import sys
+from typing import TYPE_CHECKING
 from unittest.mock import patch
 
-import httpx
 import pytest
 
 import service.app as app_mod
+import service.client as client_mod
+
+if TYPE_CHECKING:
+    from pathlib import Path
+
+    import httpx
 
 
 async def _mock_execute(*, job, semaphore, **kwargs):
@@ -30,6 +38,33 @@ async def _blocking_execute(*, job, semaphore, **kwargs):
         job.set_status("running", "Holding semaphore")
         job.append_log("live log line")
         await asyncio.sleep(60)
+
+
+def _run_client(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, run_analysis):
+    """Invoke the CLI with a relative output dir like CI does."""
+    descriptor = tmp_path / "descriptor.json"
+    descriptor.write_text("{}")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(client_mod, "run_analysis", run_analysis)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "erc7730-client",
+            "--no-auth",
+            "--service-url",
+            "http://service.test",
+            "--descriptor",
+            str(descriptor),
+            "--output-dir",
+            "output",
+        ],
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        client_mod.main()
+
+    return exc_info.value.code, tmp_path / "output"
 
 
 class TestHealth:
@@ -126,3 +161,68 @@ class TestFullPollingFlow:
             assert body["has_criticals"] is False
             assert "summary_report" in body
             assert "results_json" in body
+
+
+class TestClientCli:
+    def test_creates_output_dir_and_status_artifact_for_criticals(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+        def _mock_run_analysis(**kwargs):
+            return {
+                "status": "succeeded",
+                "protocol": "demo-protocol",
+                "has_criticals": True,
+                "summary_report": "# Summary\n",
+                "criticals_report": "# Criticals\n",
+                "results_json": {},
+            }
+
+        exit_code, output_dir = _run_client(monkeypatch, tmp_path, _mock_run_analysis)
+
+        assert exit_code == 1
+        assert output_dir.is_dir()
+        assert (output_dir / "FULL_REPORT_demo-protocol.md").exists()
+        assert (output_dir / "CRITICALS_demo-protocol.md").exists()
+        assert (output_dir / "results_demo-protocol.json").exists()
+
+        status = json.loads((output_dir / "analysis_status.json").read_text())
+        assert status == {
+            "status": "succeeded",
+            "protocol": "demo-protocol",
+            "has_criticals": True,
+        }
+
+    def test_creates_output_dir_for_failed_status(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+        def _mock_run_analysis(**kwargs):
+            return {
+                "status": "failed",
+                "error": "remote analysis failed",
+            }
+
+        exit_code, output_dir = _run_client(monkeypatch, tmp_path, _mock_run_analysis)
+
+        assert exit_code == 1
+        assert output_dir.is_dir()
+
+        status = json.loads((output_dir / "analysis_status.json").read_text())
+        assert status == {
+            "status": "failed",
+            "protocol": "unknown",
+            "has_criticals": False,
+            "error": "remote analysis failed",
+        }
+
+    def test_creates_output_dir_when_request_raises(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+        def _mock_run_analysis(**kwargs):
+            raise RuntimeError("connection dropped")
+
+        exit_code, output_dir = _run_client(monkeypatch, tmp_path, _mock_run_analysis)
+
+        assert exit_code == 1
+        assert output_dir.is_dir()
+
+        status = json.loads((output_dir / "analysis_status.json").read_text())
+        assert status == {
+            "status": "failed",
+            "protocol": "unknown",
+            "has_criticals": False,
+            "error": "RuntimeError: connection dropped",
+        }

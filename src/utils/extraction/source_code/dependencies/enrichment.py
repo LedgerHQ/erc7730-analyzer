@@ -291,16 +291,17 @@ def build_dependency_result(
         # NOTE: Compare signature (not just name) to allow overloaded functions with same name but different params
         if not found and main_contract:
             for func_data in dependency_source.get("functions", {}).values():
-                if func_data["name"] == internal_call and func_data.get("signature") != target_function.get(
-                    "signature"
+                if (
+                    func_data["name"] == internal_call
+                    and func_data.get("signature") != target_function.get("signature")
+                    and func_data.get("contract_name") == main_contract
                 ):
-                    if func_data.get("contract_name") == main_contract:
-                        func_to_use = func_data
-                        logger.debug(
-                            f"    ✓ Including public function from main contract: {internal_call}() [overloaded: {func_data.get('signature')}]"
-                        )
-                        found = True
-                        break
+                    func_to_use = func_data
+                    logger.debug(
+                        f"    ✓ Including public function from main contract: {internal_call}() [overloaded: {func_data.get('signature')}]"
+                    )
+                    found = True
+                    break
 
         # PRIORITY 4: If not found, check in all other public/external functions (use dependency_source)
         # NOTE: Compare signature (not just name) to allow overloaded functions with same name but different params
@@ -409,7 +410,7 @@ def build_dependency_result(
                     logger.debug(f"    ⚠ {func_name} not in internal_functions, using cached source code...")
 
                 # Look for the function by name in cached results
-                for func_sig, func_data in all_funcs_cache.items():
+                for _func_sig, func_data in all_funcs_cache.items():
                     if func_data["name"] == func_name:
                         lib_func_body = func_data["body"]
                         result["internal_functions"].append(
@@ -468,7 +469,7 @@ def build_dependency_result(
                 logger.debug(f"\n   Searching for super.{super_func_name}() in parent contracts...")
                 found = False
                 # Search through all contracts that have parents
-                for contract_name, parents in inheritance_chain.items():
+                for _contract_name, parents in inheritance_chain.items():
                     for parent_name in parents:
                         logger.debug(f"      Checking {parent_name}...")
                         parent_func = full_parser.find_function_in_parent(super_func_name, parent_name)
@@ -565,16 +566,17 @@ def build_dependency_result(
             # NOTE: Compare signature (not just name) to allow overloaded functions with same name but different params
             if not found and main_contract:
                 for func_data in dependency_source.get("functions", {}).values():
-                    if func_data["name"] == internal_call and func_data.get("signature") != target_function.get(
-                        "signature"
+                    if (
+                        func_data["name"] == internal_call
+                        and func_data.get("signature") != target_function.get("signature")
+                        and func_data.get("contract_name") == main_contract
                     ):
-                        if func_data.get("contract_name") == main_contract:
-                            func_to_use = func_data
-                            logger.debug(
-                                f"    ✓ Including public function from main contract: {internal_call}() [overloaded: {func_data.get('signature')}]"
-                            )
-                            found = True
-                            break
+                        func_to_use = func_data
+                        logger.debug(
+                            f"    ✓ Including public function from main contract: {internal_call}() [overloaded: {func_data.get('signature')}]"
+                        )
+                        found = True
+                        break
 
             # PRIORITY 4: If not found, check in all other public/external functions
             # NOTE: Compare signature (not just name) to allow overloaded functions with same name but different params
@@ -694,13 +696,14 @@ def build_dependency_result(
         while constants_to_check:
             const_decl = constants_to_check.pop(0)
             for const_name, const_decl_check in dependency_source.get("constants", {}).items():
-                if const_name not in processed_constants:
-                    if re.search(r"\b" + re.escape(const_name) + r"\b", const_decl):
-                        result["constants"].append(const_decl_check)
-                        result["total_lines"] += 1
-                        constants_found.append(const_name)
-                        constants_to_check.append(const_decl_check)
-                        processed_constants.add(const_name)
+                if const_name not in processed_constants and re.search(
+                    r"\b" + re.escape(const_name) + r"\b", const_decl
+                ):
+                    result["constants"].append(const_decl_check)
+                    result["total_lines"] += 1
+                    constants_found.append(const_name)
+                    constants_to_check.append(const_decl_check)
+                    processed_constants.add(const_name)
 
         if constants_found:
             logger.debug(f"  - Constants extracted (including from parent functions): {', '.join(constants_found)}")

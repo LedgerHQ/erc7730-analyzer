@@ -196,8 +196,8 @@ class AnalyzerPipelinePreparationMixin:
         abi_resolution: dict[str, Any],
         selector_deployment: dict[str, Any],
         decoded_txs: list[dict[str, Any]],
-        function_source: dict[str, Any] = None,
-        source_resolution: dict[str, Any] = None,
+        function_source: dict[str, Any] | None = None,
+        source_resolution: dict[str, Any] | None = None,
         synthetic_report_data: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Build one prepared selector entry from already collected inputs."""
@@ -517,7 +517,7 @@ class AnalyzerPipelinePreparationMixin:
                 logger.debug(
                     f"  Phase 1: Searching for exact selector match across all {len(self.extracted_codes)} contracts..."
                 )
-                for deployment_key, extracted_code in self.extracted_codes.items():
+                for _deployment_key, extracted_code in self.extracted_codes.items():
                     if not extracted_code["source_code"]:
                         continue
 
@@ -587,15 +587,13 @@ class AnalyzerPipelinePreparationMixin:
                     # Get extracted_code from a chain where the selector IS mapped
                     # This is critical for Diamond proxies - the selector may only exist on certain chains
                     first_extracted_code = None
-                    first_deployment_key = None
 
                     # First, try to find a chain where this selector has a facet mapping
                     if selector in self.selector_sources:
                         mapped_chains = [s.get("chain_id") for s in self.selector_sources[selector]]
-                        for deployment_key, extracted_code in self.extracted_codes.items():
+                        for _deployment_key, extracted_code in self.extracted_codes.items():
                             if extracted_code["source_code"] and extracted_code.get("chain_id") in mapped_chains:
                                 first_extracted_code = extracted_code
-                                first_deployment_key = deployment_key
                                 logger.debug(
                                     f"  Using extracted_code from chain {extracted_code.get('chain_id')} where selector is mapped"
                                 )
@@ -603,10 +601,9 @@ class AnalyzerPipelinePreparationMixin:
 
                     # Fallback: use any contract with source code
                     if not first_extracted_code:
-                        for deployment_key, extracted_code in self.extracted_codes.items():
+                        for _deployment_key, extracted_code in self.extracted_codes.items():
                             if extracted_code["source_code"]:
                                 first_extracted_code = extracted_code
-                                first_deployment_key = deployment_key
                                 break
 
                     if first_extracted_code:
@@ -675,6 +672,7 @@ class AnalyzerPipelinePreparationMixin:
         """Build audit tasks from a frozen benchmark-input snapshot."""
         selectors = context["selectors"]
         deployments = context["deployments"]
+        erc7730_data = context["erc7730_data"]
         prepared_inputs_data = context.get("prepared_inputs_data") or {}
         default_deployment = (
             deployments[0]
@@ -709,9 +707,9 @@ class AnalyzerPipelinePreparationMixin:
                 tx_by_selector = contract_entry.get("transactions") or {}
 
                 selector_keys = (
-                    {str(key).lower() for key in selector_meta.keys()}
-                    | {str(key).lower() for key in source_by_selector.keys()}
-                    | {str(key).lower() for key in tx_by_selector.keys()}
+                    {str(key).lower() for key in selector_meta}
+                    | {str(key).lower() for key in source_by_selector}
+                    | {str(key).lower() for key in tx_by_selector}
                 )
 
                 for selector_key in selector_keys:

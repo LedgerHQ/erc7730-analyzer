@@ -42,7 +42,7 @@ def _build_user_content_with_screenshots(
 
     for screenshot_path in all_paths:
         path = Path(screenshot_path)
-        if not path.exists() or not path.suffix.lower() == ".png":
+        if not path.exists() or path.suffix.lower() != ".png":
             continue
         try:
             b64 = base64.b64encode(path.read_bytes()).decode("ascii")
@@ -65,17 +65,17 @@ def prepare_audit_task(
     decoded_transactions: list[dict],
     erc7730_format: dict,
     function_signature: str,
-    source_code: dict = None,
+    source_code: dict | None = None,
     use_smart_referencing: bool = True,
-    erc4626_context: dict = None,
-    erc20_context: dict = None,
-    protocol_name: str = None,
-    descriptor_context: dict = None,
-    abi_resolution: dict = None,
-    source_resolution: dict = None,
+    erc4626_context: dict | None = None,
+    erc20_context: dict | None = None,
+    protocol_name: str | None = None,
+    descriptor_context: dict | None = None,
+    abi_resolution: dict | None = None,
+    source_resolution: dict | None = None,
     analysis_mode: str = "single",
-    tool_context: dict = None,
-    screenshot_data: list[dict] = None,
+    tool_context: dict | None = None,
+    screenshot_data: list[dict] | None = None,
     llm_model: str = DEFAULT_MODEL,
     llm_reasoning_effort: str = DEFAULT_REASONING_EFFORT,
 ) -> AuditTask:

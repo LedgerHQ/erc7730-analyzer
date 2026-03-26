@@ -297,7 +297,6 @@ class SolidityCodeParser:
             function_name = match.group(1)
 
             # Find matching closing parenthesis by balancing
-            paren_start = match.end() - 1  # Position of opening (
             paren_count = 1
             i = match.end()
             params_end = None
@@ -438,11 +437,10 @@ class SolidityCodeParser:
                     if open_braces == 0:
                         contract_end = i
                         # Check if our position is within this contract
-                        if contract_start < position <= contract_end:
+                        if contract_start < position <= contract_end and contract_start > last_contract_pos:
                             # This is the innermost contract containing our position
-                            if contract_start > last_contract_pos:
-                                last_contract = match.group(1)
-                                last_contract_pos = contract_start
+                            last_contract = match.group(1)
+                            last_contract_pos = contract_start
                         break
                 i += 1
 

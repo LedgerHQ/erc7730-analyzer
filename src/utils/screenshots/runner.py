@@ -12,6 +12,7 @@ import sys
 import tempfile
 import threading
 import time
+from contextlib import suppress
 from pathlib import Path
 from typing import Any, TypedDict
 
@@ -307,10 +308,8 @@ class ScreenshotRunner:
             return
         try:
             if proc.stderr is not None:
-                try:
+                with suppress(Exception):
                     proc.stderr.close()
-                except Exception:
-                    pass
             if proc.poll() is not None:
                 return
             proc.terminate()

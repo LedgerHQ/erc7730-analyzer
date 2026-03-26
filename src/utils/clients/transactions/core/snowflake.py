@@ -4,6 +4,7 @@ import base64
 import binascii
 import logging
 import re
+from contextlib import suppress
 from datetime import UTC, datetime
 from typing import Any
 
@@ -544,10 +545,8 @@ ORDER BY log_index ASC
         db_key = database.upper()
         conn = cache.pop(db_key, None)
         if conn is not None:
-            try:
+            with suppress(Exception):
                 conn.close()
-            except Exception:
-                pass
 
     def close_snowflake_connections(self) -> None:
         """Close all cached Snowflake connections (call at end of analysis)."""

@@ -23,3 +23,11 @@ BLOCKSCOUT_URLS = {
 }
 
 RPC_URLS = DEFAULT_RPC_URLS
+
+__all__ = [
+    "BLOCKSCOUT_URLS",
+    "RPC_URLS",
+    "logger",
+    "resolve_rpc_url",
+    "rpc_eth_call",
+]

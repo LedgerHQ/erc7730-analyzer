@@ -102,14 +102,6 @@ class AnalyzerPipelineTransactionsMixin:
             deployments_by_chain: dict[int, list[tuple[int, dict[str, Any]]]] = {}
             for deployment_index, deployment in enumerate(deployments):
                 deployments_by_chain.setdefault(int(deployment["chainId"]), []).append((deployment_index, deployment))
-
-            max_workers = max(
-                1,
-                min(
-                    len(deployments),
-                    int(getattr(self, "max_concurrent_api_calls", len(deployments)) or len(deployments)),
-                ),
-            )
             fallback_deployment_indices = set(range(len(deployments)))
 
             if self.tx_fetcher._snowflake_tx_history_enabled():

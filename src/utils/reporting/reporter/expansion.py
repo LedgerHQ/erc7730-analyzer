@@ -44,7 +44,7 @@ def _scan_string_references(
 def expand_erc7730_format_with_refs(
     selector_format: dict[str, Any],
     full_erc7730: dict[str, Any],
-    format_key: str = None,
+    format_key: str | None = None,
 ) -> dict[str, Any]:
     """
     Expand an ERC-7730 selector format with the metadata it references.

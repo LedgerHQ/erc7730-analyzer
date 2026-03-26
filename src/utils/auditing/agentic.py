@@ -13,11 +13,9 @@ import socket
 import subprocess
 import time
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any, ClassVar
 
 from eth_utils import keccak
-from openai import AsyncOpenAI
-from pydantic import BaseModel
 from web3 import Web3
 
 from ..abi import ABI
@@ -33,6 +31,10 @@ from .models import (
     ValidatorOutput,
 )
 from .rules import SCREENSHOT_INSTRUCTIONS, SYSTEM_INSTRUCTIONS
+
+if TYPE_CHECKING:
+    from openai import AsyncOpenAI
+    from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
 
@@ -378,8 +380,8 @@ class _ForkHandle:
 
 
 class AnvilForkManager:
-    _forks: dict[tuple[int, int | None], _ForkHandle] = {}
-    _cleanup_registered = False
+    _forks: ClassVar[dict[tuple[int, int | None], _ForkHandle]] = {}
+    _cleanup_registered: ClassVar[bool] = False
 
     @classmethod
     def _register_cleanup(cls) -> None:
@@ -440,7 +442,7 @@ class AnvilForkManager:
         while time.time() < deadline:
             try:
                 if web3.is_connected():
-                    web3.client_version
+                    _ = web3.client_version
                     return True
             except Exception:
                 pass
@@ -519,7 +521,7 @@ class AnvilForkManager:
             )
             web3 = Web3(Web3.HTTPProvider(rpc_url, request_kwargs={"timeout": 15}))
             if not web3.is_connected():
-                raise RuntimeError(f"Could not connect to RPC for chain {chain_id}: {rpc_url}")
+                raise RuntimeError(f"Could not connect to RPC for chain {chain_id}: {rpc_url}") from exc
             handle = _ForkHandle(
                 chain_id=chain_id,
                 block_number=block_number,

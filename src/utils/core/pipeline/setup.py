@@ -5,8 +5,6 @@ import logging
 from pathlib import Path
 from typing import Any
 
-import requests
-
 from ...abi import ABI, fetch_contract_abi, fetch_single_contract_abi
 from ...abi.merger import ABIMerger, merge_abis_from_deployments
 
@@ -104,27 +102,9 @@ class AnalyzerPipelineSetupMixin:
         abi = erc7730_data.get("context", {}).get("contract", {}).get("abi")
 
         # Check if ABI is a URL string
-        if abi and isinstance(abi, str):
-            logger.info(f"ABI is a URL, fetching from: {abi}")
-            try:
-                response = requests.get(abi, timeout=10)
-                response.raise_for_status()
-                data = response.json()
-
-                # Handle Etherscan API response format vs. direct JSON
-                if isinstance(data, dict) and "result" in data:
-                    if isinstance(data["result"], str):
-                        abi = json.loads(data["result"])
-                    else:
-                        abi = data["result"]
-                else:
-                    abi = data
-
-                logger.info(f"Successfully fetched ABI from URL ({len(abi)} entries)")
-            except Exception as e:
-                logger.warning(f"Failed to fetch ABI from URL: {e}")
-                logger.info("Falling back to next ABI source...")
-                abi = None
+        # We used to inline it but now prefer to ignore as
+        # we query the abi and the field is deprecated since draft-v2
+        abi = None if abi and isinstance(abi, str) else abi
 
         # Check if we have a valid ABI from ERC-7730 file
         if abi and isinstance(abi, list) and len(abi) > 0:

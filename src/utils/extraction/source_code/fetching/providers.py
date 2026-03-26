@@ -223,7 +223,7 @@ class SourceCodeFetchingProviderMixin:
                 logger.info(f"Fetching from Core DAO API: {url}")
                 try:
                     response = requests.get(url, params=params, timeout=10)
-                    logger.info(f"Core DAO API response status: {response.status_code}")
+                    logger.debug(f"Core DAO API response status: {response.status_code}")
 
                     if response.status_code == 401:
                         logger.error("Core DAO API authentication failed - check API key")
@@ -231,7 +231,7 @@ class SourceCodeFetchingProviderMixin:
 
                     response.raise_for_status()
                     data = response.json()
-                    logger.info(
+                    logger.debug(
                         f"Core DAO API response keys: {list(data.keys()) if isinstance(data, dict) else 'not a dict'}"
                     )
 
@@ -268,11 +268,11 @@ class SourceCodeFetchingProviderMixin:
                                     logger.info(f"Fetched source code from Core DAO API ({len(source_code)} chars)")
                                     return source_code
                             else:
-                                logger.info("Core DAO API returned empty SourceCode")
+                                logger.debug("Core DAO API returned empty SourceCode")
                         else:
-                            logger.info("Core DAO API result is not a list or is empty")
+                            logger.debug("Core DAO API result is not a list or is empty")
                     else:
-                        logger.info(
+                        logger.debug(
                             f"Core DAO API response: status={data.get('status')}, message={data.get('message')}"
                         )
                     return None

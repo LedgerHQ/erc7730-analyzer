@@ -293,7 +293,7 @@ class AnalyzerDetectionMixin:
                     logger.info(f"   ✓ ERC4626 asset() returned: {asset_address}")
                     return asset_address
                 else:
-                    logger.warning("   ⚠ asset() returned zero address")
+                    logger.info("   ⚠ asset() returned zero address")
             else:
                 logger.warning("   ⚠ asset() call failed or returned empty result")
 

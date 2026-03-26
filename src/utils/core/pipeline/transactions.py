@@ -34,7 +34,7 @@ class AnalyzerPipelineTransactionsMixin:
                 function_data = self.get_function_abi_by_selector(selector)
             if function_data and function_data.get("stateMutability") == "payable":
                 payable_selectors.add(selector.lower())
-                logger.info(f"Function {function_data['name']} ({selector}) is payable")
+                logger.debug(f"Function {function_data['name']} ({selector}) is payable")
 
         if payable_selectors:
             logger.info(f"Found {len(payable_selectors)} payable function(s)")
@@ -45,7 +45,7 @@ class AnalyzerPipelineTransactionsMixin:
         logger.info(f"{'=' * 60}")
         skipped_selectors = [s for s in selectors if s.lower() not in abi_backed_selector_set]
         if skipped_selectors:
-            logger.error(
+            logger.warning(
                 "Skipping transaction fetch for %d selector(s) not found in merged ABI: %s",
                 len(skipped_selectors),
                 skipped_selectors,
@@ -85,13 +85,13 @@ class AnalyzerPipelineTransactionsMixin:
                 selectors_remaining[selector_lower] = max(0, remaining_needed - len(to_add))
                 deployment_per_selector.setdefault(selector_lower, completed_deployment)
                 if source_label:
-                    logger.info(
+                    logger.debug(
                         f"  ✓ Aggregated {len(all_selector_txs[selector_lower])}/"
                         f"{transactions_per_selector} transaction(s) for {selector_lower} "
                         f"(added {len(to_add)} from chain {chain_id} via {source_label})"
                     )
                 else:
-                    logger.info(
+                    logger.debug(
                         f"  ✓ Aggregated {len(all_selector_txs[selector_lower])}/"
                         f"{transactions_per_selector} transaction(s) for {selector_lower} "
                         f"(added {len(to_add)} from chain {chain_id})"

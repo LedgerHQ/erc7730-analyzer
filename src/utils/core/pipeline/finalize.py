@@ -55,7 +55,7 @@ class AnalyzerPipelineFinalizeMixin:
                     logger.debug(f"\nCritical Report:\n{audit_report_critical}\n")
                     logger.debug(f"\nDetailed Report:\n{audit_report_detailed}\n")
                 else:
-                    logger.error(f"Audit failed for {selector}: {audit_result.error}")
+                    logger.warning(f"Audit failed for {selector}: {audit_result.error}")
             else:
                 logger.warning(f"No audit result found for selector {selector}")
 

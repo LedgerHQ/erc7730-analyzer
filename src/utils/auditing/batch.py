@@ -169,7 +169,7 @@ async def generate_clear_signing_audit_async(
                 if attempt == 0:
                     logger.debug(f"[SINGLE] Starting API call for selector {task.selector}")
                 else:
-                    logger.warning(f"[SINGLE] Retry {attempt}/{max_retries} for selector {task.selector}")
+                    logger.info(f"[SINGLE] Retry {attempt}/{max_retries} for selector {task.selector}")
 
                 user_payload = json.dumps(task.audit_payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
 

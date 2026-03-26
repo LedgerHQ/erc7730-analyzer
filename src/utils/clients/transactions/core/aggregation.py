@@ -280,8 +280,8 @@ class TransactionFetcherCoreAggregationMixin:
                             data.get("message") or data.get("error") or "Transaction not found or invalid response"
                         )
                         logger.warning(f"✗ Failed to fetch transaction {tx_hash}: {error_msg}")
-                        logger.info(f"Response keys: {list(data.keys() if isinstance(data, dict) else [])}")
-                        logger.info(f"Response data: {str(data)[:200]}")
+                        logger.debug(f"Response keys: {list(data.keys() if isinstance(data, dict) else [])}")
+                        logger.debug(f"Response data: {str(data)[:200]}")
                         manual_tx["mode"] = "fetch_failed"
                 except Exception as e:
                     logger.error(f"✗ Error fetching transaction {tx_hash}: {e}")

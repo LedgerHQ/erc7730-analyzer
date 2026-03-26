@@ -182,7 +182,7 @@ class AnalyzerPipelineSetupMixin:
 
         # If selector_sources is empty but we have selectors, try Diamond detection on ALL deployments
         # This handles the case where ABI came from file/URL
-        logger.info(
+        logger.debug(
             f"Diamond detection check: selector_sources={len(self.selector_sources)}, selectors={len(selectors)}, deployments={len(deployments)}, has_api_key={bool(self.etherscan_api_key)}"
         )
         if not self.selector_sources and selectors and deployments and self.etherscan_api_key:
@@ -217,7 +217,7 @@ class AnalyzerPipelineSetupMixin:
                                 merger.add_abi(facet_abi, dep_chain_id, facet_addr, source_kind="facet")
                                 success_count += 1
                                 total_functions += func_count
-                                logger.info(f"    ✓ {facet_addr[:10]}...: {func_count} functions")
+                                logger.debug(f"    ✓ {facet_addr[:10]}...: {func_count} functions")
                             else:
                                 fail_count += 1
                                 logger.warning(f"    ✗ {facet_addr[:10]}...: ABI unavailable")
@@ -302,7 +302,7 @@ class AnalyzerPipelineSetupMixin:
             len(selectors),
         )
         if descriptor_fallback_selectors:
-            logger.error(
+            logger.warning(
                 "Selectors not found in merged ABI (descriptor fallback only): %s",
                 descriptor_fallback_selectors,
             )

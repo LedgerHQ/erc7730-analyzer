@@ -95,8 +95,8 @@ class SourceCodeFetchingExtractionMixin:
         use_selector_sources = False
 
         if selector_sources and selectors:
-            logger.info(f"🔍 Building facets from selector_sources for chain {chain_id}...")
-            logger.info(f"   selector_sources has {len(selector_sources)} total mappings")
+            logger.debug(f"🔍 Building facets from selector_sources for chain {chain_id}...")
+            logger.debug(f"   selector_sources has {len(selector_sources)} total mappings")
             # Build facets mapping from selector_sources - FILTER BY CURRENT CHAIN_ID
             found_count = 0
             missing_selectors = []
@@ -125,18 +125,18 @@ class SourceCodeFetchingExtractionMixin:
                     missing_selectors.append(selector)
 
             if facets:
-                logger.info(
+                logger.debug(
                     f"Using pre-detected selector→facet mapping for chain {chain_id} ({found_count}/{len(selectors)} selectors mapped)"
                 )
                 if missing_selectors:
                     logger.debug(f"  Selectors not on this chain: {len(missing_selectors)}")
                 use_selector_sources = True
             else:
-                logger.info(f"No selector→facet mappings found for chain {chain_id}, falling back to detection")
+                logger.debug(f"No selector→facet mappings found for chain {chain_id}, falling back to detection")
 
         # Diamond proxies should be detected using the original proxy address
         if not use_selector_sources and selectors:
-            logger.info(f"Checking for Diamond proxy with {len(selectors)} selectors: {selectors[:3]}...")
+            logger.debug(f"Checking for Diamond proxy with {len(selectors)} selectors: {selectors[:3]}...")
             facets = self.detect_diamond_proxy(original_address, chain_id, selectors)
             if facets and "_is_diamond_but_unmapped" in facets:
                 # Detected as Diamond but couldn't map facets
@@ -144,14 +144,14 @@ class SourceCodeFetchingExtractionMixin:
                 # Return empty so caller can try next contract/chain
                 result["is_diamond"] = True
                 result["facets"] = {}
-                logger.info("✓ Detected Diamond proxy (but cannot map selectors to facets)")
-                logger.warning("Selectors not found on this Diamond - caller should try next contract/chain")
+                logger.debug("✓ Detected Diamond proxy (but cannot map selectors to facets)")
+                logger.debug("Selectors not found on this Diamond - caller should try next contract/chain")
                 with self._cache_lock:
                     self.code_cache[cache_key] = result
                 return result
 
         # If we have facets (from selector_sources OR from detect_diamond_proxy), extract from them
-        logger.info(
+        logger.debug(
             f"🔍 Facet check for chain {chain_id}: {len(facets)} selector→facet mappings, use_selector_sources={use_selector_sources}"
         )
         if facets and not facets.get("_is_diamond_but_unmapped"):
@@ -159,17 +159,17 @@ class SourceCodeFetchingExtractionMixin:
             result["is_diamond"] = True
             result["facets"] = facets
             unique_facet_addresses = set(facets.values())
-            logger.info(
+            logger.debug(
                 f"✓ Diamond proxy on chain {chain_id} - will extract from {len(unique_facet_addresses)} unique facets:"
             )
             for fa in list(unique_facet_addresses)[:10]:
-                logger.info(f"   - {fa}")
+                logger.debug(f"   - {fa}")
 
             # Extract source code from each unique facet IN PARALLEL for speed
             import time
             from concurrent.futures import ThreadPoolExecutor, as_completed
 
-            logger.info(f"Extracting source code from {len(unique_facet_addresses)} unique facets (parallel)...")
+            logger.debug(f"Extracting source code from {len(unique_facet_addresses)} unique facets (parallel)...")
 
             all_functions = {}
             all_custom_types = {}
@@ -203,7 +203,7 @@ class SourceCodeFetchingExtractionMixin:
 
                     if attempt < max_retries - 1:
                         wait_time = (attempt + 1) * 2  # 2s, 4s backoff
-                        logger.warning(
+                        logger.info(
                             f"  [{short_addr}] Fetch failed, retrying in {wait_time}s (attempt {attempt + 1}/{max_retries})..."
                         )
                         time.sleep(wait_time)
@@ -256,7 +256,7 @@ class SourceCodeFetchingExtractionMixin:
                 func_count = len(facet_result["functions"])
                 struct_count = len(facet_result["structs"])
                 struct_names = list(facet_result["structs"].keys())
-                logger.info(
+                logger.debug(
                     f"  [{short_addr}] ✓ {contract_name}: {func_count} functions, {struct_count} structs ({elapsed:.1f}s)"
                 )
                 if struct_count > 0:
@@ -264,7 +264,7 @@ class SourceCodeFetchingExtractionMixin:
                 return facet_addr, facet_result
 
             # Use ThreadPoolExecutor to fetch facets in parallel (max 4 concurrent)
-            logger.info(f"Starting parallel fetch for {len(unique_facet_addresses)} facets on chain {chain_id}...")
+            logger.debug(f"Starting parallel fetch for {len(unique_facet_addresses)} facets on chain {chain_id}...")
             max_workers = min(4, len(unique_facet_addresses))
             t_start = time.time()
 
@@ -313,7 +313,7 @@ class SourceCodeFetchingExtractionMixin:
             result["_per_facet_codes"] = per_facet_codes
             result["_selector_to_facet"] = {sel: addr.lower() for sel, addr in facets.items()}
 
-            logger.info(
+            logger.debug(
                 f"✓ Extracted total: {len(all_functions)} functions, {len(all_custom_types)} custom types, {len(all_using_statements)} using statements, {len(all_libraries)} libraries, {len(all_structs)} structs, {len(all_enums)} enums, {len(all_constants)} constants, {len(all_modifiers)} modifiers from all facets"
             )
 
@@ -373,41 +373,41 @@ class SourceCodeFetchingExtractionMixin:
             # Parse using Solidity parser
             parser = SolidityCodeParser(source_code)
 
-            logger.info("  [1/7] Extracting custom types...")
+            logger.debug("  [1/7] Extracting custom types...")
             result["custom_types"] = parser.extract_custom_types()
-            logger.info(f"  ✓ Found {len(result['custom_types'])} custom types")
+            logger.debug(f"  ✓ Found {len(result['custom_types'])} custom types")
 
-            logger.info("  [2/7] Extracting using statements...")
+            logger.debug("  [2/7] Extracting using statements...")
             result["using_statements"] = parser.extract_using_statements()
-            logger.info(f"  ✓ Found {len(result['using_statements'])} using statements")
+            logger.debug(f"  ✓ Found {len(result['using_statements'])} using statements")
 
-            logger.info("  [3/8] Extracting libraries...")
+            logger.debug("  [3/8] Extracting libraries...")
             result["libraries"] = parser.extract_libraries()
-            logger.info(f"  ✓ Found {len(result['libraries'])} libraries")
+            logger.debug(f"  ✓ Found {len(result['libraries'])} libraries")
 
-            logger.info("  [4/8] Extracting interfaces...")
+            logger.debug("  [4/8] Extracting interfaces...")
             result["interfaces"] = parser.extract_interfaces()
-            logger.info(f"  ✓ Found {len(result['interfaces'])} interfaces/contracts")
+            logger.debug(f"  ✓ Found {len(result['interfaces'])} interfaces/contracts")
 
-            logger.info("  [5/8] Extracting structs...")
+            logger.debug("  [5/8] Extracting structs...")
             result["structs"] = parser.extract_structs()
-            logger.info(f"  ✓ Found {len(result['structs'])} structs")
+            logger.debug(f"  ✓ Found {len(result['structs'])} structs")
 
-            logger.info("  [6/8] Extracting enums...")
+            logger.debug("  [6/8] Extracting enums...")
             result["enums"] = parser.extract_enums()
-            logger.info(f"  ✓ Found {len(result['enums'])} enums")
+            logger.debug(f"  ✓ Found {len(result['enums'])} enums")
 
-            logger.info("  [7/9] Extracting constants...")
+            logger.debug("  [7/9] Extracting constants...")
             result["constants"] = parser.extract_constants()
-            logger.info(f"  ✓ Found {len(result['constants'])} constants")
+            logger.debug(f"  ✓ Found {len(result['constants'])} constants")
 
-            logger.info("  [8/9] Extracting modifiers...")
+            logger.debug("  [8/9] Extracting modifiers...")
             result["modifiers"] = parser.extract_modifiers()
-            logger.info(f"  ✓ Found {len(result['modifiers'])} modifiers")
+            logger.debug(f"  ✓ Found {len(result['modifiers'])} modifiers")
 
-            logger.info("  [9/9] Extracting functions (this may take a while for large contracts)...")
+            logger.debug("  [9/9] Extracting functions (this may take a while for large contracts)...")
             result["functions"] = parser.extract_functions()
-            logger.info(f"  ✓ Found {len(result['functions'])} functions")
+            logger.debug(f"  ✓ Found {len(result['functions'])} functions")
 
             # Separate internal functions
             result["internal_functions"] = {

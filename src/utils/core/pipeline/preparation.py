@@ -36,7 +36,7 @@ class AnalyzerPipelinePreparationMixin:
                 f"The analyzer used descriptor-derived fallback metadata from "
                 f"'{format_key}' instead."
             )
-            logger.error(error)
+            logger.warning(error)
             return function_data, {
                 "status": "descriptor_fallback",
                 "selector": selector_lower,
@@ -46,7 +46,7 @@ class AnalyzerPipelinePreparationMixin:
             }
 
         error = f"Selector {selector_lower} was not found in the merged ABI and no descriptor fallback metadata was available."
-        logger.error(error)
+        logger.warning(error)
         return None, {
             "status": "not_found",
             "selector": selector_lower,
@@ -258,9 +258,9 @@ class AnalyzerPipelinePreparationMixin:
         if erc7730_format and abi_resolution.get("status") == "merged_abi":
             has_no_transactions = not decoded_txs
             if has_no_transactions:
-                logger.info(f"Preparing STATIC audit task for {selector} (no transactions)")
+                logger.debug(f"Preparing STATIC audit task for {selector} (no transactions)")
             else:
-                logger.info(f"Preparing audit task for {selector}")
+                logger.debug(f"Preparing audit task for {selector}")
 
             descriptor_context = {
                 "kind": "contract",
@@ -367,9 +367,7 @@ class AnalyzerPipelinePreparationMixin:
         prepared_selectors = []  # List of dicts with all pre-processed data
 
         for selector in selectors:
-            logger.info(f"\n{'=' * 60}")
             logger.info(f"Preparing selector: {selector}")
-            logger.info(f"{'=' * 60}")
 
             # Get function metadata
             function_data = selector_function_data.get(selector.lower())
@@ -381,11 +379,11 @@ class AnalyzerPipelinePreparationMixin:
                 continue
 
             function_name = function_data["name"]
-            logger.info(f"Function name: {function_name}")
-            logger.info(f"Function signature: {function_data['signature']}")
+            logger.debug(f"Function name: {function_name}")
+            logger.debug(f"Function signature: {function_data['signature']}")
 
             if abi_resolution.get("status") != "merged_abi":
-                logger.error(
+                logger.warning(
                     "Skipping tx/source/AI for %s because it was not found in the merged ABI",
                     selector,
                 )
@@ -429,14 +427,14 @@ class AnalyzerPipelinePreparationMixin:
             if not transactions:
                 logger.warning(f"No transactions found for selector {selector} - will perform static analysis only")
             else:
-                logger.info(
+                logger.debug(
                     f"Found {len(transactions)} transactions for selector {selector} on chain {selector_deployment['chainId']}"
                 )
 
             # Decode each transaction
             decoded_txs = []
             for i, tx in enumerate(transactions, 1):
-                logger.info(f"\nTransaction {i}/{len(transactions)}: {tx['hash']}")
+                logger.debug(f"\nTransaction {i}/{len(transactions)}: {tx['hash']}")
 
                 decoded = self.tx_fetcher.decode_transaction_input(tx["input"], function_data, self.abi_helper)
                 if decoded is not None:
@@ -464,7 +462,7 @@ class AnalyzerPipelinePreparationMixin:
                     # Only fetch receipt if we have a valid transaction hash (starts with 0x and is 66 chars)
                     tx_hash = tx.get("hash", "")
                     if tx_hash.startswith("0x") and len(tx_hash) == 66:
-                        logger.info(f"Fetching receipt for transaction {tx_hash}")
+                        logger.debug(f"Fetching receipt for transaction {tx_hash}")
                         receipt = self.tx_fetcher.fetch_transaction_receipt(tx_hash, selector_deployment["chainId"])
                     else:
                         logger.debug(f"Skipping receipt fetch for transaction {tx_hash} (not a valid TX hash)")
@@ -479,27 +477,27 @@ class AnalyzerPipelinePreparationMixin:
 
                         if decoded_logs:
                             tx_data["receipt_logs"] = decoded_logs
-                            logger.info(f"Decoded {len(decoded_logs)} log events:")
+                            logger.debug(f"Decoded {len(decoded_logs)} log events:")
                             for log in decoded_logs:
                                 if log.get("event") == "Transfer":
-                                    logger.info(
+                                    logger.debug(
                                         f"  Transfer: {log['value_formatted']} from {log['from'][:10]}... to {log['to'][:10]}..."
                                     )
                                 elif log.get("event") == "Approval":
-                                    logger.info(
+                                    logger.debug(
                                         f"  Approval: {log['value_formatted']} from {log['owner'][:10]}... to {log['spender'][:10]}..."
                                     )
                                 else:
-                                    logger.info(
+                                    logger.debug(
                                         f"  {log.get('event', 'Unknown')}: {log.get('address', 'unknown')[:10]}..."
                                     )
 
                     decoded_txs.append(tx_data)
                     time.sleep(0.2)
 
-                    logger.info("Decoded parameters:")
+                    logger.debug("Decoded parameters:")
                     for param_name, param_value in decoded_clean.items():
-                        logger.info(f"  {param_name}: {param_value}")
+                        logger.debug(f"  {param_name}: {param_value}")
 
             # Extract source code for this specific function (search across all deployments)
             function_source = None
@@ -511,12 +509,12 @@ class AnalyzerPipelinePreparationMixin:
                 "truncated": False,
             }
             if self.extracted_codes:
-                logger.info(
+                logger.debug(
                     f"Searching for function '{function_name}' ({function_data['signature']}) across {len(self.extracted_codes)} contract(s)..."
                 )
 
                 # PHASE 1: Search ALL contracts for EXACT SELECTOR match first
-                logger.info(
+                logger.debug(
                     f"  Phase 1: Searching for exact selector match across all {len(self.extracted_codes)} contracts..."
                 )
                 for deployment_key, extracted_code in self.extracted_codes.items():
@@ -525,15 +523,15 @@ class AnalyzerPipelinePreparationMixin:
 
                     chain_id = extracted_code["chain_id"]
                     address = extracted_code["address"]
-                    logger.info(f"  Checking {address} on chain {chain_id} (selector only)...")
+                    logger.debug(f"  Checking {address} on chain {chain_id} (selector only)...")
 
                     # Log what we know about this selector's mapping
                     if selector in self.selector_sources:
                         sources = self.selector_sources[selector]
                         source_chains = [s.get("chain_id") for s in sources]
-                        logger.info(f"    Selector {selector} is mapped to chains: {source_chains}")
+                        logger.debug(f"    Selector {selector} is mapped to chains: {source_chains}")
                         if chain_id not in source_chains:
-                            logger.info(f"    → Skipping chain {chain_id} (selector not on this chain)")
+                            logger.debug(f"    → Skipping chain {chain_id} (selector not on this chain)")
                             continue
 
                     # Try to find by EXACT SELECTOR only (no name fallback)
@@ -554,26 +552,26 @@ class AnalyzerPipelinePreparationMixin:
                             "selector_mapped": selector in self.selector_sources,
                             "truncated": bool(function_source.get("truncated")),
                         }
-                        logger.info(f"✓ Found EXACT SELECTOR MATCH at {address} on chain {chain_id}!")
-                        logger.info(f"✓ Extracted function code ({function_source['total_lines']} lines)")
-                        logger.info(f"  - Constants: {len(function_source.get('constants', []))}")
-                        logger.info(f"  - Modifiers: {len(function_source.get('modifiers', []))}")
-                        logger.info(f"  - Structs: {len(function_source['structs'])}")
-                        logger.info(f"  - Enums: {len(function_source['enums'])}")
-                        logger.info(f"  - Internal functions: {len(function_source['internal_functions'])}")
+                        logger.debug(f"✓ Found EXACT SELECTOR MATCH at {address} on chain {chain_id}!")
+                        logger.debug(f"✓ Extracted function code ({function_source['total_lines']} lines)")
+                        logger.debug(f"  - Constants: {len(function_source.get('constants', []))}")
+                        logger.debug(f"  - Modifiers: {len(function_source.get('modifiers', []))}")
+                        logger.debug(f"  - Structs: {len(function_source['structs'])}")
+                        logger.debug(f"  - Enums: {len(function_source['enums'])}")
+                        logger.debug(f"  - Internal functions: {len(function_source['internal_functions'])}")
                         if function_source.get("parent_functions"):
-                            logger.info(
+                            logger.debug(
                                 f"  - Parent functions (from super.): {len(function_source['parent_functions'])}"
                             )
                             for pf in function_source["parent_functions"]:
-                                logger.info(f"      └─ {pf['parent_contract']}.{pf['function_name']}()")
+                                logger.debug(f"      └─ {pf['parent_contract']}.{pf['function_name']}()")
                         if function_source["truncated"]:
-                            logger.info("  ⚠ Code was truncated to fit within line limit")
+                            logger.debug("  ⚠ Code was truncated to fit within line limit")
                         break  # Stop searching - found exact selector match!
 
                 # PHASE 2: If no exact selector match found, try NAME-based matching in first contract
                 if not function_source or not function_source.get("function"):
-                    logger.info(
+                    logger.debug(
                         "  Phase 2: No exact selector match found. Trying name-based matching with inheritance in first contract..."
                     )
 
@@ -598,7 +596,7 @@ class AnalyzerPipelinePreparationMixin:
                             if extracted_code["source_code"] and extracted_code.get("chain_id") in mapped_chains:
                                 first_extracted_code = extracted_code
                                 first_deployment_key = deployment_key
-                                logger.info(
+                                logger.debug(
                                     f"  Using extracted_code from chain {extracted_code.get('chain_id')} where selector is mapped"
                                 )
                                 break
@@ -614,7 +612,7 @@ class AnalyzerPipelinePreparationMixin:
                     if first_extracted_code:
                         chain_id = first_extracted_code["chain_id"]
                         address = first_extracted_code["address"]
-                        logger.info(f"  Checking {address} on chain {chain_id} (with name fallback)...")
+                        logger.debug(f"  Checking {address} on chain {chain_id} (with name fallback)...")
 
                         function_source = self.source_extractor.get_function_with_dependencies(
                             function_name,
@@ -633,21 +631,21 @@ class AnalyzerPipelinePreparationMixin:
                                 "selector_mapped": selector in self.selector_sources,
                                 "truncated": bool(function_source.get("truncated")),
                             }
-                            logger.info(f"✓ Found by name (with inheritance) at {address} on chain {chain_id}")
-                            logger.info(f"✓ Extracted function code ({function_source['total_lines']} lines)")
-                            logger.info(f"  - Constants: {len(function_source.get('constants', []))}")
-                            logger.info(f"  - Modifiers: {len(function_source.get('modifiers', []))}")
-                            logger.info(f"  - Structs: {len(function_source['structs'])}")
-                            logger.info(f"  - Enums: {len(function_source['enums'])}")
-                            logger.info(f"  - Internal functions: {len(function_source['internal_functions'])}")
+                            logger.debug(f"✓ Found by name (with inheritance) at {address} on chain {chain_id}")
+                            logger.debug(f"✓ Extracted function code ({function_source['total_lines']} lines)")
+                            logger.debug(f"  - Constants: {len(function_source.get('constants', []))}")
+                            logger.debug(f"  - Modifiers: {len(function_source.get('modifiers', []))}")
+                            logger.debug(f"  - Structs: {len(function_source['structs'])}")
+                            logger.debug(f"  - Enums: {len(function_source['enums'])}")
+                            logger.debug(f"  - Internal functions: {len(function_source['internal_functions'])}")
                             if function_source.get("parent_functions"):
-                                logger.info(
+                                logger.debug(
                                     f"  - Parent functions (from super.): {len(function_source['parent_functions'])}"
                                 )
                                 for pf in function_source["parent_functions"]:
-                                    logger.info(f"      └─ {pf['parent_contract']}.{pf['function_name']}()")
+                                    logger.debug(f"      └─ {pf['parent_contract']}.{pf['function_name']}()")
                             if function_source["truncated"]:
-                                logger.info("  ⚠ Code was truncated to fit within line limit")
+                                logger.debug("  ⚠ Code was truncated to fit within line limit")
 
                 if not function_source or not function_source.get("function"):
                     logger.warning(
@@ -739,13 +737,11 @@ class AnalyzerPipelinePreparationMixin:
         logger.info(f"\n{'=' * 60}")
         logger.info(f"PHASE 1: Preparing audit tasks for {len(selectors)} selectors from prepared benchmark inputs...")
         logger.info(f"{'=' * 60}")
-        logger.info(f"Loaded {len(self.extracted_codes)} cached source packet(s) from prepared benchmark inputs")
+        logger.debug(f"Loaded {len(self.extracted_codes)} cached source packet(s) from prepared benchmark inputs")
 
         prepared_selectors = []
         for selector in selectors:
-            logger.info(f"\n{'=' * 60}")
             logger.info(f"Preparing selector from frozen inputs: {selector}")
-            logger.info(f"{'=' * 60}")
 
             function_data = selector_function_data.get(selector.lower())
             abi_resolution = selector_abi_resolution.get(selector.lower())
@@ -769,7 +765,7 @@ class AnalyzerPipelinePreparationMixin:
                             f"'{format_key}' instead."
                         ),
                     }
-                    logger.info(
+                    logger.debug(
                         f"Using descriptor-derived function metadata for {selector}: {function_data['signature']}"
                     )
                 else:
@@ -777,8 +773,8 @@ class AnalyzerPipelinePreparationMixin:
                     continue
 
             function_name = function_data["name"]
-            logger.info(f"Function name: {function_name}")
-            logger.info(f"Function signature: {function_data['signature']}")
+            logger.debug(f"Function name: {function_name}")
+            logger.debug(f"Function signature: {function_data['signature']}")
 
             selector_inputs = (
                 prepared_selector_inputs.get(selector) or prepared_selector_inputs.get(selector.lower()) or {}
@@ -799,7 +795,7 @@ class AnalyzerPipelinePreparationMixin:
 
             synthetic_report_data = None
             if abi_resolution.get("status") != "merged_abi":
-                logger.error(
+                logger.warning(
                     "Skipping cached tx/source/AI for %s because it was not found in the merged ABI",
                     selector,
                 )
@@ -822,7 +818,7 @@ class AnalyzerPipelinePreparationMixin:
                     format_key=self.selector_to_format_key.get(selector, selector),
                 )
 
-            logger.info(
+            logger.debug(
                 f"Loaded {len(decoded_txs)} decoded transaction(s) and "
                 f"{'found' if function_source else 'did not find'} cached source context for {selector}"
             )

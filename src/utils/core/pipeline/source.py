@@ -19,7 +19,7 @@ class AnalyzerPipelineSourceMixin:
             logger.info(f"{'=' * 60}")
 
             if not selectors:
-                logger.error("Skipping source extraction because no selectors were found in the merged ABI")
+                logger.warning("Skipping source extraction because no selectors were found in the merged ABI")
                 self.extracted_codes = {}
                 return
 
@@ -63,9 +63,9 @@ class AnalyzerPipelineSourceMixin:
                     extracted_contracts.add(contract_key)
 
                     logger.info(f"✓ Source code extracted successfully for {address} on chain {chain_id}")
-                    logger.info(f"  - Functions: {len(extracted_code['functions'])}")
-                    logger.info(f"  - Structs: {len(extracted_code['structs'])}")
-                    logger.info(f"  - Enums: {len(extracted_code['enums'])}")
+                    logger.debug(f"  - Functions: {len(extracted_code['functions'])}")
+                    logger.debug(f"  - Structs: {len(extracted_code['structs'])}")
+                    logger.debug(f"  - Enums: {len(extracted_code['enums'])}")
                     if extracted_code["is_proxy"]:
                         logger.info(f"  - Proxy detected, using implementation: {extracted_code['implementation']}")
                     if extracted_code["is_diamond"]:

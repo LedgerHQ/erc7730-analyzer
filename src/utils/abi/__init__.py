@@ -283,19 +283,19 @@ def detect_diamond_proxy(contract_address: str, chain_id: int, etherscan_api_key
 
                 if "error" in data or data.get("status") == "0" or data.get("message") == "NOTOK":
                     error_msg = data.get("result") or data.get("message") or "API error"
-                    logger.info(f"facets() explorer call failed on chain {chain_id}: {error_msg}")
+                    logger.warning(f"facets() explorer call failed on chain {chain_id}: {error_msg}")
                     if etherscan_response_indicates_chain_unsupported(data):
                         mark_etherscan_proxy_eth_call_unsupported(chain_id)
                 else:
                     result = data.get("result")
             except Exception as exc:
-                logger.info(f"facets() explorer call raised on chain {chain_id}: {exc}")
+                logger.warning(f"facets() explorer call raised on chain {chain_id}: {exc}")
 
         if result is None:
             logger.info("Trying direct RPC fallback for facets() on chain %s...", chain_id)
             rpc_result, rpc_error, rpc_url = rpc_eth_call(chain_id, contract_address, facets_selector, timeout=10)
             if rpc_error:
-                logger.info("facets() RPC fallback (%s): %s", rpc_url or "no rpc url", rpc_error)
+                logger.warning("facets() RPC fallback (%s): %s", rpc_url or "no rpc url", rpc_error)
                 logger.debug(
                     "Not a Diamond proxy (facets() failed via explorer and RPC%s)",
                     f" {rpc_url}" if rpc_url else "",
@@ -596,7 +596,7 @@ def fetch_contract_abi(
                 if facet_abi:
                     # Pass facet_address to track selector -> facet mapping
                     stats = merger.add_abi(facet_abi, chain_id, source_address=facet_address, source_kind="facet")
-                    logger.info(
+                    logger.debug(
                         f"    ✓ Added {stats['new_functions']} functions, {stats['new_events']} events "
                         f"({stats['duplicate_functions']} duplicates skipped)"
                     )

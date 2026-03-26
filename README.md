@@ -153,6 +153,8 @@ Set in `.env` or pass directly:
 
 All environment variables can be overridden via CLI flags. Run `uv run analyze_7730 --help` for the full list.
 
+For the local analyzer CLI, descriptor `includes` are resolved only within the descriptor file's directory by default. Use a descriptor path whose sibling tree contains the full include graph.
+
 ## Service API
 
 The analyzer runs as a FastAPI service behind AWS App Runner. It exposes an
@@ -162,12 +164,16 @@ request timeout.
 The polling client is quiet by default and prints coarse status transitions.
 Pass `--verbose` to `erc7730-client` to opt into detailed live analysis logs.
 
+Descriptors with a top-level `includes` field are sent as a zip bundle (standard base64 in the JSON body). By default the client bundles files from the descriptor file's directory; use `--bundle-root <dir>` only when the descriptor/include tree lives elsewhere.
+
 ### `POST /analyze`
 
 Start (or resume) an analysis. Returns immediately with a job handle.
 
 - **Auth**: Bearer token (GitHub OIDC JWT). Skipped when `DISABLE_OIDC_AUTH=true`.
-- **Body**: JSON matching `AnalyzeRequest` (required field: `descriptor`).
+- **Body**: JSON matching `AnalyzeRequest`. Use **one** of:
+  - **Single descriptor**: `descriptor` (object) plus optional `descriptor_filename`. Suitable when the spec has no `includes` or the client inlines everything.
+  - **Descriptor bundle** (for specs with `includes`): `descriptor_bundle_base64` (standard base64 of a **zip** containing all JSON files in the include graph) and `bundle_entrypoint` (relative POSIX path inside the zip to the entry descriptor). Do not send `descriptor` in the same request. The server extracts the zip into a private temp directory and only resolves `includes` within that tree (path traversal is rejected).
 - **Verbose live logs**: set `verbose: true` in the request body to capture
   detailed analysis logs for polling clients.
 - **Idempotency**: when OIDC is enabled the job is keyed by

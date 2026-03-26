@@ -10,6 +10,7 @@ Usage from CI::
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import logging
 import os
@@ -20,6 +21,13 @@ from typing import TYPE_CHECKING, Any
 
 import httpx
 
+from utils.bundle_zip import (
+    BundleError,
+    build_descriptor_bundle_zip_bytes,
+    default_bundle_root_for_descriptor,
+    normalize_bundle_entrypoint,
+)
+
 if TYPE_CHECKING:
     from collections.abc import Callable
 
@@ -27,6 +35,32 @@ logger = logging.getLogger(__name__)
 
 _REQUEST_TIMEOUT = httpx.Timeout(connect=30, read=60, write=30, pool=30)
 _MAX_POLL_SECONDS = 2700  # 45 minutes
+
+
+def _use_bundle_mode(descriptor_path: Path, bundle_root: Path | None) -> bool:
+    if bundle_root is not None:
+        return True
+    try:
+        data = json.loads(descriptor_path.read_text(encoding="utf-8"))
+    except Exception:
+        return False
+    return isinstance(data, dict) and "includes" in data
+
+
+def _build_bundle_fields(descriptor_path: Path, bundle_root: Path | None) -> dict[str, Any]:
+    root = (bundle_root or default_bundle_root_for_descriptor(descriptor_path)).resolve()
+    entry = descriptor_path.resolve()
+    try:
+        rel = entry.relative_to(root)
+    except ValueError as exc:
+        raise BundleError("descriptor file must be under bundle root") from exc
+    entry_rel = rel.as_posix()
+    normalize_bundle_entrypoint(entry_rel)
+    zip_bytes = build_descriptor_bundle_zip_bytes(entry, root)
+    return {
+        "descriptor_bundle_base64": base64.standard_b64encode(zip_bytes).decode("ascii"),
+        "bundle_entrypoint": entry_rel,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -66,15 +100,19 @@ def start_analysis(
     abi_path: Path | None = None,
     overrides: dict[str, Any] | None = None,
     auth_token: str | None = None,
+    bundle_root: Path | None = None,
 ) -> dict[str, Any]:
     """``POST /analyze`` — start an analysis and return the initial status."""
-    descriptor = json.loads(descriptor_path.read_text())
     abi = json.loads(abi_path.read_text()) if abi_path else None
 
-    payload: dict[str, Any] = {
-        "descriptor": descriptor,
-        "descriptor_filename": descriptor_path.name,
-    }
+    if _use_bundle_mode(descriptor_path, bundle_root):
+        payload = _build_bundle_fields(descriptor_path, bundle_root)
+    else:
+        descriptor = json.loads(descriptor_path.read_text(encoding="utf-8"))
+        payload = {
+            "descriptor": descriptor,
+            "descriptor_filename": descriptor_path.name,
+        }
     if abi is not None:
         payload["abi"] = abi
     if overrides:
@@ -130,6 +168,7 @@ def run_analysis(
     get_auth_token: Callable[[], str | None] | None = None,
     max_poll_seconds: int = _MAX_POLL_SECONDS,
     verbose: bool = False,
+    bundle_root: Path | None = None,
 ) -> dict[str, Any]:
     """Start analysis, poll until completion, and return the final payload.
 
@@ -150,6 +189,7 @@ def run_analysis(
         abi_path=abi_path,
         overrides=overrides,
         auth_token=token,
+        bundle_root=bundle_root,
     )
 
     run_key = start_resp["run_key"]
@@ -287,6 +327,12 @@ Examples:
     parser.add_argument("--descriptor", type=Path, required=True, help="Path to ERC-7730 JSON descriptor")
     parser.add_argument("--abi", type=Path, default=None, help="Optional ABI file")
     parser.add_argument(
+        "--bundle-root",
+        type=Path,
+        default=None,
+        help="Root directory for resolving includes when uploading a zip bundle (default: descriptor directory)",
+    )
+    parser.add_argument(
         "--no-auth",
         action="store_true",
         help="Omit bearer token (use when the service runs with DISABLE_OIDC_AUTH)",
@@ -369,6 +415,7 @@ Examples:
             overrides=overrides,
             get_auth_token=token_getter,
             verbose=args.verbose,
+            bundle_root=args.bundle_root,
         )
     except Exception as exc:
         error = f"{type(exc).__name__}: {exc}"

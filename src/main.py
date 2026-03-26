@@ -18,6 +18,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+from utils.bundle_zip import default_bundle_root_for_descriptor
 from utils.core import ERC7730Analyzer
 from utils.reporting.reporter import generate_criticals_report, generate_summary_file, save_json_results
 
@@ -219,6 +220,7 @@ Priority: Command-line arguments > Environment variables > Defaults
         args.abi,
         args.raw_txs,
         args.prepared_inputs,
+        include_root=default_bundle_root_for_descriptor(args.erc7730_file),
     )
 
     # Check if analysis failed

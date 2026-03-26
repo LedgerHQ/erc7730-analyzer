@@ -5,16 +5,22 @@ import logging
 from pathlib import Path
 from typing import Any
 
+from ..bundle_zip import default_bundle_root_for_descriptor, validate_local_include_string
+
 logger = logging.getLogger(__name__)
+
+_MAX_INCLUDE_DEPTH = 100
 
 
 class AnalyzerDescriptorMixin:
-    def parse_erc7730_file(self, file_path: Path) -> dict[str, Any]:
+    def parse_erc7730_file(self, file_path: Path, include_root: Path | None = None) -> dict[str, Any]:
         """
         Parse an ERC-7730 JSON file and extract relevant information.
 
         Args:
             file_path: Path to the ERC-7730 JSON file
+            include_root: All resolved includes must stay under this directory (default: current
+                working directory).
 
         Returns:
             Dictionary containing parsed data
@@ -25,9 +31,9 @@ class AnalyzerDescriptorMixin:
             with open(file_path) as f:
                 data = json.load(f)
 
-            # Merge includes if present
-            base_path = Path(file_path).parent
-            data = self._merge_includes(data, base_path)
+            root = (include_root or default_bundle_root_for_descriptor(file_path)).resolve()
+            # Merge includes if present (nested includes resolve relative to each including file)
+            data = self._merge_includes(data, Path(file_path).parent.resolve(), root, depth=0, seen=set())
 
             logger.info(f"Successfully loaded {file_path}")
             return data
@@ -35,22 +41,42 @@ class AnalyzerDescriptorMixin:
             logger.error(f"Failed to parse {file_path}: {e}")
             raise
 
-    def _merge_includes(self, data: dict[str, Any], base_path: Path) -> dict[str, Any]:
+    def _merge_includes(
+        self,
+        data: dict[str, Any],
+        current_dir: Path,
+        include_root: Path,
+        *,
+        depth: int,
+        seen: set[Path],
+    ) -> dict[str, Any]:
         """
         Merge ERC-7730 includes into the main file.
 
         Args:
             data: Parsed ERC-7730 JSON data
-            base_path: Directory path of the main file
-
-        Returns:
-            Merged ERC-7730 data with includes resolved
+            current_dir: Directory containing the JSON object that owns ``includes``
+            include_root: Resolved filesystem root; no include may resolve outside it
         """
         if "includes" not in data:
             return data
 
+        if depth > _MAX_INCLUDE_DEPTH:
+            raise ValueError("include nesting depth exceeded")
+
         include_file = data["includes"]
-        include_path = base_path / include_file
+        if not isinstance(include_file, str):
+            raise ValueError("includes must be a string")
+        validate_local_include_string(include_file)
+
+        include_path = (current_dir / include_file).resolve()
+        try:
+            include_path.relative_to(include_root)
+        except ValueError as exc:
+            raise ValueError("include path escapes allowed root") from exc
+
+        if include_path in seen:
+            raise ValueError("circular include detected")
 
         # Check for ERC4626 pattern in includes path BEFORE merging
         if self._detect_erc4626_from_includes(include_file):
@@ -67,8 +93,14 @@ class AnalyzerDescriptorMixin:
             with open(include_path) as f:
                 include_data = json.load(f)
 
-            # Recursively merge includes in the included file
-            include_data = self._merge_includes(include_data, base_path)
+            # Recursively merge includes in the included file (relative to that file's directory)
+            include_data = self._merge_includes(
+                include_data,
+                include_path.parent.resolve(),
+                include_root,
+                depth=depth + 1,
+                seen=seen | {include_path},
+            )
 
             # Merge metadata (constants, enums, etc.)
             if "metadata" in include_data:

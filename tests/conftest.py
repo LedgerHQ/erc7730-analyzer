@@ -1,46 +1,18 @@
-"""Shared fixtures for the erc7730-analyzer test suite."""
+"""Pytest configuration."""
 
-from __future__ import annotations
-
-import asyncio
 import os
-from contextlib import asynccontextmanager
-from typing import AsyncIterator
 
-import httpx
 import pytest
-from httpx import ASGITransport
+from starlette.testclient import TestClient
 
-os.environ.setdefault("DISABLE_OIDC_AUTH", "true")
-os.environ.setdefault("OPENAI_API_KEY", "test-key")
-os.environ.setdefault("ETHERSCAN_API_KEY", "test-key")
-
-import service.app as app_mod  # noqa: E402
-from service.config import load_config  # noqa: E402
-from service.jobs import JobRegistry  # noqa: E402
-
-
-@asynccontextmanager
-async def app_client() -> AsyncIterator[httpx.AsyncClient]:
-    """Spin up the FastAPI app with in-memory state (no lifespan)."""
-    cfg = load_config()
-    app_mod._config = cfg
-    app_mod._registry = JobRegistry(
-        retention_ttl_seconds=cfg.job_retention_ttl,
-        max_log_lines=cfg.max_retained_log_lines,
-    )
-    app_mod._analysis_semaphore = asyncio.Semaphore(1)
-
-    transport = ASGITransport(app=app_mod.app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        yield client
-
-    app_mod._config = None
-    app_mod._registry = None
-    app_mod._analysis_semaphore = None
+# Local tests: avoid requiring real OIDC / secrets when importing the service app.
+os.environ.setdefault("DISABLE_OIDC_AUTH", "1")
 
 
 @pytest.fixture
-async def client() -> AsyncIterator[httpx.AsyncClient]:
-    async with app_client() as c:
-        yield c
+def client():
+    """Sync HTTP client against the FastAPI app (runs ASGI lifespan)."""
+    from service.app import app
+
+    with TestClient(app) as tc:
+        yield tc

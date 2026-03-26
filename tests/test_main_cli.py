@@ -28,10 +28,10 @@ def test_main_passes_descriptor_directory_as_include_root(monkeypatch: pytest.Mo
             captured["analyze_kwargs"] = kwargs
             return {"context": {"$id": "demo"}, "metadata": {}}
 
-    def _write_summary(results, path):
+    def _write_summary(results, path, **kwargs):
         path.write_text("# Summary\n")
 
-    def _write_criticals(results, path):
+    def _write_criticals(results, path, **kwargs):
         path.write_text("No critical issues found\n")
 
     def _write_json(results, path):

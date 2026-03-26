@@ -29,12 +29,15 @@ class AnalyzerPipelineMixin(
         abi_file: Path | None = None,
         raw_txs_file: Path | None = None,
         prepared_inputs_file: Path | None = None,
+        *,
+        include_root: Path | None = None,
     ) -> dict[str, Any]:
         self.report_progress("Loading descriptor and ABI")
         context = self._setup_analysis_context(
             erc7730_file,
             abi_file,
             prepared_inputs_file,
+            include_root=include_root,
         )
         if not context:
             return {}

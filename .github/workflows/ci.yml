@@ -29,10 +29,13 @@ jobs:
         run: uv sync --dev
 
       - name: Ruff lint
-        run: uv run ruff check src/
+        run: uv run ruff check src/ tests/
 
       - name: Ruff format check
-        run: uv run ruff format --check src/
+        run: uv run ruff format --check src/ tests/
+
+      - name: Pytest
+        run: uv run pytest tests/ -q
 
   commitlint:
     name: Commit Messages

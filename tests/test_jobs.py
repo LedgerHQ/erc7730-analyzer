@@ -4,8 +4,6 @@ from __future__ import annotations
 
 from datetime import datetime
 
-import pytest
-
 from service.jobs import AnalysisJob, JobRegistry
 
 
@@ -147,8 +145,15 @@ class TestJobRegistry:
 
     async def test_caller_metadata_stored(self):
         reg = JobRegistry()
-        meta = {"repository": "org/repo", "workflow": "ci", "ref": "main",
-                "sha": "abc", "sub": "s", "run_id": "1", "run_attempt": "1"}
+        meta = {
+            "repository": "org/repo",
+            "workflow": "ci",
+            "ref": "main",
+            "sha": "abc",
+            "sub": "s",
+            "run_id": "1",
+            "run_attempt": "1",
+        }
         job, _ = await reg.create_or_get("key1", caller_metadata=meta)
         assert job.repository == "org/repo"
         assert job.workflow == "ci"

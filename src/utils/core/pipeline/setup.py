@@ -52,6 +52,8 @@ class AnalyzerPipelineSetupMixin:
         erc7730_file: Path,
         abi_file: Path | None = None,
         prepared_inputs_file: Path | None = None,
+        *,
+        include_root: Path | None = None,
     ) -> dict[str, Any] | None:
         """Load descriptor, deployments, ABI, selectors, and base result structure."""
         logger.info(f"Starting analysis of {erc7730_file}")
@@ -69,7 +71,7 @@ class AnalyzerPipelineSetupMixin:
                 return None
 
         # Parse ERC-7730 file
-        erc7730_data = self.parse_erc7730_file(erc7730_file)
+        erc7730_data = self.parse_erc7730_file(erc7730_file, include_root=include_root)
 
         # Extract protocol name from descriptor (try multiple fields)
         context = erc7730_data.get("context", {})

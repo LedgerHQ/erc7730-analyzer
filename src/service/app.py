@@ -30,7 +30,14 @@ import uvicorn
 from fastapi import FastAPI, Header, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
+
+from utils.bundle_zip import (
+    BundleError,
+    decode_bundle_zip_from_base64,
+    normalize_bundle_entrypoint,
+    safe_extract_bundle_zip,
+)
 
 from .auth import (
     GITHUB_OIDC_ISSUER,
@@ -172,9 +179,21 @@ async def _security_middleware(request: Request, call_next):
 class AnalyzeRequest(BaseModel):
     """Payload sent by the CI client."""
 
-    descriptor: dict[str, Any] = Field(..., description="Full ERC-7730 JSON descriptor")
+    descriptor: dict[str, Any] | None = Field(
+        None,
+        description="Full ERC-7730 JSON descriptor (omit when using descriptor_bundle_base64)",
+    )
     descriptor_filename: str = Field("calldata-unknown.json", description="Original filename", max_length=255)
     abi: dict[str, Any] | list[Any] | None = Field(None, description="Optional ABI override")
+    descriptor_bundle_base64: str | None = Field(
+        None,
+        description="Zip of descriptor tree (standard base64); requires bundle_entrypoint",
+    )
+    bundle_entrypoint: str | None = Field(
+        None,
+        max_length=1024,
+        description="POSIX path within the zip to the entry descriptor JSON",
+    )
 
     analysis_mode: Literal["single", "multi"] | None = Field(None, description="single / multi")
     model: str | None = Field(None, max_length=64)
@@ -190,6 +209,20 @@ class AnalyzeRequest(BaseModel):
     enable_screenshots: bool | None = Field(None)
     screenshot_device: Literal["stax", "flex"] | None = Field(None)
     verbose: bool | None = Field(None, description="Enable detailed live logs during polling")
+
+    @model_validator(mode="after")
+    def _validate_descriptor_or_bundle(self) -> AnalyzeRequest:
+        has_bundle = bool(
+            self.descriptor_bundle_base64 and self.bundle_entrypoint and str(self.bundle_entrypoint).strip()
+        )
+        has_desc = self.descriptor is not None
+        if has_bundle and has_desc:
+            raise ValueError("Send either descriptor or descriptor_bundle_base64+bundle_entrypoint, not both")
+        if has_bundle:
+            return self
+        if has_desc:
+            return self
+        raise ValueError("descriptor, or descriptor_bundle_base64+bundle_entrypoint, is required")
 
 
 class HealthResponse(BaseModel):
@@ -304,6 +337,7 @@ async def _execute_analysis(
     descriptor_path: Path,
     abi_path: Path | None,
     safe_filename: str,
+    include_root: Path,
     cfg: ServiceConfig,
     overrides: AnalyzeRequest,
     semaphore: asyncio.Semaphore,
@@ -370,6 +404,7 @@ async def _execute_analysis(
                         abi_path,
                         None,  # raw_txs
                         None,  # prepared_inputs
+                        include_root=include_root,
                     ),
                     timeout=_ANALYSIS_TIMEOUT_SECONDS,
                 )
@@ -445,34 +480,66 @@ async def analyze_start(
         await registry.remove(run_key)
         raise HTTPException(status_code=503, detail="Service at capacity, try again later")
 
-    safe_filename = Path(body.descriptor_filename).name
-    if not safe_filename or safe_filename.startswith("."):
-        safe_filename = "descriptor.json"
-
     tmp_dir = Path(tempfile.mkdtemp(prefix="erc7730_svc_"))
-    descriptor_path = tmp_dir / safe_filename
-    descriptor_path.write_text(json.dumps(body.descriptor, indent=2))
-
-    abi_path: Path | None = None
-    if body.abi:
-        abi_path = tmp_dir / "abi.json"
-        abi_path.write_text(json.dumps(body.abi, indent=2))
-
     job.tmp_dir = tmp_dir
+    include_root = tmp_dir
+    task_created = False
 
-    task = asyncio.create_task(
-        _execute_analysis(
-            job=job,
-            descriptor_path=descriptor_path,
-            abi_path=abi_path,
-            safe_filename=safe_filename,
-            cfg=cfg,
-            overrides=body,
-            semaphore=semaphore,
-            max_log_lines=registry.max_log_lines,
+    try:
+        if body.descriptor_bundle_base64 and body.bundle_entrypoint:
+            entry_rel = normalize_bundle_entrypoint(body.bundle_entrypoint)
+            raw_zip = decode_bundle_zip_from_base64(body.descriptor_bundle_base64)
+            safe_extract_bundle_zip(raw_zip, tmp_dir)
+            descriptor_path = (tmp_dir / entry_rel).resolve()
+            try:
+                descriptor_path.relative_to(tmp_dir.resolve())
+            except ValueError as exc:
+                raise HTTPException(
+                    status_code=400,
+                    detail="bundle entrypoint escapes extract directory",
+                ) from exc
+            if not descriptor_path.is_file():
+                raise HTTPException(status_code=400, detail="bundle entrypoint not found")
+            safe_filename = descriptor_path.name
+        else:
+            safe_filename = Path(body.descriptor_filename).name
+            if not safe_filename or safe_filename.startswith("."):
+                safe_filename = "descriptor.json"
+            descriptor_path = tmp_dir / safe_filename
+            if body.descriptor is None:
+                raise HTTPException(status_code=400, detail="descriptor is required")
+            descriptor_path.write_text(json.dumps(body.descriptor, indent=2))
+
+        abi_path: Path | None = None
+        if body.abi:
+            abi_path = tmp_dir / "abi.json"
+            abi_path.write_text(json.dumps(body.abi, indent=2))
+
+        task = asyncio.create_task(
+            _execute_analysis(
+                job=job,
+                descriptor_path=descriptor_path,
+                abi_path=abi_path,
+                safe_filename=safe_filename,
+                include_root=include_root,
+                cfg=cfg,
+                overrides=body,
+                semaphore=semaphore,
+                max_log_lines=registry.max_log_lines,
+            )
         )
-    )
-    job._task = task
+        job._task = task
+        task_created = True
+    except BundleError as exc:
+        await registry.remove(run_key)
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+    except HTTPException:
+        await registry.remove(run_key)
+        raise
+    except Exception:
+        if not task_created:
+            await registry.remove(run_key)
+        raise
 
     return JSONResponse(
         status_code=202,

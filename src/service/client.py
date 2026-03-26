@@ -320,6 +320,8 @@ Examples:
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(message)s")
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
     output_dir = _prepare_output_dir(args.output_dir)
 
     overrides: dict[str, Any] = {}

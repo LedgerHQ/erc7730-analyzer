@@ -180,7 +180,7 @@ class AnalyzerDescriptorMixin:
         # Selectors are in the display.formats section as keys
         if "display" in erc7730_data and "formats" in erc7730_data["display"]:
             formats = erc7730_data["display"]["formats"]
-            for key in formats.keys():
+            for key in formats:
                 if not isinstance(key, str):
                     logger.warning(f"Skipping non-string display key: {key}")
                     continue

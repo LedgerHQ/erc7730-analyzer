@@ -158,7 +158,7 @@ class TransactionFetcherDecodingMixin:
 
             # Create a dictionary mapping names to values
             result = {}
-            for name, value, input_def in zip(input_names, decoded_values, inputs):
+            for name, value, input_def in zip(input_names, decoded_values, inputs, strict=False):
                 # Use the comprehensive recursive converter
                 converted_value = self._convert_decoded_value(value, input_def)
 

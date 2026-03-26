@@ -85,7 +85,7 @@ class AnalyzerPipelineSourceMixin:
                 # Detect ERC4626 from source code if not already detected from includes
                 if not self.erc4626_context:
                     logger.info("\n🔍 Checking source code for ERC4626 patterns...")
-                    for deployment_key, extracted_code in self.extracted_codes.items():
+                    for _deployment_key, extracted_code in self.extracted_codes.items():
                         if extracted_code.get("source_code") and isinstance(extracted_code["source_code"], str):
                             contract_name = extracted_code.get("contract_name")
                             source_detection = self._detect_erc4626_from_source(
@@ -121,7 +121,7 @@ class AnalyzerPipelineSourceMixin:
                 # Detect ERC20 from source code (if not ERC4626, since ERC4626 extends ERC20)
                 if not self.erc20_context and not self.erc4626_context:
                     logger.info("\n🔍 Checking source code for ERC20 patterns...")
-                    for deployment_key, extracted_code in self.extracted_codes.items():
+                    for _deployment_key, extracted_code in self.extracted_codes.items():
                         if extracted_code.get("source_code") and isinstance(extracted_code["source_code"], str):
                             contract_name = extracted_code.get("contract_name")
                             source_detection = self._detect_erc20_from_source(

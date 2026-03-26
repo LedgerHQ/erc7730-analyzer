@@ -7,6 +7,7 @@ keeping all unique functions while avoiding duplicates.
 
 import logging
 from collections.abc import Callable
+from contextlib import suppress
 
 logger = logging.getLogger(__name__)
 
@@ -139,7 +140,7 @@ class ABIMerger:
         self,
         abi: list[dict],
         chain_id: int,
-        source_address: str = None,
+        source_address: str | None = None,
         *,
         source_kind: str = "facet",
     ) -> dict[str, int]:
@@ -190,23 +191,20 @@ class ABIMerger:
 
                         # Still track selector source even for duplicates (for fallback)
                         if source_address:
-                            try:
+                            with suppress(Exception):
                                 self._track_selector_source(
                                     signature=signature,
                                     chain_id=chain_id,
                                     source_address=source_address,
                                     source_kind=source_kind,
                                 )
-                            except Exception:
-                                pass
 
             elif item_type == "event":
                 signature = self._get_event_signature(item)
-                if signature:
-                    if signature not in self.event_signatures:
-                        self.event_signatures[signature] = item
-                        new_events += 1
-                        logger.debug(f"Added new event from chain {chain_id}: {signature}")
+                if signature and signature not in self.event_signatures:
+                    self.event_signatures[signature] = item
+                    new_events += 1
+                    logger.debug(f"Added new event from chain {chain_id}: {signature}")
 
             elif item_type in ["constructor", "fallback", "receive"]:
                 # These are typically the same across chains, just add once
@@ -292,7 +290,6 @@ def merge_abis_from_deployments(
     fetch_results = {}
     successful_fetches = 0
     failed_fetches = 0
-    is_any_diamond = False
 
     logger.info(f"Fetching ABIs from {len(deployments)} chain(s)...")
 
@@ -324,7 +321,6 @@ def merge_abis_from_deployments(
                         elif info not in existing:
                             existing.append(info)
                 if is_diamond:
-                    is_any_diamond = True
                     logger.info(f"  Diamond proxy: got {len(dep_selector_sources)} selector provenance entries")
             else:
                 abi = result

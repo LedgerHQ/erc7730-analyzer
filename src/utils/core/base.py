@@ -1,6 +1,7 @@
 """Base analyzer state and shared configuration."""
 
 from collections.abc import Callable
+from typing import ClassVar
 
 from web3 import Web3
 
@@ -11,14 +12,14 @@ from ..extraction.source_code import SourceCodeExtractor
 class AnalyzerBase:
     """Base class for analyzer runtime state."""
 
-    ERC4626_INCLUDE_PATTERNS = [
+    ERC4626_INCLUDE_PATTERNS: ClassVar[list[str]] = [
         "erc4626",
         "erc-4626",
         "4626-vault",
         "4626vault",
     ]
 
-    ERC4626_SOURCE_PATTERNS = [
+    ERC4626_SOURCE_PATTERNS: ClassVar[list[str]] = [
         r"ERC4626",
         r"IERC4626",
         r"function\\s+asset\\s*\\(\\s*\\)",

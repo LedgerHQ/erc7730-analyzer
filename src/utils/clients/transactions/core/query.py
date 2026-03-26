@@ -178,7 +178,7 @@ class TransactionFetcherCoreQueryMixin:
         max_pages = 10000 // page_size
         total_txs_scanned = 0
         consecutive_failures = 0  # Track consecutive API failures for early abort
-        MAX_CONSECUTIVE_FAILURES = 3  # Abort after 3 consecutive failures (reduced from 5 for faster bailout)
+        max_consecutive_failures = 3  # Abort after 3 consecutive failures (reduced from 5 for faster bailout)
 
         def all_done() -> bool:
             """Check if we have enough candidates for final sampling across all selectors."""
@@ -196,7 +196,7 @@ class TransactionFetcherCoreQueryMixin:
                 # Double-check we won't exceed the limit
                 if page * page_size > 10000:
                     logger.info(
-                        f"Reached page limit (page {page} × offset {page_size} = {page * page_size} > 10000), moving to next window"
+                        f"Reached page limit (page {page} x offset {page_size} = {page * page_size} > 10000), moving to next window"
                     )
                     break
 
@@ -243,11 +243,11 @@ class TransactionFetcherCoreQueryMixin:
                             # NOTOK or other errors
                             consecutive_failures += 1
                             logger.warning(
-                                f"API warning: {data.get('message', 'Unknown error')} (failure {consecutive_failures}/{MAX_CONSECUTIVE_FAILURES})"
+                                f"API warning: {data.get('message', 'Unknown error')} (failure {consecutive_failures}/{max_consecutive_failures})"
                             )
 
                             # Early abort if too many consecutive failures
-                            if consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
+                            if consecutive_failures >= max_consecutive_failures:
                                 logger.warning(
                                     f"Aborting after {consecutive_failures} consecutive API failures - API likely not supported for chain {chain_id}"
                                 )
@@ -265,7 +265,7 @@ class TransactionFetcherCoreQueryMixin:
                             logger.error(f"Failed to fetch transactions after {max_retries} attempts: {e}")
 
                             # Check if we should abort entirely
-                            if consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
+                            if consecutive_failures >= max_consecutive_failures:
                                 logger.warning("Aborting due to repeated failures")
                                 return finalize_results()
 

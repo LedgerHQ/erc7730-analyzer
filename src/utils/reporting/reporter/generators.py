@@ -157,13 +157,13 @@ def generate_summary_file(results: dict, summary_file: Path, *, inline_base64: b
             shown_fields, hidden_fields = _collect_accounted_parameter_roots(erc7730_format.get("fields") or [])
 
             total_params = len(decoded_input)
-            shown_count = len([p for p in decoded_input.keys() if p in shown_fields])
-            excluded_count = len([p for p in decoded_input.keys() if p in hidden_fields])
+            shown_count = len([p for p in decoded_input if p in shown_fields])
+            excluded_count = len([p for p in decoded_input if p in hidden_fields])
             accounted_count = shown_count + excluded_count
             missing_count = total_params - accounted_count
             coverage_pct = (accounted_count / total_params * 100) if total_params > 0 else 0
 
-            missing_params = [p for p in decoded_input.keys() if p not in shown_fields and p not in hidden_fields]
+            missing_params = [p for p in decoded_input if p not in shown_fields and p not in hidden_fields]
 
             # Extract key information from AI audit report (using detailed report)
             if audit_report_json:

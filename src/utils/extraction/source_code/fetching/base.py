@@ -49,8 +49,4 @@ class SourceCodeFetchingBaseMixin:
             r":\s*constant\(",  # Vyper constant
         ]
 
-        for pattern in vyper_patterns:
-            if re.search(pattern, source_code):
-                return True
-
-        return False
+        return any(re.search(pattern, source_code) for pattern in vyper_patterns)

@@ -306,8 +306,8 @@ class AnalyzerDetectionMixin:
         self,
         includes_detected: bool,
         source_detection: dict[str, Any],
-        underlying_token: str = None,
-        asset_from_chain: str = None,
+        underlying_token: str | None = None,
+        asset_from_chain: str | None = None,
     ) -> dict[str, Any]:
         """
         Build ERC4626 context information for the AI prompt.

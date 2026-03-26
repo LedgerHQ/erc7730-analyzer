@@ -17,7 +17,6 @@ def resolve_target_function(
 ) -> tuple[dict[str, Any] | None, dict[str, Any] | None, str | None, dict[str, Any] | None]:
     # Find the function
     target_function = None
-    source_text = extracted_code.get("source_code") or ""
 
     # For Diamond proxies: try to use facet-specific source code for faster lookups
     facet_specific_code = None
@@ -81,7 +80,7 @@ def resolve_target_function(
 
     # Add enums (they all map to uint8 in ABI)
     enums = type_source.get("enums", {})
-    for enum_name in enums.keys():
+    for enum_name in enums:
         custom_type_mapping[enum_name] = "uint8"
         logger.debug(f"  Enum mapping: {enum_name} -> uint8")
 
@@ -155,7 +154,7 @@ def resolve_target_function(
             all_parents.update(parents)
 
         # Main contract candidates: in inheritance_map but not a parent of others
-        candidates = [name for name in inheritance_map.keys() if name not in all_parents]
+        candidates = [name for name in inheritance_map if name not in all_parents]
 
         if candidates:
             # If multiple candidates, prefer the first one (usually the main contract)

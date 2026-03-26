@@ -38,7 +38,6 @@ def format_critical_report(data: dict) -> str:
 
         # Extract issues (plain text for mini report)
         critical_issues = data.get("critical_issues", [])
-        issues = [issue.get("issue", "") for issue in critical_issues]
 
         recs = data.get("recommendations", {"fixes": [], "spec_limitations": [], "optional_improvements": []})
 

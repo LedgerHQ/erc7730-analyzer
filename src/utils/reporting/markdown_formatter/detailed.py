@@ -28,9 +28,7 @@ def format_detailed_report(data: dict) -> str:
     try:
         md = ""  # No header - mini report already has the function info
 
-        # Extract function signature from intent analysis
         intent_data = data.get("intent_analysis", {})
-        declared_intent = intent_data.get("declared_intent", "N/A")
 
         # 1. Intent Analysis
         md += _format_intent_analysis(intent_data)

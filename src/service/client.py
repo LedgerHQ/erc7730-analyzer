@@ -16,9 +16,12 @@ import os
 import sys
 import time
 from pathlib import Path
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any
 
 import httpx
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 logger = logging.getLogger(__name__)
 
@@ -195,6 +198,60 @@ def run_analysis(
 
 
 # ---------------------------------------------------------------------------
+# Output artifacts
+# ---------------------------------------------------------------------------
+def _prepare_output_dir(output_dir: Path | None) -> Path:
+    """Resolve and create the report directory before any network work starts."""
+    resolved = output_dir if output_dir else Path.cwd() / "output"
+    resolved.mkdir(parents=True, exist_ok=True)
+    return resolved
+
+
+def _write_status_artifact(
+    output_dir: Path,
+    *,
+    status: str,
+    protocol: str = "unknown",
+    has_criticals: bool = False,
+    error: str | None = None,
+) -> Path:
+    """Persist a small machine-readable status file for CI upload/debugging."""
+    status_path = output_dir / "analysis_status.json"
+    payload: dict[str, Any] = {
+        "status": status,
+        "protocol": protocol,
+        "has_criticals": has_criticals,
+    }
+    if error:
+        payload["error"] = error
+    status_path.write_text(json.dumps(payload, indent=2))
+    return status_path
+
+
+def _write_report_artifacts(output_dir: Path, report: dict[str, Any]) -> tuple[str, bool]:
+    """Write any report artifacts returned by the service."""
+    protocol = report.get("protocol", "unknown")
+    has_criticals = bool(report.get("has_criticals", False))
+
+    if report.get("summary_report"):
+        summary_path = output_dir / f"FULL_REPORT_{protocol}.md"
+        summary_path.write_text(report["summary_report"])
+        print(f"[CLIENT] Full report: {summary_path}", file=sys.stderr)
+
+    if report.get("criticals_report"):
+        criticals_path = output_dir / f"CRITICALS_{protocol}.md"
+        criticals_path.write_text(report["criticals_report"])
+        print(f"[CLIENT] Criticals report: {criticals_path}", file=sys.stderr)
+
+    if "results_json" in report and report["results_json"] is not None:
+        json_path = output_dir / f"results_{protocol}.json"
+        json_path.write_text(json.dumps(report["results_json"], indent=2, default=str))
+        print(f"[CLIENT] JSON results: {json_path}", file=sys.stderr)
+
+    return protocol, has_criticals
+
+
+# ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
 def main():
@@ -263,6 +320,7 @@ Examples:
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(message)s")
+    output_dir = _prepare_output_dir(args.output_dir)
 
     overrides: dict[str, Any] = {}
 
@@ -300,42 +358,45 @@ Examples:
         print("[CLIENT] Will use GitHub OIDC tokens", file=sys.stderr)
         token_getter = _get_oidc_token
 
-    report = run_analysis(
-        service_url=args.service_url,
-        descriptor_path=args.descriptor,
-        abi_path=args.abi,
-        overrides=overrides,
-        get_auth_token=token_getter,
-        verbose=args.verbose,
-    )
-
-    status = report.get("status", "")
-    if status == "failed":
-        error = report.get("error", "Unknown error")
-        print(f"[CLIENT] Analysis failed: {error}", file=sys.stderr)
+    try:
+        report = run_analysis(
+            service_url=args.service_url,
+            descriptor_path=args.descriptor,
+            abi_path=args.abi,
+            overrides=overrides,
+            get_auth_token=token_getter,
+            verbose=args.verbose,
+        )
+    except Exception as exc:
+        error = f"{type(exc).__name__}: {exc}"
+        status_path = _write_status_artifact(output_dir, status="failed", error=error)
+        print(f"[CLIENT] Analysis request failed: {error}", file=sys.stderr)
+        print(f"[CLIENT] Status artifact: {status_path}", file=sys.stderr)
         sys.exit(1)
 
-    # Write reports under --output-dir or ./output relative to CWD
-    output_dir = args.output_dir if args.output_dir else Path.cwd() / "output"
-    output_dir.mkdir(parents=True, exist_ok=True)
+    protocol, has_criticals = _write_report_artifacts(output_dir, report)
+    status = report.get("status", "succeeded")
 
-    protocol = report.get("protocol", "unknown")
-    has_criticals = report.get("has_criticals", False)
+    if status != "succeeded":
+        error = report.get("error") or report.get("status_message") or f"Analysis ended with status: {status}"
+        status_path = _write_status_artifact(
+            output_dir,
+            status=status,
+            protocol=protocol,
+            has_criticals=has_criticals,
+            error=error,
+        )
+        print(f"[CLIENT] Analysis failed: {error}", file=sys.stderr)
+        print(f"[CLIENT] Status artifact: {status_path}", file=sys.stderr)
+        sys.exit(1)
 
-    if report.get("summary_report"):
-        summary_path = output_dir / f"FULL_REPORT_{protocol}.md"
-        summary_path.write_text(report["summary_report"])
-        print(f"[CLIENT] Full report: {summary_path}", file=sys.stderr)
-
-    if report.get("criticals_report"):
-        criticals_path = output_dir / f"CRITICALS_{protocol}.md"
-        criticals_path.write_text(report["criticals_report"])
-        print(f"[CLIENT] Criticals report: {criticals_path}", file=sys.stderr)
-
-    if report.get("results_json"):
-        json_path = output_dir / f"results_{protocol}.json"
-        json_path.write_text(json.dumps(report["results_json"], indent=2, default=str))
-        print(f"[CLIENT] JSON results: {json_path}", file=sys.stderr)
+    status_path = _write_status_artifact(
+        output_dir,
+        status=status,
+        protocol=protocol,
+        has_criticals=has_criticals,
+    )
+    print(f"[CLIENT] Status artifact: {status_path}", file=sys.stderr)
 
     if has_criticals:
         print("[CLIENT] CRITICAL ISSUES FOUND — exit 1", file=sys.stderr)

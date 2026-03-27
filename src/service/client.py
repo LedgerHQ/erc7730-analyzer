@@ -422,7 +422,7 @@ Examples:
         status_path = _write_status_artifact(output_dir, status="failed", error=error)
         print(f"[CLIENT] Analysis request failed: {error}", file=sys.stderr)
         print(f"[CLIENT] Status artifact: {status_path}", file=sys.stderr)
-        sys.exit(1)
+        sys.exit(2)
 
     protocol, has_criticals = _write_report_artifacts(output_dir, report)
     status = report.get("status", "succeeded")
@@ -438,7 +438,7 @@ Examples:
         )
         print(f"[CLIENT] Analysis failed: {error}", file=sys.stderr)
         print(f"[CLIENT] Status artifact: {status_path}", file=sys.stderr)
-        sys.exit(1)
+        sys.exit(2)
 
     status_path = _write_status_artifact(
         output_dir,

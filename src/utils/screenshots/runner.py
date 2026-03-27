@@ -465,20 +465,21 @@ class ScreenshotRunner:
                     )
                 return False
 
-            elapsed = time.monotonic() - (deadline - max_wait)
             stable_elapsed = time.monotonic() - last_change_at
-            if last_signature[0] > 0 and stable_elapsed >= stable_after:
-                if elapsed < 15.0 and last_signature[0] <= 2:
-                    pass
-                else:
-                    logger.info(
-                        "[SCREENSHOTS][%s] %d screenshot(s) stable for %.1fs; terminating lingering cs-tester for tx %s",
-                        selector,
-                        last_signature[0],
-                        stable_after,
-                        tx_hash[:10],
-                    )
-                    return True
+            # Use a longer stability window when screenshot count is low
+            # (≤ 3 = home + opt-in prompt + blind-sign — cs-tester may still
+            # be working through the clear-signing flow, especially under
+            # slow QEMU emulation on App Runner).
+            effective_stable = stable_after if last_signature[0] > 3 else 30.0
+            if last_signature[0] > 0 and stable_elapsed >= effective_stable:
+                logger.info(
+                    "[SCREENSHOTS][%s] %d screenshot(s) stable for %.1fs; terminating lingering cs-tester for tx %s",
+                    selector,
+                    last_signature[0],
+                    effective_stable,
+                    tx_hash[:10],
+                )
+                return True
 
             time.sleep(poll_interval)
 

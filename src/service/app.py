@@ -254,12 +254,22 @@ def _resolve_run_key(
     claims: dict[str, Any] | None,
     query_run_key: str | None,
 ) -> str:
-    """Derive the run key from JWT claims or fall back to a query parameter."""
+    """Resolve the run key from an explicit parameter or JWT claims.
+
+    When *query_run_key* is provided together with OIDC claims, the key is
+    accepted only if it starts with the caller's JWT-derived base key (so
+    users cannot poll other callers' jobs).
+    """
     if claims is not None:
         try:
-            return derive_run_key(claims)
+            base_key = derive_run_key(claims)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from None
+        if query_run_key:
+            if not query_run_key.startswith(base_key):
+                raise HTTPException(status_code=403, detail="run_key does not belong to this caller")
+            return query_run_key
+        return base_key
     if query_run_key:
         return query_run_key
     raise HTTPException(

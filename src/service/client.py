@@ -418,9 +418,16 @@ Examples:
             bundle_root=args.bundle_root,
         )
     except Exception as exc:
-        error = f"{type(exc).__name__}: {exc}"
-        status_path = _write_status_artifact(output_dir, status="failed", error=error)
-        print(f"[CLIENT] Analysis request failed: {error}", file=sys.stderr)
+        error_full = f"{type(exc).__name__}: {exc}"
+        error_short = f"{type(exc).__name__}: {str(exc).split(chr(10))[0][:120]}"
+        protocol_guess = Path(args.descriptor).stem.replace("calldata-", "").replace("-", "_")
+        status_path = _write_status_artifact(
+            output_dir,
+            status="failed",
+            protocol=protocol_guess,
+            error=error_short,
+        )
+        print(f"[CLIENT] Analysis request failed: {error_full}", file=sys.stderr)
         print(f"[CLIENT] Status artifact: {status_path}", file=sys.stderr)
         sys.exit(2)
 

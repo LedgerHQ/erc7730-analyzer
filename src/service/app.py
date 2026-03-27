@@ -457,11 +457,13 @@ async def analyze_start(
     claims = await _authenticate(cfg, authorization)
 
     if claims is not None:
-        run_key = derive_run_key(claims)
+        base_key = derive_run_key(claims)
         caller_meta = extract_caller_metadata(claims)
     else:
-        run_key = f"local:{uuid.uuid4()}"
+        base_key = f"local:{uuid.uuid4()}"
         caller_meta = {}
+
+    run_key = f"{base_key}:{body.descriptor_filename}"
 
     job, created = await registry.create_or_get(run_key, caller_metadata=caller_meta)
     if created:

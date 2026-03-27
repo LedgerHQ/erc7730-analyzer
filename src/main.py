@@ -267,12 +267,12 @@ Priority: Command-line arguments > Environment variables > Defaults
     # Generate full report file
     summary_file = output_dir / f"FULL_REPORT_{context_id}_{timestamp}.md"
     logger.info(f"Generating full report file at {summary_file}")
-    generate_summary_file(results, summary_file)
+    generate_summary_file(results, summary_file, inline_base64=True)
 
     # Generate critical issues mini report
     criticals_file = output_dir / f"CRITICALS_{context_id}_{timestamp}.md"
     logger.info(f"Generating critical issues report at {criticals_file}")
-    generate_criticals_report(results, criticals_file)
+    generate_criticals_report(results, criticals_file, inline_base64=True)
 
     # Save JSON results
     json_output = output_dir / f"results_{context_id}_{timestamp}.json"

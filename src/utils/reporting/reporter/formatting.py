@@ -389,7 +389,7 @@ def render_screenshots_section(
 
         tx_block = f"#### Transaction {idx} — `{tx_hash}`\n\n"
 
-        # Collapsible decoded parameters (same style as transaction samples)
+        # Collapsible decoded parameters
         tx_info = tx_params.get(tx_hash.lower())
         if tx_info:
             decoded = tx_info.get("decoded_input", {})
@@ -400,14 +400,15 @@ def render_screenshots_section(
                 param_lines.append(f"native ETH sent: {tx_value} wei")
 
             for key, val in decoded.items():
-                if key.startswith("_"):
-                    continue
-                param_lines.append(f"{key}: {_truncate_value(val)}")
+                param_lines.append(f"{key}: {val!r}")
 
             if param_lines:
+                tx_block += "<details>\n"
+                tx_block += "<summary><strong>\U0001f4cb View Decoded Transaction Parameters</strong> (click to expand)</summary>\n\n"
                 tx_block += "```python\n"
                 tx_block += "\n".join(param_lines) + "\n"
                 tx_block += "```\n\n"
+                tx_block += "</details>\n\n"
 
         tx_block += " | ".join(images_md) + "\n"
         tx_sections.append(tx_block)

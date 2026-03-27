@@ -465,15 +465,20 @@ class ScreenshotRunner:
                     )
                 return False
 
-            if last_signature[0] > 0 and (time.monotonic() - last_change_at) >= stable_after:
-                logger.info(
-                    "[SCREENSHOTS][%s] %d screenshot(s) stable for %.1fs; terminating lingering cs-tester for tx %s",
-                    selector,
-                    last_signature[0],
-                    stable_after,
-                    tx_hash[:10],
-                )
-                return True
+            elapsed = time.monotonic() - (deadline - max_wait)
+            stable_elapsed = time.monotonic() - last_change_at
+            if last_signature[0] > 0 and stable_elapsed >= stable_after:
+                if elapsed < 15.0 and last_signature[0] <= 2:
+                    pass
+                else:
+                    logger.info(
+                        "[SCREENSHOTS][%s] %d screenshot(s) stable for %.1fs; terminating lingering cs-tester for tx %s",
+                        selector,
+                        last_signature[0],
+                        stable_after,
+                        tx_hash[:10],
+                    )
+                    return True
 
             time.sleep(poll_interval)
 

@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 def _stringify_issue(item: Any) -> str:
     """Coerce an AI-reported issue (dict or str) into a plain string."""
     if isinstance(item, dict):
-        for key in ("issue", "description", "detail", "message"):
+        for key in ("issue", "description", "detail", "message", "parameter"):
             if key in item:
                 return str(item[key])
         return str(item)
@@ -303,7 +303,10 @@ def generate_summary_file(results: dict, summary_file: Path, *, inline_base64: b
             n = len(issue["critical_issues"])
             quick_desc = f"{n} critical issue{'s' if n > 1 else ''}"
             if no_historical_txs:
-                quick_desc = "⚠️ No historical txs"
+                quick_desc += " (no historical txs)"
+        elif no_historical_txs:
+            severity = "⚠️ Warning"
+            quick_desc = "No historical txs — static analysis only"
         elif has_missing:
             severity = "🟡 Major"
             params = issue["ai_missing_params"][:2]
@@ -319,6 +322,8 @@ def generate_summary_file(results: dict, summary_file: Path, *, inline_base64: b
             quick_desc = "No issues"
 
         quick_desc = quick_desc.replace("|", "\\|")
+        if len(quick_desc) > 80:
+            quick_desc = quick_desc[:77] + "..."
         report += f"| `{issue['function_name']}` | `{issue['selector']}` | {severity} | {quick_desc} | [View](#{issue['selector']}) |\n"
 
     report += "\n---\n\n## 📈 Statistics\n\n"

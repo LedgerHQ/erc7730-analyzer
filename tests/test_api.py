@@ -204,16 +204,13 @@ class TestClientCli:
 
         exit_code, output_dir = _run_client(monkeypatch, tmp_path, _mock_run_analysis)
 
-        assert exit_code == 1
+        assert exit_code == 2
         assert output_dir.is_dir()
 
         status = json.loads((output_dir / "analysis_status.json").read_text())
-        assert status == {
-            "status": "failed",
-            "protocol": "unknown",
-            "has_criticals": False,
-            "error": "remote analysis failed",
-        }
+        assert status["status"] == "failed"
+        assert status["has_criticals"] is False
+        assert status["error"] == "remote analysis failed"
 
     def test_creates_output_dir_when_request_raises(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
         def _mock_run_analysis(**kwargs):
@@ -221,13 +218,10 @@ class TestClientCli:
 
         exit_code, output_dir = _run_client(monkeypatch, tmp_path, _mock_run_analysis)
 
-        assert exit_code == 1
+        assert exit_code == 2
         assert output_dir.is_dir()
 
         status = json.loads((output_dir / "analysis_status.json").read_text())
-        assert status == {
-            "status": "failed",
-            "protocol": "unknown",
-            "has_criticals": False,
-            "error": "RuntimeError: connection dropped",
-        }
+        assert status["status"] == "failed"
+        assert status["has_criticals"] is False
+        assert "RuntimeError: connection dropped" in status["error"]

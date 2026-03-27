@@ -245,7 +245,8 @@ async def _authenticate(
             allowed_repos=cfg.allowed_repos,
             issuer=cfg.oidc_issuer,
         )
-    except jwt.exceptions.PyJWTError:
+    except jwt.exceptions.PyJWTError as exc:
+        logger.warning("[AUTH] OIDC verification failed: %s", exc)
         raise HTTPException(status_code=401, detail="Authentication failed") from None
 
 

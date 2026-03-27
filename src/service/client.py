@@ -148,9 +148,10 @@ def poll_analysis(
         headers["Authorization"] = f"Bearer {auth_token}"
 
     url = f"{service_url.rstrip('/')}/analyze"
-    params: dict[str, str] = {"include_logs": "true" if include_logs else "false"}
-    if not auth_token:
-        params["run_key"] = run_key
+    params: dict[str, str] = {
+        "include_logs": "true" if include_logs else "false",
+        "run_key": run_key,
+    }
 
     resp = httpx.get(url, headers=headers, params=params, timeout=_REQUEST_TIMEOUT)
     if resp.status_code == 401:

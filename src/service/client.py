@@ -482,6 +482,8 @@ Examples:
         sys.exit(2)
 
     protocol, has_criticals = _write_report_artifacts(output_dir, report)
+    if protocol == "unknown":
+        protocol = Path(args.descriptor).stem.replace("calldata-", "").replace("-", "_")
     status = report.get("status", "succeeded")
 
     if status != "succeeded":

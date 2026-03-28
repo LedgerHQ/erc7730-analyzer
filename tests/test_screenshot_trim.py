@@ -12,8 +12,6 @@ Three cases cover the scenarios observed in production:
 import hashlib
 from pathlib import Path
 
-import pytest
-
 from utils.screenshots.runner import TRIM_HEAD, TRIM_TAIL, _dedup_consecutive, _sort_key
 
 FIXTURES = Path(__file__).parent / "fixtures" / "screenshots"
@@ -114,9 +112,9 @@ class TestTrimLogic:
         # Old behavior: meaningful = all_pngs (safeguard)
         old_kept = pngs
         preamble_hash = hashlib.md5(pngs[0].read_bytes()).hexdigest()
-        assert any(
-            hashlib.md5(p.read_bytes()).hexdigest() == preamble_hash for p in old_kept
-        ), "Old logic incorrectly keeps preamble"
+        assert any(hashlib.md5(p.read_bytes()).hexdigest() == preamble_hash for p in old_kept), (
+            "Old logic incorrectly keeps preamble"
+        )
 
     def test_case_6_tail_dup_strips_tail(self):
         """6 raw → 5 unique → trim head 3 + tail not possible → keep 2."""
@@ -155,7 +153,7 @@ class TestTrimEdgeCases:
         """3 screenshots (exactly TRIM_HEAD) → keep last 1."""
         pngs = []
         for i in range(3):
-            p = tmp_path / f"screenshot_{i+1}.png"
+            p = tmp_path / f"screenshot_{i + 1}.png"
             p.write_bytes(f"content_{i}".encode())
             pngs.append(p)
         kept = _trim(pngs)
@@ -166,7 +164,7 @@ class TestTrimEdgeCases:
         """10 unique → trim 3 head + 3 tail = 4 kept."""
         pngs = []
         for i in range(10):
-            p = tmp_path / f"screenshot_{i+1}.png"
+            p = tmp_path / f"screenshot_{i + 1}.png"
             p.write_bytes(f"unique_content_{i}".encode())
             pngs.append(p)
         kept = _trim(pngs)

@@ -57,8 +57,6 @@ CS_TESTER_STABLE_AFTER_SEC = 3.0
 CS_TESTER_POLL_INTERVAL_SEC = 0.5
 CS_TESTER_SHUTDOWN_GRACE_SEC = 5.0
 LOG_TAIL_CHARS = 800
-TRIM_HEAD = 3  # home + opt-in + review-swipe
-TRIM_TAIL = 3  # hold-to-sign + approved + home
 
 _SPECULOS_PORT_LOCK = threading.Lock()
 _RESERVED_PORTS: set[int] = set()
@@ -157,6 +155,7 @@ class ScreenshotRunner:
         self._persistent_speculos_proc: subprocess.Popen | None = None
         self._persistent_speculos_api_port: int | None = None
         self._persistent_speculos_apdu_port: int | None = None
+        self._preamble_hashes: set[str] = set()
         self.last_unavailability_reasons: list[str] = []
 
     # ------------------------------------------------------------------
@@ -358,7 +357,27 @@ class ScreenshotRunner:
         self._persistent_speculos_proc = proc
         self._persistent_speculos_api_port = api_port
         self._persistent_speculos_apdu_port = apdu_port
+        self._capture_preamble_hashes(api_port)
         logger.info("[SCREENSHOTS][SETUP] Persistent Speculos ready on api=%s apdu=%s", api_port, apdu_port)
+
+    def _capture_preamble_hashes(self, api_port: int) -> None:
+        """Capture the home screen hash from Speculos to identify preamble frames."""
+        try:
+            resp = requests.get(f"http://127.0.0.1:{api_port}/screenshot", timeout=3.0)
+            if resp.status_code == 200 and resp.content:
+                h = hashlib.md5(resp.content).hexdigest()
+                self._preamble_hashes = {h}
+                logger.info(
+                    "[SCREENSHOTS][SETUP] Captured home screen hash: %s (%d bytes)",
+                    h[:12],
+                    len(resp.content),
+                )
+            else:
+                logger.warning("[SCREENSHOTS][SETUP] Could not capture home screen (HTTP %d)", resp.status_code)
+                self._preamble_hashes = set()
+        except Exception as exc:
+            logger.warning("[SCREENSHOTS][SETUP] Failed to capture home screen: %s", exc)
+            self._preamble_hashes = set()
 
     def _stop_persistent_speculos(self) -> None:
         """Stop the current persistent Speculos instance and free its ports."""
@@ -555,10 +574,10 @@ class ScreenshotRunner:
         """Capture screenshots for up to MAX_TXS_PER_SELECTOR transactions.
 
         Runs each transaction through cs-tester individually so screenshots
-        can be cleanly associated with their tx hash, and trims the
-        non-meaningful boot/confirm frames (first TRIM_HEAD, last TRIM_TAIL).
-
-        Concurrent Speculos instances are capped at MAX_CONCURRENT_SPECULOS.
+        can be cleanly associated with their tx hash.  Trimming is deferred to
+        post-collection: for multi-tx selectors, shared-screen analysis removes
+        preamble and confirmation frames dynamically; for single-tx selectors, a
+        conservative fixed trim is applied after known preamble hashes are stripped.
         """
         txs_to_process = transactions[:MAX_TXS_PER_SELECTOR]
         if not txs_to_process:
@@ -635,6 +654,16 @@ class ScreenshotRunner:
                 CS_TESTER_MAX_RETRIES,
                 ", ".join(h[:10] for h, _ in pending),
             )
+
+        if not completed:
+            return completed
+
+        completed = _strip_known_preamble(completed, self._preamble_hashes, selector)
+
+        if len(completed) >= 2:
+            completed = _strip_shared_screens(completed, selector)
+        else:
+            completed = [_trim_single_tx(completed[0], selector)]
 
         return completed
 
@@ -840,23 +869,12 @@ class ScreenshotRunner:
         all_pngs = sorted(screenshots_dir.glob("screenshot_*.png"), key=_sort_key)
         deduped = _dedup_consecutive(all_pngs)
 
-        if len(deduped) > TRIM_HEAD:
-            start = TRIM_HEAD
-            remaining = len(deduped) - start
-            end = len(deduped) - TRIM_TAIL if remaining > TRIM_TAIL else len(deduped)
-            meaningful = deduped[start:end]
-        elif deduped:
-            meaningful = deduped[-1:]
-        else:
-            meaningful = []
-
-        if meaningful:
+        if deduped:
             logger.info(
-                "[SCREENSHOTS][%s] %d raw → %d unique → %d kept for tx %s",
+                "[SCREENSHOTS][%s] %d raw → %d unique for tx %s (trim deferred to post-collection)",
                 selector,
                 len(all_pngs),
                 len(deduped),
-                len(meaningful),
                 tx_hash[:10],
             )
         else:
@@ -867,7 +885,129 @@ class ScreenshotRunner:
                 attempt + 1,
             )
 
-        return {"tx_hash": tx_hash, "screenshots": [str(p) for p in meaningful]}
+        return {"tx_hash": tx_hash, "screenshots": [str(p) for p in deduped]}
+
+
+SINGLE_TX_TRIM_HEAD = 2  # opt-in + review (after home hash strip)
+SINGLE_TX_TRIM_TAIL = 2  # hold-to-sign + approved
+
+
+def _strip_known_preamble(
+    tx_results: list[TxScreenshots],
+    preamble_hashes: set[str],
+    selector: str,
+) -> list[TxScreenshots]:
+    """Strip screenshots whose hash matches the known home screen.
+
+    The home screen is captured from Speculos at boot and is guaranteed to be
+    preamble.  Removing it early makes subsequent shared-screen analysis and
+    single-tx trimming more accurate.
+    """
+    if not preamble_hashes:
+        return tx_results
+
+    cleaned: list[TxScreenshots] = []
+    for tx in tx_results:
+        paths = tx["screenshots"]
+        kept: list[str] = []
+        removed = 0
+        for p in paths:
+            h = hashlib.md5(Path(p).read_bytes()).hexdigest()
+            if h in preamble_hashes:
+                removed += 1
+            else:
+                kept.append(p)
+        if removed:
+            logger.info(
+                "[SCREENSHOTS][%s] Stripped %d home-screen frame(s) from tx %s (%d remaining)",
+                selector,
+                removed,
+                tx["tx_hash"][:10],
+                len(kept),
+            )
+        cleaned.append({"tx_hash": tx["tx_hash"], "screenshots": kept or paths})
+    return cleaned
+
+
+def _trim_single_tx(tx: TxScreenshots, selector: str) -> TxScreenshots:
+    """Conservative trim for selectors with only one transaction.
+
+    Without a second transaction to compare against, we fall back to modest
+    positional trimming after the home screen has already been stripped.
+    """
+    paths = tx["screenshots"]
+    n = len(paths)
+    if n <= 1:
+        return tx
+
+    head = min(SINGLE_TX_TRIM_HEAD, max(0, n - 1))
+    remaining = n - head
+    tail = min(SINGLE_TX_TRIM_TAIL, max(0, remaining - 1))
+    kept = paths[head : n - tail] if tail else paths[head:]
+
+    if not kept:
+        kept = paths[-1:]
+
+    trimmed = n - len(kept)
+    if trimmed:
+        logger.info(
+            "[SCREENSHOTS][%s] Single-tx trim: %d → %d for tx %s (head=%d, tail=%d)",
+            selector,
+            n,
+            len(kept),
+            tx["tx_hash"][:10],
+            head,
+            tail,
+        )
+    return {"tx_hash": tx["tx_hash"], "screenshots": kept}
+
+
+def _strip_shared_screens(
+    tx_results: list[TxScreenshots],
+    selector: str,
+) -> list[TxScreenshots]:
+    """Remove screenshots whose content appears in 2+ different transactions.
+
+    Data screens are unique per transaction (different amounts, addresses, etc.).
+    Preamble and confirmation screens (home, opt-in, hold-to-sign, approved) are
+    byte-identical across transactions.  By counting how many DISTINCT transactions
+    each hash appears in, we can reliably filter them out.
+    """
+    from collections import Counter
+
+    hash_tx_count: Counter[str] = Counter()
+    tx_hashes_map: list[list[str]] = []
+
+    for tx in tx_results:
+        seen_in_tx: set[str] = set()
+        per_tx: list[str] = []
+        for path_str in tx["screenshots"]:
+            h = hashlib.md5(Path(path_str).read_bytes()).hexdigest()
+            per_tx.append(h)
+            seen_in_tx.add(h)
+        tx_hashes_map.append(per_tx)
+        for h in seen_in_tx:
+            hash_tx_count[h] += 1
+
+    shared_hashes = {h for h, c in hash_tx_count.items() if c >= 2}
+    if not shared_hashes:
+        return tx_results
+
+    cleaned: list[TxScreenshots] = []
+    for tx, per_tx in zip(tx_results, tx_hashes_map, strict=False):
+        kept = [p for p, h in zip(tx["screenshots"], per_tx, strict=False) if h not in shared_hashes]
+        removed = len(tx["screenshots"]) - len(kept)
+        if removed:
+            logger.info(
+                "[SCREENSHOTS][%s] Stripped %d shared screen(s) from tx %s (%d remaining)",
+                selector,
+                removed,
+                tx["tx_hash"][:10],
+                len(kept),
+            )
+        cleaned.append({"tx_hash": tx["tx_hash"], "screenshots": kept or tx["screenshots"]})
+
+    return cleaned
 
 
 def _dedup_consecutive(pngs: list[Path]) -> list[Path]:

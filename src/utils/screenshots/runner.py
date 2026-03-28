@@ -617,25 +617,29 @@ class ScreenshotRunner:
             if not pending or self._cancelled:
                 break
 
-            coros = [
-                self._run_cs_tester_throttled(selector, tx_hash, raw_tx, erc7730_file, attempt)
-                for tx_hash, raw_tx in pending
-            ]
-            batch_results = await asyncio.gather(*coros, return_exceptions=True)
-
             next_pending: list[tuple[str, str]] = []
-            for (tx_hash, raw_tx), result in zip(pending, batch_results, strict=False):
-                if isinstance(result, Exception):
-                    logger.warning("[SCREENSHOTS][%s] cs-tester raised for tx %s: %s", selector, tx_hash[:10], result)
-                    next_pending.append((tx_hash, raw_tx))
-                elif result and result["screenshots"]:
-                    completed.append(result)
-                else:
+            for tx_hash, raw_tx in pending:
+                if self._cancelled:
+                    break
+                try:
+                    result = await self._run_cs_tester_throttled(
+                        selector,
+                        tx_hash,
+                        raw_tx,
+                        erc7730_file,
+                        attempt,
+                    )
+                    if result and result["screenshots"]:
+                        completed.append(result)
+                    else:
+                        next_pending.append((tx_hash, raw_tx))
+                except Exception as exc:
+                    logger.warning("[SCREENSHOTS][%s] cs-tester raised for tx %s: %s", selector, tx_hash[:10], exc)
                     next_pending.append((tx_hash, raw_tx))
 
             if next_pending and attempt < CS_TESTER_MAX_RETRIES - 1:
                 logger.info(
-                    "[SCREENSHOTS][%s] %d tx(s) failed attempt %d, retrying concurrently...",
+                    "[SCREENSHOTS][%s] %d tx(s) failed attempt %d, retrying...",
                     selector,
                     len(next_pending),
                     attempt + 1,
@@ -661,7 +665,7 @@ class ScreenshotRunner:
         selectors_info: list[dict[str, Any]],
         erc7730_file: Path,
     ) -> dict[str, list[TxScreenshots]]:
-        """Run screenshot capture for all selectors concurrently."""
+        """Run screenshot capture for all selectors sequentially."""
         try:
             await asyncio.to_thread(self._start_persistent_speculos)
         except Exception as exc:
@@ -669,32 +673,29 @@ class ScreenshotRunner:
             return {}
 
         try:
-
-            async def _one(info: dict[str, Any]) -> tuple[str, list[TxScreenshots]]:
-                if self._cancelled:
-                    return info["selector"].lower(), []
-                sel = info["selector"]
-                tx_screenshots = await self.capture_for_selector_async(
-                    selector=sel,
-                    chain_id=info["chain_id"],
-                    transactions=info["transactions"],
-                    erc7730_file=erc7730_file,
-                )
-                return sel.lower(), tx_screenshots
-
-            results = await asyncio.gather(
-                *[_one(info) for info in selectors_info],
-                return_exceptions=True,
-            )
-
             screenshot_map: dict[str, list[TxScreenshots]] = {}
-            for result in results:
-                if isinstance(result, Exception):
-                    logger.warning("[SCREENSHOTS] Selector task failed: %s", result)
-                    continue
-                sel, tx_screenshots = result
-                if tx_screenshots:
-                    screenshot_map[sel] = tx_screenshots
+            for i, info in enumerate(selectors_info, 1):
+                if self._cancelled:
+                    logger.info("[SCREENSHOTS] Cancelled — skipping remaining selectors")
+                    break
+                sel = info["selector"]
+                logger.info(
+                    "[SCREENSHOTS] Processing selector %d/%d: %s",
+                    i,
+                    len(selectors_info),
+                    sel,
+                )
+                try:
+                    tx_screenshots = await self.capture_for_selector_async(
+                        selector=sel,
+                        chain_id=info["chain_id"],
+                        transactions=info["transactions"],
+                        erc7730_file=erc7730_file,
+                    )
+                    if tx_screenshots:
+                        screenshot_map[sel.lower()] = tx_screenshots
+                except Exception as exc:
+                    logger.warning("[SCREENSHOTS] Selector %s failed: %s", sel, exc)
 
             return screenshot_map
         finally:

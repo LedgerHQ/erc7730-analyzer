@@ -96,12 +96,15 @@ def _get_oidc_token(audience: str = "erc7730-analyzer") -> str:
 # Retry helper for transient HTTP errors
 # ---------------------------------------------------------------------------
 _RETRYABLE_STATUS_CODES = {502, 503, 504}
+_POST_RETRYABLE_STATUS_CODES = {404, 502, 503, 504}
 
 
-def _is_retryable(exc: Exception) -> bool:
+def _is_retryable(exc: Exception, *, method: str = "GET") -> bool:
     """Return True for transient errors that warrant a retry."""
-    if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code in _RETRYABLE_STATUS_CODES:
-        return True
+    if isinstance(exc, httpx.HTTPStatusError):
+        codes = _POST_RETRYABLE_STATUS_CODES if method == "POST" else _RETRYABLE_STATUS_CODES
+        if exc.response.status_code in codes:
+            return True
     if isinstance(exc, (httpx.ConnectError, httpx.ReadTimeout, httpx.WriteTimeout, httpx.PoolTimeout)):
         return True
     return isinstance(exc, RuntimeError) and "at capacity" in str(exc).lower()
@@ -155,7 +158,7 @@ def start_analysis(
             return resp.json()
         except Exception as exc:
             last_exc = exc
-            if attempt < _MAX_HTTP_RETRIES and _is_retryable(exc):
+            if attempt < _MAX_HTTP_RETRIES and _is_retryable(exc, method="POST"):
                 delay = _HTTP_RETRY_BACKOFF_BASE * (2**attempt)
                 print(
                     f"[CLIENT] POST /analyze failed ({exc!r}), retrying in {delay}s "

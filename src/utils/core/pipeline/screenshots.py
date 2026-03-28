@@ -142,7 +142,9 @@ class AnalyzerPipelineScreenshotsMixin:
             "=" * 60,
         )
 
-        # Run all selector captures concurrently via asyncio
+        cancel_event = context.get("cancel_event")
+        runner.cancel_event = cancel_event
+
         screenshot_map = asyncio.run(
             runner.capture_all_selectors_async(
                 selectors_info=selectors_info,
@@ -150,9 +152,7 @@ class AnalyzerPipelineScreenshotsMixin:
             )
         )
 
-        total = sum(
-            len(s) for tx_list in screenshot_map.values() for entry in tx_list for s in entry.get("screenshots", [])
-        )
+        total = sum(len(entry.get("screenshots", [])) for tx_list in screenshot_map.values() for entry in tx_list)
         if total == 0:
             logger.warning(
                 "[SCREENSHOTS] All %d selector capture(s) produced 0 screenshots — "
@@ -166,3 +166,4 @@ class AnalyzerPipelineScreenshotsMixin:
                 len(screenshot_map),
             )
         context["screenshot_data"] = screenshot_map
+        context["_screenshot_runner"] = runner

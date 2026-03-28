@@ -59,7 +59,6 @@ _analysis_semaphore: asyncio.Semaphore | None = None
 _cleanup_task: asyncio.Task | None = None
 
 _MAX_CONCURRENT_ANALYSES = 1
-_ANALYSIS_TIMEOUT_SECONDS = 60 * 45  # 45 minutes
 
 
 def get_config() -> ServiceConfig:
@@ -342,6 +341,13 @@ def _build_report_payload(
     }
 
 
+def _cleanup_screenshot_dirs(results: dict[str, Any]) -> None:
+    """Clean up screenshot temp dirs after report generation has read the PNGs."""
+    runner = results.get("context", {}).get("_screenshot_runner")
+    if runner and hasattr(runner, "cleanup_screenshot_dirs"):
+        runner.cleanup_screenshot_dirs()
+
+
 async def _execute_analysis(
     *,
     job: AnalysisJob,
@@ -416,8 +422,9 @@ async def _execute_analysis(
                         None,  # raw_txs
                         None,  # prepared_inputs
                         include_root=include_root,
+                        cancel_event=job.cancel_event,
                     ),
-                    timeout=_ANALYSIS_TIMEOUT_SECONDS,
+                    timeout=cfg.analysis_timeout_seconds,
                 )
             finally:
                 root_logger.removeHandler(handler)
@@ -428,18 +435,25 @@ async def _execute_analysis(
 
             job.set_status("running", "Generating reports")
             payload = _build_report_payload(results, job.tmp_dir, safe_filename)
+            _cleanup_screenshot_dirs(results)
             job.set_result(payload)
+            job.cleanup_tmp()
 
     except asyncio.CancelledError:
         job.set_error("Analysis cancelled")
     except TimeoutError:
+        job.cancel_event.set()
         job.set_error("Analysis timed out")
+        logger.warning(
+            "[SERVICE] Analysis timed out for %s — cancel_event set, deferring tmp cleanup "
+            "to periodic eviction (analysis thread should wind down soon)",
+            job.run_key,
+        )
     except Exception:
         logger.exception("[SERVICE] Analysis failed for %s", job.run_key)
         job.set_error("Internal analysis error")
     finally:
         utils_logger.setLevel(utils_logger_level)
-        job.cleanup_tmp()
 
 
 # ---------------------------------------------------------------------------

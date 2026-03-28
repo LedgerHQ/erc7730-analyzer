@@ -12,7 +12,13 @@ Three cases cover the scenarios observed in production:
 import hashlib
 from pathlib import Path
 
-from utils.screenshots.runner import TRIM_HEAD, TRIM_TAIL, _dedup_consecutive, _sort_key
+from utils.screenshots.runner import (
+    TRIM_HEAD,
+    TRIM_TAIL,
+    _dedup_consecutive,
+    _sort_key,
+    _strip_shared_screens,
+)
 
 FIXTURES = Path(__file__).parent / "fixtures" / "screenshots"
 
@@ -171,3 +177,77 @@ class TestTrimEdgeCases:
         assert len(kept) == 4
         assert kept[0].name == "screenshot_4.png"
         assert kept[-1].name == "screenshot_7.png"
+
+
+class TestStripSharedScreens:
+    """Cross-transaction shared screen removal.
+
+    Preamble/confirmation screens are byte-identical across transactions
+    (e.g. 'Hold to sign', 'Approved').  Data screens are unique per tx.
+    """
+
+    def test_removes_shared_confirmation(self, tmp_path):
+        """Shared 'hold-to-sign' screen is stripped from both txs."""
+        shared_content = b"hold_to_sign_screen"
+        tx1_dir = tmp_path / "tx1"
+        tx2_dir = tmp_path / "tx2"
+        tx1_dir.mkdir()
+        tx2_dir.mkdir()
+
+        # tx1: 2 unique data + 1 shared confirmation
+        (tx1_dir / "s1.png").write_bytes(b"tx1_data_page_1")
+        (tx1_dir / "s2.png").write_bytes(b"tx1_data_page_2")
+        (tx1_dir / "s3.png").write_bytes(shared_content)
+
+        # tx2: 1 unique data + 1 shared confirmation
+        (tx2_dir / "s1.png").write_bytes(b"tx2_data_page_1")
+        (tx2_dir / "s2.png").write_bytes(shared_content)
+
+        tx_results = [
+            {"tx_hash": "0xaaa", "screenshots": [str(tx1_dir / f"s{i}.png") for i in range(1, 4)]},
+            {"tx_hash": "0xbbb", "screenshots": [str(tx2_dir / f"s{i}.png") for i in range(1, 3)]},
+        ]
+
+        cleaned = _strip_shared_screens(tx_results, "0xtest")
+
+        assert len(cleaned[0]["screenshots"]) == 2
+        assert len(cleaned[1]["screenshots"]) == 1
+        assert all(str(shared_content) not in p for c in cleaned for p in c["screenshots"])
+
+    def test_no_shared_screens(self, tmp_path):
+        """All unique screens → nothing removed."""
+        tx1_dir = tmp_path / "tx1"
+        tx2_dir = tmp_path / "tx2"
+        tx1_dir.mkdir()
+        tx2_dir.mkdir()
+
+        (tx1_dir / "s1.png").write_bytes(b"tx1_unique")
+        (tx2_dir / "s1.png").write_bytes(b"tx2_unique")
+
+        tx_results = [
+            {"tx_hash": "0xaaa", "screenshots": [str(tx1_dir / "s1.png")]},
+            {"tx_hash": "0xbbb", "screenshots": [str(tx2_dir / "s1.png")]},
+        ]
+
+        cleaned = _strip_shared_screens(tx_results, "0xtest")
+        assert len(cleaned[0]["screenshots"]) == 1
+        assert len(cleaned[1]["screenshots"]) == 1
+
+    def test_all_shared_keeps_original(self, tmp_path):
+        """If ALL screenshots are shared, keeps originals as fallback."""
+        tx1_dir = tmp_path / "tx1"
+        tx2_dir = tmp_path / "tx2"
+        tx1_dir.mkdir()
+        tx2_dir.mkdir()
+
+        (tx1_dir / "s1.png").write_bytes(b"same")
+        (tx2_dir / "s1.png").write_bytes(b"same")
+
+        tx_results = [
+            {"tx_hash": "0xaaa", "screenshots": [str(tx1_dir / "s1.png")]},
+            {"tx_hash": "0xbbb", "screenshots": [str(tx2_dir / "s1.png")]},
+        ]
+
+        cleaned = _strip_shared_screens(tx_results, "0xtest")
+        assert len(cleaned[0]["screenshots"]) == 1
+        assert len(cleaned[1]["screenshots"]) == 1

@@ -636,6 +636,9 @@ class ScreenshotRunner:
                 ", ".join(h[:10] for h, _ in pending),
             )
 
+        if len(completed) >= 2:
+            completed = _strip_shared_screens(completed, selector)
+
         return completed
 
     async def capture_all_selectors_async(
@@ -868,6 +871,54 @@ class ScreenshotRunner:
             )
 
         return {"tx_hash": tx_hash, "screenshots": [str(p) for p in meaningful]}
+
+
+def _strip_shared_screens(
+    tx_results: list[TxScreenshots],
+    selector: str,
+) -> list[TxScreenshots]:
+    """Remove screenshots whose content appears in 2+ different transactions.
+
+    Data screens are unique per transaction (different amounts, addresses, etc.).
+    Preamble and confirmation screens (home, opt-in, hold-to-sign, approved) are
+    byte-identical across transactions.  By counting how many DISTINCT transactions
+    each hash appears in, we can reliably filter them out.
+    """
+    from collections import Counter
+
+    hash_tx_count: Counter[str] = Counter()
+    tx_hashes_map: list[list[str]] = []
+
+    for tx in tx_results:
+        seen_in_tx: set[str] = set()
+        per_tx: list[str] = []
+        for path_str in tx["screenshots"]:
+            h = hashlib.md5(Path(path_str).read_bytes()).hexdigest()
+            per_tx.append(h)
+            seen_in_tx.add(h)
+        tx_hashes_map.append(per_tx)
+        for h in seen_in_tx:
+            hash_tx_count[h] += 1
+
+    shared_hashes = {h for h, c in hash_tx_count.items() if c >= 2}
+    if not shared_hashes:
+        return tx_results
+
+    cleaned: list[TxScreenshots] = []
+    for tx, per_tx in zip(tx_results, tx_hashes_map, strict=False):
+        kept = [p for p, h in zip(tx["screenshots"], per_tx, strict=False) if h not in shared_hashes]
+        removed = len(tx["screenshots"]) - len(kept)
+        if removed:
+            logger.info(
+                "[SCREENSHOTS][%s] Stripped %d shared screen(s) from tx %s (%d remaining)",
+                selector,
+                removed,
+                tx["tx_hash"][:10],
+                len(kept),
+            )
+        cleaned.append({"tx_hash": tx["tx_hash"], "screenshots": kept or tx["screenshots"]})
+
+    return cleaned
 
 
 def _dedup_consecutive(pngs: list[Path]) -> list[Path]:

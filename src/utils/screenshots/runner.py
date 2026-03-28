@@ -57,8 +57,9 @@ CS_TESTER_STABLE_AFTER_SEC = 3.0
 CS_TESTER_POLL_INTERVAL_SEC = 0.5
 CS_TESTER_SHUTDOWN_GRACE_SEC = 5.0
 LOG_TAIL_CHARS = 800
-TRIM_HEAD = 3  # home + opt-in + review-swipe
-TRIM_TAIL = 3  # hold-to-sign + approved + home
+TRIM_HEAD = 2  # home + opt-in
+TRIM_TAIL = 2  # hold-to-sign + approved
+MIN_DATA_KEPT = 2  # always preserve at least 2 data screenshots
 
 _SPECULOS_PORT_LOCK = threading.Lock()
 _RESERVED_PORTS: set[int] = set()
@@ -843,12 +844,15 @@ class ScreenshotRunner:
         if len(deduped) > TRIM_HEAD:
             start = TRIM_HEAD
             remaining = len(deduped) - start
-            end = len(deduped) - TRIM_TAIL if remaining > TRIM_TAIL else len(deduped)
+            tail = TRIM_TAIL if remaining > TRIM_TAIL + MIN_DATA_KEPT else max(0, remaining - MIN_DATA_KEPT)
+            end = len(deduped) - tail
             meaningful = deduped[start:end]
         elif deduped:
             meaningful = deduped[-1:]
         else:
             meaningful = []
+        if len(meaningful) < MIN_DATA_KEPT and len(deduped) >= MIN_DATA_KEPT:
+            meaningful = deduped[-MIN_DATA_KEPT:]
 
         if meaningful:
             logger.info(

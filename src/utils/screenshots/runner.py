@@ -1,6 +1,7 @@
 """Run cs-tester CLI to capture Ledger device screenshots for transactions."""
 
 import asyncio
+import hashlib
 import importlib.util
 import json
 import logging
@@ -56,8 +57,8 @@ CS_TESTER_STABLE_AFTER_SEC = 3.0
 CS_TESTER_POLL_INTERVAL_SEC = 0.5
 CS_TESTER_SHUTDOWN_GRACE_SEC = 5.0
 LOG_TAIL_CHARS = 800
-TRIM_HEAD = 3
-TRIM_TAIL = 3
+TRIM_HEAD = 3  # home + opt-in + review-swipe
+TRIM_TAIL = 3  # hold-to-sign + approved + home
 
 _SPECULOS_PORT_LOCK = threading.Lock()
 _RESERVED_PORTS: set[int] = set()
@@ -837,23 +838,26 @@ class ScreenshotRunner:
                         )
 
         all_pngs = sorted(screenshots_dir.glob("screenshot_*.png"), key=_sort_key)
+        deduped = _dedup_consecutive(all_pngs)
 
-        if len(all_pngs) > TRIM_HEAD + TRIM_TAIL:
-            meaningful = all_pngs[TRIM_HEAD : len(all_pngs) - TRIM_TAIL]
-        elif all_pngs:
-            meaningful = all_pngs
+        if len(deduped) > TRIM_HEAD:
+            start = TRIM_HEAD
+            remaining = len(deduped) - start
+            end = len(deduped) - TRIM_TAIL if remaining > TRIM_TAIL else len(deduped)
+            meaningful = deduped[start:end]
+        elif deduped:
+            meaningful = deduped[-1:]
         else:
             meaningful = []
 
         if meaningful:
             logger.info(
-                "[SCREENSHOTS][%s] Kept %d/%d screenshot(s) for tx %s (trimmed %d head + %d tail)",
+                "[SCREENSHOTS][%s] %d raw → %d unique → %d kept for tx %s",
                 selector,
-                len(meaningful),
                 len(all_pngs),
+                len(deduped),
+                len(meaningful),
                 tx_hash[:10],
-                TRIM_HEAD,
-                TRIM_TAIL,
             )
         else:
             logger.warning(
@@ -864,6 +868,20 @@ class ScreenshotRunner:
             )
 
         return {"tx_hash": tx_hash, "screenshots": [str(p) for p in meaningful]}
+
+
+def _dedup_consecutive(pngs: list[Path]) -> list[Path]:
+    """Remove consecutive duplicate screenshots (identical file content)."""
+    if not pngs:
+        return []
+    result: list[Path] = [pngs[0]]
+    prev_hash = hashlib.md5(pngs[0].read_bytes()).hexdigest()
+    for p in pngs[1:]:
+        h = hashlib.md5(p.read_bytes()).hexdigest()
+        if h != prev_hash:
+            result.append(p)
+            prev_hash = h
+    return result
 
 
 def _sort_key(path: Path) -> int:

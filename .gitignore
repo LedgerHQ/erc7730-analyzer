@@ -14,6 +14,11 @@ wheels/
 **/output/
 test/
 tests/
+!tests/conftest.py
+!tests/__init__.py
+!tests/test_*.py
+!tests/fixtures/
+!tests/fixtures/**
 testing/
 benchmark/
 scripts/

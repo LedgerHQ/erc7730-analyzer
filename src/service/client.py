@@ -34,7 +34,9 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _REQUEST_TIMEOUT = httpx.Timeout(connect=30, read=60, write=30, pool=30)
-_MAX_POLL_SECONDS = 2700  # 45 minutes
+_MAX_POLL_SECONDS = 11100  # 3h 5min (server timeout is 3h; extra buffer for network)
+_MAX_HTTP_RETRIES = 3
+_HTTP_RETRY_BACKOFF_BASE = 5  # seconds; retries at 5s, 10s, 20s
 
 
 def _use_bundle_mode(descriptor_path: Path, bundle_root: Path | None) -> bool:
@@ -91,6 +93,21 @@ def _get_oidc_token(audience: str = "erc7730-analyzer") -> str:
 
 
 # ---------------------------------------------------------------------------
+# Retry helper for transient HTTP errors
+# ---------------------------------------------------------------------------
+_RETRYABLE_STATUS_CODES = {502, 503, 504}
+
+
+def _is_retryable(exc: Exception) -> bool:
+    """Return True for transient errors that warrant a retry."""
+    if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code in _RETRYABLE_STATUS_CODES:
+        return True
+    if isinstance(exc, (httpx.ConnectError, httpx.ReadTimeout, httpx.WriteTimeout, httpx.PoolTimeout)):
+        return True
+    return isinstance(exc, RuntimeError) and "at capacity" in str(exc).lower()
+
+
+# ---------------------------------------------------------------------------
 # Core API calls
 # ---------------------------------------------------------------------------
 def start_analysis(
@@ -126,13 +143,29 @@ def start_analysis(
 
     url = f"{service_url.rstrip('/')}/analyze"
 
-    resp = httpx.post(url, json=payload, headers=headers, timeout=_REQUEST_TIMEOUT)
-    if resp.status_code == 401:
-        raise PermissionError(f"Authentication failed: {resp.text}")
-    if resp.status_code == 503:
-        raise RuntimeError(f"Service at capacity: {resp.text}")
-    resp.raise_for_status()
-    return resp.json()
+    last_exc: Exception | None = None
+    for attempt in range(_MAX_HTTP_RETRIES + 1):
+        try:
+            resp = httpx.post(url, json=payload, headers=headers, timeout=_REQUEST_TIMEOUT)
+            if resp.status_code == 401:
+                raise PermissionError(f"Authentication failed: {resp.text}")
+            if resp.status_code == 503:
+                raise RuntimeError(f"Service at capacity: {resp.text}")
+            resp.raise_for_status()
+            return resp.json()
+        except Exception as exc:
+            last_exc = exc
+            if attempt < _MAX_HTTP_RETRIES and _is_retryable(exc):
+                delay = _HTTP_RETRY_BACKOFF_BASE * (2**attempt)
+                print(
+                    f"[CLIENT] POST /analyze failed ({exc!r}), retrying in {delay}s "
+                    f"(attempt {attempt + 1}/{_MAX_HTTP_RETRIES})...",
+                    file=sys.stderr,
+                )
+                time.sleep(delay)
+                continue
+            raise
+    raise last_exc  # type: ignore[misc]
 
 
 def poll_analysis(
@@ -153,11 +186,27 @@ def poll_analysis(
         "run_key": run_key,
     }
 
-    resp = httpx.get(url, headers=headers, params=params, timeout=_REQUEST_TIMEOUT)
-    if resp.status_code == 401:
-        raise PermissionError(f"Authentication failed: {resp.text}")
-    resp.raise_for_status()
-    return resp.json()
+    last_exc: Exception | None = None
+    for attempt in range(_MAX_HTTP_RETRIES + 1):
+        try:
+            resp = httpx.get(url, headers=headers, params=params, timeout=_REQUEST_TIMEOUT)
+            if resp.status_code == 401:
+                raise PermissionError(f"Authentication failed: {resp.text}")
+            resp.raise_for_status()
+            return resp.json()
+        except Exception as exc:
+            last_exc = exc
+            if attempt < _MAX_HTTP_RETRIES and _is_retryable(exc):
+                delay = _HTTP_RETRY_BACKOFF_BASE * (2**attempt)
+                print(
+                    f"[CLIENT] GET /analyze failed ({exc!r}), retrying in {delay}s "
+                    f"(attempt {attempt + 1}/{_MAX_HTTP_RETRIES})...",
+                    file=sys.stderr,
+                )
+                time.sleep(delay)
+                continue
+            raise
+    raise last_exc  # type: ignore[misc]
 
 
 def run_analysis(

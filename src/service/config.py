@@ -56,6 +56,7 @@ class ServiceConfig:
     job_retention_ttl: int = 3600
     max_retained_log_lines: int = 500
     poll_interval_hint: int = 5
+    analysis_timeout_seconds: int = 60 * 60 * 3  # 3 hours
 
     # --- server ---
     host: str = "0.0.0.0"
@@ -98,6 +99,7 @@ def load_config(env_file: str | Path | None = None) -> ServiceConfig:
         job_retention_ttl=int(os.getenv("JOB_RETENTION_TTL", "3600")),
         max_retained_log_lines=int(os.getenv("MAX_RETAINED_LOG_LINES", "500")),
         poll_interval_hint=int(os.getenv("POLL_INTERVAL_HINT", "5")),
+        analysis_timeout_seconds=int(os.getenv("ANALYSIS_TIMEOUT_SECONDS", str(60 * 60 * 3))),
         host=os.getenv("SERVICE_HOST", "0.0.0.0"),
         port=int(os.getenv("SERVICE_PORT", "8080")),
     )

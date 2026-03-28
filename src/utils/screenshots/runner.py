@@ -159,6 +159,22 @@ class ScreenshotRunner:
         self._persistent_speculos_api_port: int | None = None
         self._persistent_speculos_apdu_port: int | None = None
         self.last_unavailability_reasons: list[str] = []
+        self._screenshot_tmp_dirs: list[Path] = []
+        self.cancel_event: threading.Event | None = None
+
+    @property
+    def _cancelled(self) -> bool:
+        return self.cancel_event is not None and self.cancel_event.is_set()
+
+    def cleanup_screenshot_dirs(self) -> None:
+        """Remove all temporary screenshot directories created by this runner."""
+        for d in self._screenshot_tmp_dirs:
+            if d.exists():
+                shutil.rmtree(d, ignore_errors=True)
+        count = len(self._screenshot_tmp_dirs)
+        self._screenshot_tmp_dirs.clear()
+        if count:
+            logger.info("[SCREENSHOTS] Cleaned up %d screenshot temp dir(s)", count)
 
     # ------------------------------------------------------------------
     # Availability checks
@@ -598,7 +614,7 @@ class ScreenshotRunner:
         completed: list[TxScreenshots] = []
 
         for attempt in range(CS_TESTER_MAX_RETRIES):
-            if not pending:
+            if not pending or self._cancelled:
                 break
 
             coros = [
@@ -655,6 +671,8 @@ class ScreenshotRunner:
         try:
 
             async def _one(info: dict[str, Any]) -> tuple[str, list[TxScreenshots]]:
+                if self._cancelled:
+                    return info["selector"].lower(), []
                 sel = info["selector"]
                 tx_screenshots = await self.capture_for_selector_async(
                     selector=sel,
@@ -695,11 +713,14 @@ class ScreenshotRunner:
         attempt: int = 0,
     ) -> TxScreenshots:
         """Run cs-tester for a single transaction (one attempt), then trim."""
+        if self._cancelled:
+            return {"tx_hash": tx_hash, "screenshots": []}
         screenshots_dir = Path(
             tempfile.mkdtemp(
                 prefix=f"cs_screenshots_{selector}_{tx_hash[:10]}_a{attempt}_",
             )
         )
+        self._screenshot_tmp_dirs.append(screenshots_dir)
         input_file = screenshots_dir / "input.json"
         input_file.write_text(
             json.dumps(

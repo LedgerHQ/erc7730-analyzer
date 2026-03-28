@@ -14,6 +14,7 @@ import asyncio
 import json
 import logging
 import shutil
+import threading
 import time
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -53,6 +54,7 @@ class AnalysisJob:
 
     tmp_dir: Path | None = field(default=None, repr=False)
     _task: asyncio.Task[None] | None = field(default=None, repr=False)
+    cancel_event: threading.Event = field(default_factory=threading.Event, repr=False)
 
     @property
     def is_terminal(self) -> bool:

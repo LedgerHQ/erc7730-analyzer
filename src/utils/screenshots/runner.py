@@ -50,6 +50,7 @@ SPECULOS_STARTUP_TIMEOUT = float(os.getenv("SPECULOS_STARTUP_TIMEOUT", "20"))
 SPECULOS_SHUTDOWN_GRACE_SEC = float(os.getenv("SPECULOS_SHUTDOWN_GRACE_SEC", "5"))
 MAX_TXS_PER_SELECTOR = 2
 MAX_CONCURRENT_SPECULOS = 1
+MAX_SCREENSHOT_SELECTORS = int(os.getenv("MAX_SCREENSHOT_SELECTORS", "5"))
 CS_TESTER_MAX_RETRIES = 3
 CS_TESTER_RETRY_DELAY = 3
 CS_TESTER_TIMEOUT_SEC = 180
@@ -302,7 +303,7 @@ class ScreenshotRunner:
             elf_path,
         )
         return subprocess.Popen(
-            cmd,
+            ["nice", "-n", "10", *cmd],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.PIPE,
             env=dict(os.environ),
@@ -822,7 +823,7 @@ class ScreenshotRunner:
                 stderr_log.open("w", encoding="utf-8") as stderr_handle,
             ):
                 cs_tester_proc = subprocess.Popen(
-                    cmd,
+                    ["nice", "-n", "10", *cmd],
                     cwd=str(self.cs_tester_root),
                     env=env,
                     stdout=stdout_handle,

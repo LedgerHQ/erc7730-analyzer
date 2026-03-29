@@ -132,6 +132,49 @@ def _file_output_tail(path: Path, limit: int = LOG_TAIL_CHARS) -> str:
         return "(no output)"
 
 
+def _stage_descriptor_for_chain(
+    erc7730_file: Path,
+    dest_dir: Path,
+    chain_id: int,
+    selector: str,
+    tx_hash: str,
+) -> Path:
+    """Copy the ERC-7730 descriptor, trimming deployments to only ``chain_id``.
+
+    cs-tester parses the full descriptor including all deployments.  For Diamond
+    proxies with many chains (e.g. LIFIDiamond with 30+), this causes excessive
+    resource usage that crashes constrained environments like App Runner.
+    """
+    out = dest_dir / erc7730_file.name
+    try:
+        data = json.loads(erc7730_file.read_text(encoding="utf-8"))
+        deployments = data.get("context", {}).get("contract", {}).get("deployments")
+        if isinstance(deployments, list) and len(deployments) > 1:
+            matching = [d for d in deployments if d.get("chainId") == chain_id]
+            if matching:
+                data["context"]["contract"]["deployments"] = matching
+                logger.info(
+                    "[SCREENSHOTS][%s] Trimmed descriptor from %d to %d deployment(s) for chain %d (tx %s)",
+                    selector,
+                    len(deployments),
+                    len(matching),
+                    chain_id,
+                    tx_hash[:10],
+                )
+            else:
+                data["context"]["contract"]["deployments"] = deployments[:1]
+                logger.warning(
+                    "[SCREENSHOTS][%s] No deployment for chain %d, falling back to first deployment (tx %s)",
+                    selector,
+                    chain_id,
+                    tx_hash[:10],
+                )
+        out.write_text(json.dumps(data), encoding="utf-8")
+    except (json.JSONDecodeError, KeyError):
+        shutil.copy2(erc7730_file, out)
+    return out
+
+
 class ScreenshotRunner:
     """Generate Ledger device screenshots using cs-tester + native Speculos.
 
@@ -535,6 +578,7 @@ class ScreenshotRunner:
         raw_tx: str,
         erc7730_file: Path,
         attempt: int,
+        chain_id: int = 1,
     ) -> TxScreenshots:
         """Run a single cs-tester invocation, throttled by the Speculos semaphore."""
         sem = self._get_speculos_semaphore()
@@ -547,6 +591,7 @@ class ScreenshotRunner:
                     raw_tx,
                     erc7730_file,
                     attempt,
+                    chain_id,
                 )
             finally:
                 if self._persistent_speculos_proc is not None:
@@ -628,6 +673,7 @@ class ScreenshotRunner:
                         raw_tx,
                         erc7730_file,
                         attempt,
+                        chain_id=chain_id,
                     )
                     if result and result["screenshots"]:
                         completed.append(result)
@@ -712,6 +758,7 @@ class ScreenshotRunner:
         raw_tx: str,
         erc7730_file: Path,
         attempt: int = 0,
+        chain_id: int = 1,
     ) -> TxScreenshots:
         """Run cs-tester for a single transaction (one attempt), then trim."""
         if self._cancelled:
@@ -748,7 +795,13 @@ class ScreenshotRunner:
 
         staged_erc7730_file = screenshots_dir / Path(erc7730_file).name
         try:
-            shutil.copy2(erc7730_file, staged_erc7730_file)
+            staged_erc7730_file = _stage_descriptor_for_chain(
+                erc7730_file,
+                screenshots_dir,
+                chain_id,
+                selector,
+                tx_hash,
+            )
         except OSError as exc:
             logger.warning(
                 "[SCREENSHOTS][%s] Failed to stage ERC-7730 file %s for tx %s: %s",

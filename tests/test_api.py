@@ -74,7 +74,10 @@ class TestHealth:
     def test_returns_ok(self, client: TestClient):
         resp = client.get("/health")
         assert resp.status_code == 200
-        assert resp.json() == {"status": "ok"}
+        data = resp.json()
+        assert data["status"] == "ok"
+        assert data["semaphore_locked"] is False
+        assert data["active_jobs"] == 0
 
 
 class TestPostAnalyze:

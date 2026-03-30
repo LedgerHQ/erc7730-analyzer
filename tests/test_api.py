@@ -9,6 +9,7 @@ import time
 from typing import TYPE_CHECKING
 from unittest.mock import patch
 
+import httpx
 import pytest
 
 import service.app as app_mod
@@ -228,3 +229,89 @@ class TestClientCli:
         assert status["status"] == "failed"
         assert status["has_criticals"] is False
         assert "RuntimeError: connection dropped" in status["error"]
+
+
+class TestClientAuthRefresh:
+    def test_start_analysis_refreshes_token_for_each_retry(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        descriptor = tmp_path / "descriptor.json"
+        descriptor.write_text("{}")
+
+        seen_tokens: list[str | None] = []
+        responses = [
+            httpx.Response(504, request=httpx.Request("POST", "http://service.test/analyze")),
+            httpx.Response(502, request=httpx.Request("POST", "http://service.test/analyze")),
+            httpx.Response(
+                202,
+                request=httpx.Request("POST", "http://service.test/analyze"),
+                json={"run_key": "rk", "status": "queued"},
+            ),
+        ]
+        token_counter = {"value": 0}
+
+        def _next_token() -> str:
+            token_counter["value"] += 1
+            return f"token-{token_counter['value']}"
+
+        def _fake_post(url: str, *, json: dict, headers: dict[str, str], timeout: httpx.Timeout) -> httpx.Response:
+            del url, json, timeout
+            seen_tokens.append(headers.get("Authorization"))
+            return responses.pop(0)
+
+        monkeypatch.setattr(client_mod.httpx, "post", _fake_post)
+        monkeypatch.setattr(client_mod.time, "sleep", lambda _: None)
+        monkeypatch.setattr(client_mod, "_MAX_HTTP_RETRIES", 2)
+
+        result = client_mod.start_analysis(
+            service_url="http://service.test",
+            descriptor_path=descriptor,
+            get_auth_token=_next_token,
+        )
+
+        assert result == {"run_key": "rk", "status": "queued"}
+        assert seen_tokens == ["Bearer token-1", "Bearer token-2", "Bearer token-3"]
+
+    def test_poll_analysis_refreshes_token_for_each_retry(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        seen_tokens: list[str | None] = []
+        responses = [
+            httpx.Response(504, request=httpx.Request("GET", "http://service.test/analyze")),
+            httpx.Response(502, request=httpx.Request("GET", "http://service.test/analyze")),
+            httpx.Response(
+                202,
+                request=httpx.Request("GET", "http://service.test/analyze"),
+                json={"status": "running"},
+            ),
+        ]
+        token_counter = {"value": 0}
+
+        def _next_token() -> str:
+            token_counter["value"] += 1
+            return f"token-{token_counter['value']}"
+
+        def _fake_get(
+            url: str,
+            *,
+            headers: dict[str, str],
+            params: dict[str, str],
+            timeout: httpx.Timeout,
+        ) -> httpx.Response:
+            del url, params, timeout
+            seen_tokens.append(headers.get("Authorization"))
+            return responses.pop(0)
+
+        monkeypatch.setattr(client_mod.httpx, "get", _fake_get)
+        monkeypatch.setattr(client_mod.time, "sleep", lambda _: None)
+        monkeypatch.setattr(client_mod, "_MAX_HTTP_RETRIES", 2)
+
+        result = client_mod.poll_analysis(
+            service_url="http://service.test",
+            run_key="rk",
+            get_auth_token=_next_token,
+            include_logs=True,
+        )
+
+        assert result == {"status": "running"}
+        assert seen_tokens == ["Bearer token-1", "Bearer token-2", "Bearer token-3"]

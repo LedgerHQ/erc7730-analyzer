@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import shutil
+import signal
 import socket
 import subprocess
 import sys
@@ -392,6 +393,7 @@ class ScreenshotRunner:
             stderr=subprocess.PIPE,
             env=dict(os.environ),
             preexec_fn=self._subprocess_preexec_fn(),
+            start_new_session=True,
         )
 
     @staticmethod
@@ -407,23 +409,60 @@ class ScreenshotRunner:
             return ""
 
     @staticmethod
-    def _stop_speculos_process(proc: subprocess.Popen | None) -> None:
+    def _stop_process_tree(
+        proc: subprocess.Popen | None,
+        *,
+        grace_sec: float,
+        kill_grace_sec: float = 5.0,
+        label: str,
+    ) -> bool:
+        """Stop a subprocess and its descendants via its own process group."""
         if proc is None:
-            return
+            return True
         try:
+            if proc.poll() is not None:
+                return True
+
+            pgid: int | None = None
+            with suppress(Exception):
+                pgid = os.getpgid(proc.pid)
+
+            if pgid is not None:
+                with suppress(ProcessLookupError):
+                    os.killpg(pgid, signal.SIGTERM)
+            else:
+                proc.terminate()
+            try:
+                proc.wait(timeout=grace_sec)
+                return True
+            except subprocess.TimeoutExpired:
+                if pgid is not None:
+                    with suppress(ProcessLookupError):
+                        os.killpg(pgid, signal.SIGKILL)
+                else:
+                    proc.kill()
+                try:
+                    proc.wait(timeout=kill_grace_sec)
+                    return True
+                except subprocess.TimeoutExpired:
+                    return False
+        except Exception as exc:
+            logger.warning("%s Error stopping process tree (pid=%s): %s", label, proc.pid, exc)
+            return False
+        finally:
             if proc.stderr is not None:
                 with suppress(Exception):
                     proc.stderr.close()
-            if proc.poll() is not None:
-                return
-            proc.terminate()
-            try:
-                proc.wait(timeout=SPECULOS_SHUTDOWN_GRACE_SEC)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-                proc.wait(timeout=5)
-        except Exception as exc:
-            logger.warning("[SCREENSHOTS][SETUP] Error stopping Speculos process: %s", exc)
+
+    @staticmethod
+    def _stop_speculos_process(proc: subprocess.Popen | None) -> None:
+        stopped = ScreenshotRunner._stop_process_tree(
+            proc,
+            grace_sec=SPECULOS_SHUTDOWN_GRACE_SEC,
+            label="[SCREENSHOTS][SETUP]",
+        )
+        if not stopped and proc is not None:
+            logger.warning("[SCREENSHOTS][SETUP] Failed to stop Speculos process tree (pid=%s)", proc.pid)
 
     def _start_persistent_speculos(self) -> None:
         """Start one native Speculos instance for the current screenshot batch."""
@@ -945,6 +984,7 @@ class ScreenshotRunner:
                     stdout=stdout_handle,
                     stderr=stderr_handle,
                     preexec_fn=self._subprocess_preexec_fn(),
+                    start_new_session=True,
                 )
                 success = self._wait_for_screenshots_or_exit(
                     cs_tester_proc,
@@ -963,20 +1003,18 @@ class ScreenshotRunner:
             logger.warning("[SCREENSHOTS][%s] cs-tester failed for tx %s: %s", selector, tx_hash[:10], exc)
             return {"tx_hash": tx_hash, "screenshots": []}
         finally:
-            if cs_tester_proc is not None and cs_tester_proc.poll() is None:
-                cs_tester_proc.terminate()
-                try:
-                    cs_tester_proc.wait(timeout=CS_TESTER_SHUTDOWN_GRACE_SEC)
-                except subprocess.TimeoutExpired:
-                    cs_tester_proc.kill()
-                    try:
-                        cs_tester_proc.wait(timeout=3)
-                    except subprocess.TimeoutExpired:
-                        logger.warning(
-                            "[SCREENSHOTS][%s] Failed to stop lingering cs-tester process for tx %s",
-                            selector,
-                            tx_hash[:10],
-                        )
+            stopped = self._stop_process_tree(
+                cs_tester_proc,
+                grace_sec=CS_TESTER_SHUTDOWN_GRACE_SEC,
+                kill_grace_sec=3,
+                label=f"[SCREENSHOTS][{selector}]",
+            )
+            if not stopped and cs_tester_proc is not None:
+                logger.warning(
+                    "[SCREENSHOTS][%s] Failed to stop lingering cs-tester process tree for tx %s",
+                    selector,
+                    tx_hash[:10],
+                )
 
         all_pngs = sorted(screenshots_dir.glob("screenshot_*.png"), key=_sort_key)
         deduped = _dedup_consecutive(all_pngs, selector, tx_hash)

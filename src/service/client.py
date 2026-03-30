@@ -124,6 +124,7 @@ def start_analysis(
     abi_path: Path | None = None,
     overrides: dict[str, Any] | None = None,
     auth_token: str | None = None,
+    get_auth_token: Callable[[], str | None] | None = None,
     bundle_root: Path | None = None,
 ) -> dict[str, Any]:
     """``POST /analyze`` — start an analysis and return the initial status."""
@@ -144,15 +145,15 @@ def start_analysis(
             if val is not None:
                 payload[key] = val
 
-    headers: dict[str, str] = {"Content-Type": "application/json"}
-    if auth_token:
-        headers["Authorization"] = f"Bearer {auth_token}"
-
     url = f"{service_url.rstrip('/')}/analyze"
 
     last_exc: Exception | None = None
     for attempt in range(_MAX_HTTP_RETRIES + 1):
         try:
+            token = get_auth_token() if get_auth_token else auth_token
+            headers: dict[str, str] = {"Content-Type": "application/json"}
+            if token:
+                headers["Authorization"] = f"Bearer {token}"
             resp = httpx.post(url, json=payload, headers=headers, timeout=_REQUEST_TIMEOUT)
             if resp.status_code == 401:
                 raise PermissionError(f"Authentication failed: {resp.text}")
@@ -180,13 +181,10 @@ def poll_analysis(
     service_url: str,
     run_key: str,
     auth_token: str | None = None,
+    get_auth_token: Callable[[], str | None] | None = None,
     include_logs: bool = False,
 ) -> dict[str, Any]:
     """``GET /analyze`` — poll the job status."""
-    headers: dict[str, str] = {}
-    if auth_token:
-        headers["Authorization"] = f"Bearer {auth_token}"
-
     url = f"{service_url.rstrip('/')}/analyze"
     params: dict[str, str] = {
         "include_logs": "true" if include_logs else "false",
@@ -196,6 +194,10 @@ def poll_analysis(
     last_exc: Exception | None = None
     for attempt in range(_MAX_HTTP_RETRIES + 1):
         try:
+            token = get_auth_token() if get_auth_token else auth_token
+            headers: dict[str, str] = {}
+            if token:
+                headers["Authorization"] = f"Bearer {token}"
             resp = httpx.get(url, headers=headers, params=params, timeout=_REQUEST_TIMEOUT)
             if resp.status_code == 401:
                 raise PermissionError(f"Authentication failed: {resp.text}")
@@ -236,7 +238,6 @@ def run_analysis(
     def _token() -> str | None:
         return get_auth_token() if get_auth_token else None
 
-    token = _token()
     print("[CLIENT] Starting analysis...", file=sys.stderr)
     if verbose:
         print("[CLIENT] Verbose live logs enabled", file=sys.stderr)
@@ -245,7 +246,7 @@ def run_analysis(
         descriptor_path=descriptor_path,
         abi_path=abi_path,
         overrides=overrides,
-        auth_token=token,
+        get_auth_token=_token,
         bundle_root=bundle_root,
     )
 
@@ -265,12 +266,11 @@ def run_analysis(
     while time.monotonic() < deadline:
         time.sleep(poll_interval)
 
-        token = _token()
         try:
             resp = poll_analysis(
                 service_url=service_url,
                 run_key=run_key,
-                auth_token=token,
+                get_auth_token=_token,
                 include_logs=verbose,
             )
         except httpx.HTTPStatusError as exc:

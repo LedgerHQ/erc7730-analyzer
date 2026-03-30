@@ -135,8 +135,11 @@ class AnalyzerPipelineScreenshotsMixin:
             context["screenshot_data"] = {}
             return
 
+        import gc
+
+        gc.collect()
         logger.info(
-            "\n%s\n[SCREENSHOTS] Capturing Ledger screenshots for %d selector(s) in parallel...\n%s",
+            "\n%s\n[SCREENSHOTS] Capturing Ledger screenshots for %d selector(s) (gc.collect done)...\n%s",
             "=" * 60,
             len(selectors_info),
             "=" * 60,

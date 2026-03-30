@@ -33,10 +33,10 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-_REQUEST_TIMEOUT = httpx.Timeout(connect=30, read=60, write=30, pool=30)
+_REQUEST_TIMEOUT = httpx.Timeout(connect=30, read=120, write=30, pool=30)
 _MAX_POLL_SECONDS = 11100  # 3h 5min (server timeout is 3h; extra buffer for network)
-_MAX_HTTP_RETRIES = 3
-_HTTP_RETRY_BACKOFF_BASE = 5  # seconds; retries at 5s, 10s, 20s
+_MAX_HTTP_RETRIES = 5
+_HTTP_RETRY_BACKOFF_BASE = 5  # seconds; retries at 5s, 10s, 20s, 40s, 80s
 
 
 def _use_bundle_mode(descriptor_path: Path, bundle_root: Path | None) -> bool:

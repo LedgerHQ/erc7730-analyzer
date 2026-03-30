@@ -137,6 +137,13 @@ class AnalyzerPipelineScreenshotsMixin:
 
         import gc
 
+        if hasattr(self, "tx_fetcher") and hasattr(self.tx_fetcher, "close_snowflake_connections"):
+            try:
+                self.tx_fetcher.close_snowflake_connections()
+                logger.info("[SCREENSHOTS] Closed cached Snowflake connections before capture")
+            except Exception as exc:
+                logger.warning("[SCREENSHOTS] Failed to close Snowflake connections before capture: %s", exc)
+
         gc.collect()
         logger.info(
             "\n%s\n[SCREENSHOTS] Capturing Ledger screenshots for %d selector(s) (gc.collect done)...\n%s",

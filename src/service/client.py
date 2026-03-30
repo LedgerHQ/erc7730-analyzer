@@ -39,6 +39,10 @@ _MAX_HTTP_RETRIES = 5
 _HTTP_RETRY_BACKOFF_BASE = 5  # seconds; retries at 5s, 10s, 20s, 40s, 80s
 
 
+class AnalysisJobLostError(RuntimeError):
+    """Raised when a job disappears after it already started running."""
+
+
 def _use_bundle_mode(descriptor_path: Path, bundle_root: Path | None) -> bool:
     if bundle_root is not None:
         return True
@@ -262,12 +266,22 @@ def run_analysis(
         time.sleep(poll_interval)
 
         token = _token()
-        resp = poll_analysis(
-            service_url=service_url,
-            run_key=run_key,
-            auth_token=token,
-            include_logs=verbose,
-        )
+        try:
+            resp = poll_analysis(
+                service_url=service_url,
+                run_key=run_key,
+                auth_token=token,
+                include_logs=verbose,
+            )
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 404:
+                last_status, last_message = last_status_line or (status, "")
+                detail = f"Analysis job disappeared after reaching status '{last_status}'"
+                if last_message:
+                    detail += f" ({last_message})"
+                detail += ". The service likely restarted and lost in-memory job state."
+                raise AnalysisJobLostError(detail) from exc
+            raise
 
         status = resp["status"]
         status_msg = resp.get("status_message", "")
@@ -308,6 +322,7 @@ def _write_status_artifact(
     protocol: str = "unknown",
     has_criticals: bool = False,
     error: str | None = None,
+    retryable: bool | None = None,
 ) -> Path:
     """Persist a small machine-readable status file for CI upload/debugging."""
     status_path = output_dir / "analysis_status.json"
@@ -318,6 +333,8 @@ def _write_status_artifact(
     }
     if error:
         payload["error"] = error
+    if retryable is not None:
+        payload["retryable"] = retryable
     status_path.write_text(json.dumps(payload, indent=2))
     return status_path
 
@@ -474,15 +491,17 @@ Examples:
         error_full = f"{type(exc).__name__}: {exc}"
         error_short = f"{type(exc).__name__}: {str(exc).split(chr(10))[0][:120]}"
         protocol_guess = Path(args.descriptor).stem.replace("calldata-", "").replace("-", "_")
+        exit_code = 3 if isinstance(exc, AnalysisJobLostError) else 2
         status_path = _write_status_artifact(
             output_dir,
             status="failed",
             protocol=protocol_guess,
             error=error_short,
+            retryable=exit_code == 2,
         )
         print(f"[CLIENT] Analysis request failed: {error_full}", file=sys.stderr)
         print(f"[CLIENT] Status artifact: {status_path}", file=sys.stderr)
-        sys.exit(2)
+        sys.exit(exit_code)
 
     protocol, has_criticals = _write_report_artifacts(output_dir, report)
     if protocol == "unknown":

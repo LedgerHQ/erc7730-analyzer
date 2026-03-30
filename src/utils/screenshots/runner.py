@@ -109,6 +109,41 @@ def _release_speculos_ports(api_port: int, apdu_port: int) -> None:
         _RESERVED_PORTS.discard(apdu_port)
 
 
+def _read_int_env(name: str, default: int, *, minimum: int | None = None, maximum: int | None = None) -> int:
+    """Read an integer env var with bounds, falling back on invalid values."""
+    raw = os.getenv(name)
+    try:
+        value = int(raw) if raw is not None else default
+    except (TypeError, ValueError):
+        logger.warning("Invalid %s=%r; using default %s", name, raw, default)
+        value = default
+    if minimum is not None:
+        value = max(minimum, value)
+    if maximum is not None:
+        value = min(maximum, value)
+    return value
+
+
+def _compute_screenshot_cpu_affinity(reserve_cpus: int) -> tuple[int, ...] | None:
+    """Reserve the lowest-numbered CPUs for the service and use the rest."""
+    if reserve_cpus <= 0 or not hasattr(os, "sched_getaffinity"):
+        return None
+    try:
+        available = sorted(os.sched_getaffinity(0))
+    except OSError:
+        return None
+    if len(available) <= reserve_cpus:
+        return None
+    return tuple(available[reserve_cpus:])
+
+
+def _format_cpu_affinity(cpus: tuple[int, ...] | None) -> str:
+    """Return a taskset-friendly CPU list, or ``auto`` when unrestricted."""
+    if not cpus:
+        return "auto"
+    return ",".join(str(cpu) for cpu in cpus)
+
+
 def _subprocess_output_tail(value: str | bytes | None, limit: int = LOG_TAIL_CHARS) -> str:
     """Return a readable tail of subprocess output for timeout diagnostics."""
     if value is None:
@@ -205,6 +240,10 @@ class ScreenshotRunner:
         self.last_unavailability_reasons: list[str] = []
         self._screenshot_tmp_dirs: list[Path] = []
         self.cancel_event: threading.Event | None = None
+        self._subprocess_nice = _read_int_env("SCREENSHOT_SUBPROCESS_NICE", 19, minimum=0, maximum=19)
+        self._reserved_cpus = _read_int_env("SCREENSHOT_RESERVED_CPUS", 1, minimum=0)
+        self._subprocess_cpu_affinity = _compute_screenshot_cpu_affinity(self._reserved_cpus)
+        self._cs_tester_max_old_space_mb = _read_int_env("CS_TESTER_MAX_OLD_SPACE_MB", 1024, minimum=256)
 
     @property
     def _cancelled(self) -> bool:
@@ -339,17 +378,20 @@ class ScreenshotRunner:
             str(elf_path.resolve()),
         ]
         logger.info(
-            "[SCREENSHOTS][SETUP] Starting native Speculos api=%s apdu=%s model=%s elf=%s",
+            "[SCREENSHOTS][SETUP] Starting native Speculos api=%s apdu=%s model=%s elf=%s nice=%s cpu_affinity=%s",
             api_port,
             apdu_port,
             self._speculos_model(),
             elf_path,
+            self._subprocess_nice,
+            _format_cpu_affinity(self._subprocess_cpu_affinity),
         )
         return subprocess.Popen(
-            ["nice", "-n", "10", *cmd],
+            cmd,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.PIPE,
             env=dict(os.environ),
+            preexec_fn=self._subprocess_preexec_fn(),
         )
 
     @staticmethod
@@ -451,6 +493,20 @@ class ScreenshotRunner:
         if shutil.which("pnpm"):
             return ["pnpm", *args]
         return ["corepack", "pnpm", *args]
+
+    def _subprocess_preexec_fn(self):
+        """Apply CPU affinity / nice directly in the child on Linux."""
+
+        affinity = self._subprocess_cpu_affinity
+        nice_value = self._subprocess_nice
+
+        def _apply_limits() -> None:
+            if affinity and hasattr(os, "sched_setaffinity"):
+                os.sched_setaffinity(0, set(affinity))
+            if nice_value > 0:
+                os.nice(nice_value)
+
+        return _apply_limits
 
     @staticmethod
     def _screenshot_progress_signature(screenshots_dir: Path) -> tuple[int, int]:
@@ -818,6 +874,10 @@ class ScreenshotRunner:
         stdout_log = screenshots_dir / "cs_tester.stdout.log"
         stderr_log = screenshots_dir / "cs_tester.stderr.log"
         api_port = self._persistent_speculos_api_port
+        node_heap_flag = f"--max-old-space-size={self._cs_tester_max_old_space_mb}"
+        existing_node_options = env.get("NODE_OPTIONS", "").strip()
+        if node_heap_flag not in existing_node_options.split():
+            env["NODE_OPTIONS"] = f"{existing_node_options} {node_heap_flag}".strip()
 
         if (
             api_port is None
@@ -833,12 +893,15 @@ class ScreenshotRunner:
 
         if attempt == 0:
             logger.info(
-                "[SCREENSHOTS][%s] Running cs-tester for tx %s device=%s custom_app=%s external_speculos api_port=%s",
+                "[SCREENSHOTS][%s] Running cs-tester for tx %s device=%s custom_app=%s external_speculos api_port=%s nice=%s cpu_affinity=%s node_heap_mb=%s",
                 selector,
                 tx_hash[:10],
                 self.device,
                 custom_app_path,
                 api_port,
+                self._subprocess_nice,
+                _format_cpu_affinity(self._subprocess_cpu_affinity),
+                self._cs_tester_max_old_space_mb,
             )
         else:
             logger.info(
@@ -876,11 +939,12 @@ class ScreenshotRunner:
                 stderr_log.open("w", encoding="utf-8") as stderr_handle,
             ):
                 cs_tester_proc = subprocess.Popen(
-                    ["nice", "-n", "10", *cmd],
+                    cmd,
                     cwd=str(self.cs_tester_root),
                     env=env,
                     stdout=stdout_handle,
                     stderr=stderr_handle,
+                    preexec_fn=self._subprocess_preexec_fn(),
                 )
                 success = self._wait_for_screenshots_or_exit(
                     cs_tester_proc,
